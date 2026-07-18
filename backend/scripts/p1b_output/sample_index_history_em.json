@@ -1,0 +1,8 @@
+{
+  "need": "get_index_history",
+  "preferred": "em",
+  "fallback": "-",
+  "elapsed_sec": 0.178,
+  "error": "ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+  "analysis": null
+}

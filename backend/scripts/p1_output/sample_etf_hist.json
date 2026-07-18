@@ -1,0 +1,55 @@
+{
+  "desc": "ETF 历史日线（新浪，sh510300）",
+  "source": "sina",
+  "elapsed_sec": 0.12,
+  "error": null,
+  "analysis": {
+    "columns": [
+      "date",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume",
+      "amount",
+      "postVol",
+      "postAmt"
+    ],
+    "row_count": 3436,
+    "null_counts": {
+      "date": 0,
+      "open": 0,
+      "high": 0,
+      "low": 0,
+      "close": 0,
+      "volume": 0,
+      "amount": 0,
+      "postVol": 3426,
+      "postAmt": 3426
+    },
+    "sample": [
+      {
+        "date": "2012-05-28",
+        "open": 2.551,
+        "high": 2.607,
+        "low": 2.544,
+        "close": 2.604,
+        "volume": 1277518720,
+        "amount": 3285755392,
+        "postVol": null,
+        "postAmt": null
+      },
+      {
+        "date": "2012-05-29",
+        "open": 2.602,
+        "high": 2.661,
+        "low": 2.602,
+        "close": 2.644,
+        "volume": 714948992,
+        "amount": 1875593344,
+        "postVol": null,
+        "postAmt": null
+      }
+    ]
+  }
+}

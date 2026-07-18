@@ -1,0 +1,8 @@
+{
+  "need": "get_index_history",
+  "preferred": "em/stock_zh_index_daily_em",
+  "fallback": "sina/stock_zh_index_daily_sina",
+  "elapsed_sec": 0.0,
+  "error": "AttributeError: module 'akshare' has no attribute 'stock_zh_index_daily_sina'",
+  "analysis": null
+}

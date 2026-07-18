@@ -1,0 +1,44 @@
+{
+  "need": "get_index_history",
+  "preferred": "em/stock_zh_index_daily_em(含amount)",
+  "fallback": "tx/stock_zh_index_daily_tx(含amount,沙箱可达) / sina/stock_zh_index_daily(无amount)",
+  "elapsed_sec": 11.934,
+  "error": null,
+  "analysis": {
+    "columns": [
+      "date",
+      "open",
+      "close",
+      "high",
+      "low",
+      "amount"
+    ],
+    "row_count": 8674,
+    "null_counts": {
+      "date": 0,
+      "open": 0,
+      "close": 0,
+      "high": 0,
+      "low": 0,
+      "amount": 0
+    },
+    "sample": [
+      {
+        "date": "1990-12-19",
+        "open": 96.05,
+        "close": 99.98,
+        "high": 99.98,
+        "low": 95.79,
+        "amount": 1260.0
+      },
+      {
+        "date": "1990-12-20",
+        "open": 104.3,
+        "close": 104.39,
+        "high": 104.39,
+        "low": 99.98,
+        "amount": 197.0
+      }
+    ]
+  }
+}

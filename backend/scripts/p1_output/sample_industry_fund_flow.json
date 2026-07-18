@@ -1,0 +1,6 @@
+{
+  "desc": "行业板块资金流（东方财富）",
+  "elapsed_sec": 0.0,
+  "error": "AttributeError: module 'akshare' has no attribute 'stock_board_industry_fund_flow_em'",
+  "analysis": null
+}

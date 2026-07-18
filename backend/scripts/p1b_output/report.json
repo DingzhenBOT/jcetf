@@ -1,0 +1,161 @@
+{
+  "generated_at": "2026-07-18T12:53:51.220959+00:00",
+  "note": "P-1b: 验证策略依赖的历史序列。em 在沙箱被墙，故 em 历史接口不可达，结论标注'需生产服务器验证'；重点暴露历史涨跌家数是否缺直接 API。",
+  "cases": {
+    "index_history_tx": {
+      "need": "get_index_history",
+      "preferred": "em/stock_zh_index_daily_em(含amount)",
+      "fallback": "tx/stock_zh_index_daily_tx(含amount,沙箱可达) / sina/stock_zh_index_daily(无amount)",
+      "elapsed_sec": 11.934,
+      "error": null,
+      "ok": true,
+      "analysis": {
+        "columns": [
+          "date",
+          "open",
+          "close",
+          "high",
+          "low",
+          "amount"
+        ],
+        "row_count": 8674,
+        "null_counts": {
+          "date": 0,
+          "open": 0,
+          "close": 0,
+          "high": 0,
+          "low": 0,
+          "amount": 0
+        },
+        "sample": [
+          {
+            "date": "1990-12-19",
+            "open": 96.05,
+            "close": 99.98,
+            "high": 99.98,
+            "low": 95.79,
+            "amount": 1260.0
+          },
+          {
+            "date": "1990-12-20",
+            "open": 104.3,
+            "close": 104.39,
+            "high": 104.39,
+            "low": 99.98,
+            "amount": 197.0
+          }
+        ]
+      }
+    },
+    "index_history_em": {
+      "need": "get_index_history",
+      "preferred": "em",
+      "fallback": "-",
+      "elapsed_sec": 0.178,
+      "error": "ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+      "ok": false,
+      "analysis": null
+    },
+    "sector_history_em": {
+      "need": "get_sector_history",
+      "preferred": "em/stock_board_industry_hist_em",
+      "fallback": "无(sina/ths 无日线历史)",
+      "elapsed_sec": 5.073,
+      "error": "ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+      "ok": false,
+      "analysis": null
+    },
+    "sector_fund_flow_hist_em": {
+      "need": "get_sector_fund_flow_history",
+      "preferred": "em/stock_sector_fund_flow_hist",
+      "fallback": "无直接历史；上线后每日积累",
+      "elapsed_sec": 5.606,
+      "error": "ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+      "ok": false,
+      "analysis": null
+    },
+    "breadth_accumulate_sina": {
+      "need": "get_market_breadth_history(积累源)",
+      "preferred": "em/stock_zh_a_spot_em",
+      "fallback": "sina/stock_zh_a_spot(沙箱可达, 当前全市场快照→每日计算涨跌家数累计)",
+      "elapsed_sec": 9.346,
+      "error": null,
+      "ok": true,
+      "analysis": {
+        "columns": [
+          "代码",
+          "名称",
+          "最新价",
+          "涨跌额",
+          "涨跌幅",
+          "买入",
+          "卖出",
+          "昨收",
+          "今开",
+          "最高",
+          "最低",
+          "成交量",
+          "成交额",
+          "时间戳"
+        ],
+        "row_count": 5527,
+        "null_counts": {
+          "代码": 0,
+          "名称": 0,
+          "最新价": 0,
+          "涨跌额": 0,
+          "涨跌幅": 0,
+          "买入": 0,
+          "卖出": 0,
+          "昨收": 0,
+          "今开": 0,
+          "最高": 0,
+          "最低": 0,
+          "成交量": 0,
+          "成交额": 0,
+          "时间戳": 0
+        },
+        "sample": [
+          {
+            "代码": "bj920000",
+            "名称": "安徽凤凰",
+            "最新价": 11.85,
+            "涨跌额": 0.0,
+            "涨跌幅": 0.0,
+            "买入": 11.83,
+            "卖出": 11.85,
+            "昨收": 11.85,
+            "今开": 11.85,
+            "最高": 12.35,
+            "最低": 11.71,
+            "成交量": 1231663.0,
+            "成交额": 14840220.0,
+            "时间戳": "15:30:01"
+          },
+          {
+            "代码": "bj920001",
+            "名称": "纬达光电",
+            "最新价": 11.72,
+            "涨跌额": -0.45,
+            "涨跌幅": -3.698,
+            "买入": 11.71,
+            "卖出": 11.72,
+            "昨收": 12.17,
+            "今开": 12.09,
+            "最高": 12.38,
+            "最低": 11.11,
+            "成交量": 1943039.0,
+            "成交额": 23377480.0,
+            "时间戳": "15:30:01"
+          }
+        ]
+      }
+    }
+  },
+  "closure_verdict": {
+    "index_history": "tx(stock_zh_index_daily_tx,含amount)沙箱可达；em 生产更优。闭环 ✅",
+    "sector_history": "仅 em(stock_board_industry_hist_em)提供；沙箱不可达，生产验证。设计依赖 em ✅(prod)",
+    "sector_fund_flow_history": "仅 em(stock_sector_fund_flow_hist)提供；沙箱不可达。上线前用'每日积累'补 ✅(prod+accumulate)",
+    "market_breadth_history": "无直接历史 API；用 sina/stock_zh_a_spot 每日全市场快照→计算涨跌家数→累计。❗设计必须支持'每日积累'，否则 breadth 相关规则（上涨占比/涨跌停）无历史可回测"
+  }
+}

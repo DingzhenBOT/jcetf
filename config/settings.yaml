@@ -1,0 +1,121 @@
+# A股板块资金监控与 ETF 辅助分析 — 运行配置
+# ---------------------------------------------------------------------------
+# 说明：
+#  - 所有相对路径相对于本文件所在目录（即 /workspace/config）。
+#  - 时间统一存 UTC；trading_date 按北京时间判定（见 DESIGN.md §0 假设#1）。
+#  - 生产环境通过环境变量覆盖敏感/环境相关项（见文件末尾「环境变量覆盖」）。
+#  - FastAPI 不实现鉴权层，鉴权由 Nginx Basic Auth + HTTPS 负责（DESIGN §0）。
+#  - 本文件可入库；真实密钥不在此处（当前阶段无密钥）。
+# ---------------------------------------------------------------------------
+
+app:
+  name: "etf-monitor"
+  environment: "dev"          # dev / prod
+  debug: false
+
+server:
+  # API 仅监听回环地址（Nginx 反代），防火墙封公网直连（DESIGN §0 端口隔离）
+  host: "127.0.0.1"
+  port: 8000
+  workers: 1                  # 生产 Uvicorn 仅 1 worker（DESIGN §0 进程数）
+
+paths:
+  # 相对本文件：(../data) => /workspace/data
+  data_dir: "../data"
+  log_dir: "../data/logs"
+  sqlite_file: "etf_monitor.db"
+  backup_dir: "../data/backups"
+
+logging:
+  level: "INFO"               # DEBUG / INFO / WARNING / ERROR
+  json_console: false         # dev 控制台用可读格式；true 则统一 JSON
+  rotation_when: "midnight"   # 每日轮转
+  rotation_backup_count: 14   # 日志保留 14 天（DESIGN §0 备份）
+  max_bytes: 0                # 0 表示按时间轮转（非按大小）
+
+database:
+  echo: false                 # 是否打印 SQL（仅 dev 调试）
+  wal_mode: true              # SQLite WAL（DESIGN §0）
+  busy_timeout_ms: 5000
+  pool_size: 1                # 单写者；worker 单实例保证写入不冲突
+
+data_source:
+  # 多源可插拔（DESIGN §3.1）。生产优先 em；沙箱/降级用 sina/ths/tx
+  mode: "real"                # real / mock（mock 仅 dev/test，禁止生产）
+  preferred: "em"
+  fallback: ["sina", "ths", "tx"]
+  switch_reset_window: true   # 切源后重积累窗口并降置信度
+  request_timeout_seconds: 20
+  retry_attempts: 2
+  retry_backoff_seconds: 5
+
+scheduler:
+  timezone: "Asia/Shanghai"   # 交易时间按北京时间
+  enabled: true
+  intraday_interval_seconds: 180   # 默认 3 分钟采集（DESIGN §0 刷新频率）
+  pre_close_interval_seconds: 60   # 收盘前提频
+
+cors:
+  # 前端跨域白名单（dev vite :5173；prod 由 Nginx 同源托管可留空）
+  allowed_origins:
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"
+  allowed_methods: ["GET", "POST", "OPTIONS"]
+  allow_credentials: false    # Basic Auth 走 Nginx，API 本身不带 cookie 凭证
+
+security:
+  # 安全响应头（生产也可在 Nginx 统一设；API 内再兜底一层）
+  enable_headers: true
+  content_security_policy: "default-src 'none'; frame-ancestors 'none'"
+
+# 策略白名单参数（P3 落地；此处是 strategy_hash 规范化来源，禁止运行时改）
+strategy:
+  version: "v1.0.0"
+  composite_weights:
+    market: 0.25
+    sector_trend: 0.25
+    fund_flow: 0.25
+    etf_rs: 0.25
+  thresholds:
+    join_observe: 60
+    small_position: 75
+    opportunity_enhance: 85
+    rsi_overheat: 80
+  risk_filter:
+    deny_market_bear_with_missing_data: true
+    downgrade_on_chase_high: true
+
+# 回测（P7 落地；配置预留）
+backtest:
+  baseline_etf: "510300"
+  commission_per_thousand: 0.15   # 万 1.5 单侧
+  slippage_bps: 2
+  intraday_heavy_disabled: true   # 盘中禁重型回测（避免与采集竞争）
+
+# 持仓分析（P6 落地；校验规则预留）
+portfolio:
+  max_positions: 20
+  max_total_percent: 100
+
+# 数据保留 / 清理 / 备份（防磁盘撑爆；详见 docs/devlog.md）
+# 原则：盘中快照(SNAPSHOT)最占空间 -> 热保留窗口短；日线(BAR)/意见/信号保留更长；
+#       本地日备保留 N 天，周备异地留待 P8；磁盘使用率超阈值即告警。
+housekeeping:
+  log_retention_days: 14            # 应用日志保留（与 logging.rotation_backup_count 对齐）
+  snapshot_retention_days: 90       # market_quote SNAPSHOT 热保留（盘中 3 分钟快照）
+  bar_retention_days: 730           # market_quote BAR / 日线保留（约 2 年）
+  opinion_retention_days: 730       # 信号/意见保留（复盘用）
+  backup_retention_days: 7          # 本地日备保留天数
+  backup_remote_enabled: false      # 异地周备（P8 启用，依赖环境与对象存储）
+  vacuum_after_prune: true          # 清理后 VACUUM 回收空间
+  disk_warn_percent: 85             # 磁盘使用率告警阈值（%）
+  disabled: false                   # 总开关（紧急时可关闭清理）
+
+# ---------------------------------------------------------------------------
+# 环境变量覆盖（可选，优先级高于本文件）
+#   ETF_ENV, ETF_DEBUG, ETF_API_HOST, ETF_API_PORT,
+#   ETF_DATA_DIR, ETF_LOG_DIR, ETF_SQLITE_FILE, ETF_LOG_LEVEL,
+#   ETF_DATA_SOURCE_MODE, ETF_DATA_SOURCE_PREFERRED,
+#   ETF_SCHEDULER_TZ, ETF_SCHEDULER_ENABLED
+# 本地开发可 `set -a; source config/.env; set +a` 注入；生产由 systemd EnvironmentFile 注入。
+# ---------------------------------------------------------------------------

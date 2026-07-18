@@ -1,0 +1,8 @@
+{
+  "need": "市场宽度(当前)",
+  "preferred": "em/stock_zh_a_spot_em",
+  "fallback": "仅当前快照，非历史",
+  "elapsed_sec": 5.251,
+  "error": "ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+  "analysis": null
+}

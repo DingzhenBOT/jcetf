@@ -1,0 +1,8 @@
+{
+  "need": "get_sector_history",
+  "preferred": "em/stock_board_industry_hist_em",
+  "fallback": "无(sina/ths 无日线历史)",
+  "elapsed_sec": 5.073,
+  "error": "ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+  "analysis": null
+}

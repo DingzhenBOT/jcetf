@@ -1,0 +1,8 @@
+{
+  "need": "get_market_breadth_history",
+  "preferred": "legu/stock_market_activity_legu",
+  "fallback": "无历史API；需每日从全市场快照累计",
+  "elapsed_sec": 0.613,
+  "error": "AttributeError: 'NoneType' object has no attribute 'text'",
+  "analysis": null
+}

@@ -1,0 +1,8 @@
+{
+  "need": "get_sector_fund_flow_history",
+  "preferred": "em/stock_sector_fund_flow_hist",
+  "fallback": "无直接历史；上线后每日积累",
+  "elapsed_sec": 5.606,
+  "error": "ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+  "analysis": null
+}

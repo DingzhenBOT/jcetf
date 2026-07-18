@@ -1,0 +1,23 @@
+{
+  "desc": "交易日历（新浪）",
+  "source": "sina",
+  "elapsed_sec": 0.078,
+  "error": null,
+  "analysis": {
+    "columns": [
+      "trade_date"
+    ],
+    "row_count": 8797,
+    "null_counts": {
+      "trade_date": 0
+    },
+    "sample": [
+      {
+        "trade_date": "1990-12-19"
+      },
+      {
+        "trade_date": "1990-12-20"
+      }
+    ]
+  }
+}

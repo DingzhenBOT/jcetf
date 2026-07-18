@@ -1,0 +1,23 @@
+# 核心依赖（按沙箱已验证版本固定；部署按 DESIGN 用 Python 3.12 + venv）
+# 安装：python3.11 -m pip install -r backend/requirements.txt
+
+# --- Web 框架 ---
+fastapi==0.128.2
+uvicorn[standard]==0.40.0
+pydantic==2.12.5
+pydantic-settings==2.14.2
+starlette==0.50.0
+
+# --- 数据 / 调度 ---
+sqlalchemy==2.0.51          # P1 ORM（P0 已装，提前就位）
+apscheduler==3.11.3         # worker 调度
+pyyaml==6.0.3               # 配置加载
+numpy==2.3.5
+pandas==3.0.0
+
+# --- 数据源（P2 采集用，提前声明） ---
+akshare==1.18.22
+
+# --- 测试 ---
+pytest==9.0.2
+httpx==0.28.1
