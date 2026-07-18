@@ -49,6 +49,13 @@ data_source:
   retry_attempts: 2
   retry_backoff_seconds: 5
 
+data_quality:
+  # 仅交易时段内严格校验时间新鲜度（收盘后不惩罚陈旧）
+  delay_seconds_threshold: 120      # 延迟超 2 分钟 -> DELAY
+  stale_seconds_threshold: 1800     # 延迟超 30 分钟 -> STALE
+  max_abs_change_percent: 11.0      # A股日涨跌停约 ±10%，留缓冲
+  min_price: 0.01                   # 收盘价 <= 此值视为异常
+
 scheduler:
   timezone: "Asia/Shanghai"   # 交易时间按北京时间
   enabled: true

@@ -19,12 +19,34 @@ from pathlib import Path
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app import retention
+from app import market_calendar, retention
+from app.collector.collector import Collector
+from app.data_provider import build_provider
 from app.config import get_settings
+from app.db import make_engine, session_scope
 from app.logging_conf import get_logger, setup_logging
 from scripts.db_backup import run_backup
 
 LOCK_FILE_NAME = ".etf_worker.lock"
+
+# worker 单实例：引擎/采集器常驻缓存，避免每个任务重复构造
+_ENGINE = None
+_COLLECTOR = None
+
+
+def _engine():
+    global _ENGINE
+    if _ENGINE is None:
+        _ENGINE = make_engine(get_settings())
+    return _ENGINE
+
+
+def _collector() -> Collector:
+    global _COLLECTOR
+    if _COLLECTOR is None:
+        s = get_settings()
+        _COLLECTOR = Collector(build_provider(s), s)
+    return _COLLECTOR
 
 
 def acquire_single_instance_lock(lock_path: Path):
@@ -83,6 +105,53 @@ def job_log_cleanup() -> None:
     run_job("log_cleanup", retention.cleanup_old_logs, s.paths.log_dir_abs, s.housekeeping.log_retention_days)
 
 
+# --------------------------------------------------------------------------- #
+# P2 采集任务（先查 market_calendar 守卫，非交易时段/非交易日跳过）
+# --------------------------------------------------------------------------- #
+def job_collect_market() -> None:
+    """盘中轻量采集：指数 + ETF + 行业 + 概念。非交易时段直接跳过。"""
+    from app.market_calendar import is_trading_now
+
+    if not is_trading_now():
+        return
+    with session_scope(_engine()) as session:
+        run_job("collect_market", _collector().collect_market, session)
+
+
+def job_collect_breadth() -> None:
+    """全市场宽度累计（每日数次：午间 + 收盘）。非交易日跳过。"""
+    from app.market_calendar import is_trading_day, trading_date_for
+
+    if not is_trading_day(trading_date_for()):
+        return
+    with session_scope(_engine()) as session:
+        run_job("collect_breadth", _collector().collect_breadth, session)
+
+
+def job_pre_market() -> None:
+    """盘前：刷新交易日历 + 预热采集。非交易日跳过。"""
+    from app.market_calendar import is_trading_day, trading_date_for
+
+    try:
+        market_calendar.refresh_calendar(_collector().provider)
+    except Exception as e:  # noqa: BLE001
+        get_logger(__name__).warning("calendar refresh failed", extra={"err": str(e)})
+    if not is_trading_day(trading_date_for()):
+        return
+    with session_scope(_engine()) as session:
+        run_job("pre_market_prepare", _collector().collect_market, session)
+
+
+def job_post_close() -> None:
+    """收盘复盘：完整采集（含宽度最终累计）。非交易日跳过。"""
+    from app.market_calendar import is_trading_day, trading_date_for
+
+    if not is_trading_day(trading_date_for()):
+        return
+    with session_scope(_engine()) as session:
+        run_job("post_close_review", _collector().collect_all, session)
+
+
 def build_scheduler(settings) -> BlockingScheduler:
     scheduler = BlockingScheduler(timezone=settings.scheduler.timezone)
     if not settings.scheduler.enabled:
@@ -107,6 +176,27 @@ def build_scheduler(settings) -> BlockingScheduler:
         job_data_retention, CronTrigger(hour=2, minute=10),
         id="data_retention", replace_existing=True, max_instances=1, coalesce=True,
     )
+    # ---- P2 采集任务（先查 market_calendar 守卫） ----
+    # 盘前准备 08:50：刷新日历 + 预热采集
+    scheduler.add_job(
+        job_pre_market, CronTrigger(hour=8, minute=50),
+        id="pre_market_prepare", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    # 盘中采集（每 intraday_interval_seconds；内部 is_trading_now 守卫）
+    scheduler.add_job(
+        job_collect_market, "interval", seconds=settings.scheduler.intraday_interval_seconds,
+        id="intraday_collect", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    # 午间宽度累计 11:35
+    scheduler.add_job(
+        job_collect_breadth, CronTrigger(hour=11, minute=35),
+        id="midday_breadth", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    # 收盘复盘 15:10（含宽度最终累计）
+    scheduler.add_job(
+        job_post_close, CronTrigger(hour=15, minute=10),
+        id="post_close_review", replace_existing=True, max_instances=1, coalesce=True,
+    )
     return scheduler
 
 
@@ -128,6 +218,11 @@ def main() -> int:
         return 1
 
     scheduler = build_scheduler(settings)
+    # 启动期尝试加载交易日历（网络不可达则回退启发式，不影响调度）
+    try:
+        market_calendar.init_calendar(_collector().provider)
+    except Exception as e:  # noqa: BLE001
+        log.warning("calendar init failed; heuristic fallback", extra={"err": str(e)})
     log.info(
         "etf-worker started",
         extra={"timezone": settings.scheduler.timezone, "enabled": settings.scheduler.enabled},

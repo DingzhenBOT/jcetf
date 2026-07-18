@@ -73,6 +73,20 @@ class DataSourceConfig(BaseModel):
     retry_backoff_seconds: int = 5
 
 
+class DataQualityConfig(BaseModel):
+    """数据质量阈值（DESIGN §3.1 / P2）。
+
+    - 仅在交易时段(is_trading_now)内严格校验时间新鲜度，收盘后不惩罚陈旧。
+    - delay < stale：DELAY 是轻度延迟告警，STALE 是明显过期（策略应降置信/标 stale）。
+    - A股日涨跌幅限制约 ±10%，用 max_abs_change_percent 做异常护栏（含 ST/新股缓冲）。
+    """
+
+    delay_seconds_threshold: int = 120
+    stale_seconds_threshold: int = 1800
+    max_abs_change_percent: float = 11.0
+    min_price: float = 0.01
+
+
 class SchedulerConfig(BaseModel):
     timezone: str = "Asia/Shanghai"
     enabled: bool = True
@@ -150,6 +164,7 @@ class Settings(BaseModel):
     logging: LoggingConfig = LoggingConfig()
     database: DatabaseConfig = DatabaseConfig()
     data_source: DataSourceConfig = DataSourceConfig()
+    data_quality: DataQualityConfig = DataQualityConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
     cors: CorsConfig = CorsConfig()
     security: SecurityConfig = SecurityConfig()

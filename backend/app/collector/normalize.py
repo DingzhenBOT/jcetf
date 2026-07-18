@@ -1,0 +1,243 @@
+"""列归一化（DESIGN §3.1 / P2）。
+
+把 AkShare 返回的「中文列名 DataFrame」映射到 market_quote / market_breadth 的字典形态。
+设计要点（对齐 P-1/P-1b 真实探针结论）：
+- 源无时间戳列（指数/ETF 快照）-> source_timestamp=None, timestamp=collected_at（UTC）。
+- 源有时间戳（stock_zh_a_spot 的「时间戳」）-> 解析为北京时间再转 UTC。
+- 缺失字段一律写 None；不臆造；由 data_quality 标记 STALE/MISSING/ANOMALY。
+- 板块来源异构：em 用「板块代码/最新价/涨跌幅/上涨家数/下跌家数」；
+  ths 用「行业/行业指数/行业-涨跌幅/净额/公司家数」。统一取首个可用列。
+- 资金持续性仅同数据源同口径（metric_source=source），切源由 collector 标 source_switched。
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+
+from app.market_calendar import beijing_to_utc, trading_date_for
+
+# 资金流等指标口径版本；口径变更需升版并在此同步
+METRIC_DEF_VERSION = "v1"
+
+
+# --------------------------------------------------------------------------- #
+# 基础转换
+# --------------------------------------------------------------------------- #
+def _f(v: Any) -> Optional[float]:
+    """转 float；空/非数字/NaN -> None。处理 AkShare 常见的 '—' / '' / 'nan'。"""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        s = v.strip()
+        if s in ("", "-", "—", "None", "none", "nan", "NaN"):
+            return None
+        try:
+            f = float(s.replace(",", ""))
+        except ValueError:
+            return None
+    else:
+        try:
+            f = float(v)
+        except (ValueError, TypeError):
+            return None
+    if f != f:  # NaN
+        return None
+    return f
+
+
+def _code(v: Any) -> Optional[str]:
+    if v is None:
+        return None
+    try:
+        if v != v:  # NaN（含 numpy.float64）
+            return None
+    except TypeError:
+        pass
+    s = str(v).strip()
+    return s or None
+
+
+def _parse_bj_time(v: Any) -> Optional[datetime]:
+    """解析「YYYY-MM-DD HH:MM:SS」为北京时间 -> naive UTC；失败返回 None。"""
+    if v is None or (isinstance(v, float) and v != v):
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            bj = datetime.strptime(s, fmt)
+            return beijing_to_utc(bj)
+        except ValueError:
+            continue
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# 快照（指数 / ETF / 板块）
+# --------------------------------------------------------------------------- #
+def _base_row(source: str, symbol_type: str, symbol: str, collected_at: datetime) -> Dict[str, Any]:
+    return {
+        "data_source": source,
+        "symbol_type": symbol_type,
+        "symbol": symbol,
+        "data_kind": "SNAPSHOT",
+        "timeframe": "snapshot",
+        "trading_date": trading_date_for(collected_at),
+        "timestamp": collected_at,  # 源无时间戳时 = 采集时刻
+        "open": None,
+        "high": None,
+        "low": None,
+        "close": None,
+        "previous_close": None,
+        "volume": None,
+        "amount": None,
+        "change_percent": None,
+        "turnover_rate": None,
+        "main_net_inflow": None,
+        "large_order_inflow": None,
+        "rise_count": None,
+        "fall_count": None,
+        "limit_up_count": None,
+        "limit_down_count": None,
+        "collected_at": collected_at,
+        "source_timestamp": None,
+        "metric_source": source,
+        "metric_definition_version": METRIC_DEF_VERSION,
+        "source_switched": 0,
+        "data_quality_status": "OK",
+    }
+
+
+def normalize_index_snapshot(df: pd.DataFrame, source: str, collected_at: datetime) -> List[Dict[str, Any]]:
+    """宽基/主要指数快照：代码/名称/最新价/涨跌额/涨跌幅/昨收/今开/最高/最低/成交量/成交额。"""
+    rows: List[Dict[str, Any]] = []
+    for _, r in df.iterrows():
+        code = _code(r.get("代码"))
+        if not code:
+            continue
+        row = _base_row(source, "INDEX", code, collected_at)
+        row.update(
+            open=_f(r.get("今开")),
+            high=_f(r.get("最高")),
+            low=_f(r.get("最低")),
+            close=_f(r.get("最新价")),
+            previous_close=_f(r.get("昨收")),
+            volume=_f(r.get("成交量")),
+            amount=_f(r.get("成交额")),
+            change_percent=_f(r.get("涨跌幅")),
+        )
+        rows.append(row)
+    return rows
+
+
+def normalize_etf_snapshot(df: pd.DataFrame, source: str, collected_at: datetime) -> List[Dict[str, Any]]:
+    """ETF 快照：fund_etf_spot_em / fund_etf_category_sina（含 换手率 列时取之）。"""
+    rows: List[Dict[str, Any]] = []
+    for _, r in df.iterrows():
+        code = _code(r.get("代码"))
+        if not code:
+            continue
+        row = _base_row(source, "ETF", code, collected_at)
+        row.update(
+            open=_f(r.get("今开")),
+            high=_f(r.get("最高")),
+            low=_f(r.get("最低")),
+            close=_f(r.get("最新价")),
+            previous_close=_f(r.get("昨收")),
+            volume=_f(r.get("成交量")),
+            amount=_f(r.get("成交额")),
+            change_percent=_f(r.get("涨跌幅")),
+            turnover_rate=_f(r.get("换手率")),
+        )
+        rows.append(row)
+    return rows
+
+
+def normalize_sector_ranking(
+    df: pd.DataFrame, source: str, sector_type: str, collected_at: datetime
+) -> List[Dict[str, Any]]:
+    """板块排行+资金流（异构来源）。
+
+    em  `stock_board_industry_name_em`：板块代码/最新价/涨跌幅/换手率/上涨家数/下跌家数
+    ths `stock_fund_flow_industry/concept`：行业(名称)/行业指数/行业-涨跌幅/净额/公司家数
+    统一取首个可用列；缺失写 None。
+    """
+    rows: List[Dict[str, Any]] = []
+    for _, r in df.iterrows():
+        # symbol：em 用板块代码；ths 用行业/概念名称（无代码）
+        code = (
+            _code(r.get("板块代码"))
+            or _code(r.get("行业"))
+            or _code(r.get("概念"))
+            or _code(r.get("代码"))
+        )
+        if not code:
+            continue
+        # close：优先「最新价」（em），其次「行业指数 / 当前价」（ths 板块指数）
+        close = _f(r.get("最新价"))
+        if close is None:
+            close = _f(r.get("行业指数")) or _f(r.get("当前价"))
+        change = _f(r.get("涨跌幅")) or _f(r.get("行业-涨跌幅"))
+        row = _base_row(source, sector_type, code, collected_at)
+        row.update(
+            close=close,
+            change_percent=change,
+            turnover_rate=_f(r.get("换手率")),
+            main_net_inflow=_f(r.get("净额")),
+            rise_count=_f(r.get("上涨家数")),
+            fall_count=_f(r.get("下跌家数")),
+        )
+        rows.append(row)
+    return rows
+
+
+# --------------------------------------------------------------------------- #
+# 全市场宽度（每日累计；无历史 API，DESIGN §3.1）
+# --------------------------------------------------------------------------- #
+def normalize_breadth(df: pd.DataFrame, source: str, collected_at: datetime) -> Dict[str, Any]:
+    """从全市场快照（stock_zh_a_spot）计算涨跌家数/涨跌停/总成交额。
+
+    涨停/跌停阈值取 9.5%（覆盖主板 ±10%，ST ±5% 不单独处理，已知近似限制）。
+    时间戳取首个非空「时间戳」解析为 UTC；缺失则用 collected_at。
+    """
+    change_col = "涨跌幅" if "涨跌幅" in df.columns else None
+    if change_col:
+        chg = pd.to_numeric(df[change_col], errors="coerce").fillna(0.0)
+        total_rise = int((chg > 0).sum())
+        total_fall = int((chg < 0).sum())
+        total_flat = int((chg == 0).sum())
+        limit_up = int((chg >= 9.5).sum())
+        limit_down = int((chg <= -9.5).sum())
+    else:
+        total_rise = total_fall = total_flat = limit_up = limit_down = None
+
+    amount_col = "成交额" if "成交额" in df.columns else None
+    total_amount = (
+        float(pd.to_numeric(df[amount_col], errors="coerce").sum()) if amount_col else None
+    )
+
+    # 源时间戳（北京）-> UTC
+    src_ts: Optional[datetime] = None
+    if "时间戳" in df.columns:
+        for v in df["时间戳"]:
+            src_ts = _parse_bj_time(v)
+            if src_ts is not None:
+                break
+    ts = src_ts or collected_at
+
+    return {
+        "trading_date": trading_date_for(collected_at),
+        "timestamp": ts,
+        "total_rise": total_rise,
+        "total_fall": total_fall,
+        "total_flat": total_flat,
+        "limit_up": limit_up,
+        "limit_down": limit_down,
+        "total_amount": total_amount,
+        "data_source": source,
+        "collected_at": collected_at,
+        "data_quality_status": "OK",
+    }

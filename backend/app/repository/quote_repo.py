@@ -1,0 +1,143 @@
+"""行情/宽度/数据源状态 的写入（DESIGN §5 / P2，幂等）。
+
+- market_quote 按唯一键 (data_source, symbol_type, symbol, data_kind, timeframe, timestamp)
+  用 ON CONFLICT DO UPDATE 幂等写入（同键更新非唯一字段）。
+- market_breadth 按 (data_source, trading_date) 每日一条，先查后写保证幂等
+  （worker 单实例，无并发，故无需唯一约束/冲突子句）。
+- data_source_status 按 (data_source, symbol_type) upsert。
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Dict, List, Optional
+
+from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session
+
+from app.db.models.market import MarketBreadth, MarketQuote
+from app.db.models.system import DataSourceStatus
+
+# 唯一键（冲突目标）
+_QUOTE_UNIQUE = [
+    "data_source",
+    "symbol_type",
+    "symbol",
+    "data_kind",
+    "timeframe",
+    "timestamp",
+]
+
+# 冲突时更新的非唯一字段（不含 PK/唯一键/时间戳语义列）
+_QUOTE_UPDATE_COLS = [
+    "open",
+    "high",
+    "low",
+    "close",
+    "previous_close",
+    "volume",
+    "amount",
+    "change_percent",
+    "turnover_rate",
+    "main_net_inflow",
+    "large_order_inflow",
+    "rise_count",
+    "fall_count",
+    "limit_up_count",
+    "limit_down_count",
+    "collected_at",
+    "source_timestamp",
+    "metric_source",
+    "metric_definition_version",
+    "source_switched",
+    "data_quality_status",
+]
+
+
+def upsert_market_quotes(session: Session, rows: List[Dict]) -> int:
+    """批量幂等写入 market_quote。返回处理行数。"""
+    if not rows:
+        return 0
+    stmt = sqlite_insert(MarketQuote).values(rows)
+    update_cols = {c: getattr(stmt.excluded, c) for c in _QUOTE_UPDATE_COLS}
+    stmt = stmt.on_conflict_do_update(index_elements=_QUOTE_UNIQUE, set_=update_cols)
+    session.execute(stmt)
+    return len(rows)
+
+
+def get_last_source_for_symbol_type(session: Session, symbol_type: str) -> Optional[str]:
+    """返回该 symbol_type 最近一条行情的数据源（用于切源标记）。"""
+    row = (
+        session.execute(
+            select(MarketQuote.data_source)
+            .where(MarketQuote.symbol_type == symbol_type)
+            .order_by(MarketQuote.timestamp.desc())
+            .limit(1)
+        ).first()
+    )
+    return row[0] if row else None
+
+
+def upsert_breadth(session: Session, row: Dict) -> int:
+    """每日一条市场宽度（按 data_source + trading_date 幂等）。"""
+    existing = session.execute(
+        select(MarketBreadth).where(
+            MarketBreadth.trading_date == row["trading_date"],
+            MarketBreadth.data_source == row["data_source"],
+        )
+    ).first()
+    if existing:
+        obj = existing[0]
+        for k, v in row.items():
+            setattr(obj, k, v)
+    else:
+        session.add(MarketBreadth(**row))
+    return 1
+
+
+def get_data_source_status(
+    session: Session, data_source: str, symbol_type: str
+) -> Optional[DataSourceStatus]:
+    row = (
+        session.execute(
+            select(DataSourceStatus).where(
+                DataSourceStatus.data_source == data_source,
+                DataSourceStatus.symbol_type == symbol_type,
+            )
+        ).first()
+    )
+    return row[0] if row else None
+
+
+def record_data_source_status(
+    session: Session,
+    *,
+    data_source: str,
+    symbol_type: Optional[str],
+    status: str,
+    last_success_at: Optional[datetime],
+    last_attempt_at: Optional[datetime],
+    consecutive_failures: int,
+    note: Optional[str],
+) -> None:
+    """upsert 数据源健康状态（DESIGN §7 前端 STALE 标记依据）。"""
+    stmt = sqlite_insert(DataSourceStatus).values(
+        data_source=data_source,
+        symbol_type=symbol_type,
+        last_success_at=last_success_at,
+        last_attempt_at=last_attempt_at,
+        consecutive_failures=consecutive_failures,
+        status=status,
+        note=note,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["data_source", "symbol_type"],
+        set_={
+            "last_success_at": stmt.excluded.last_success_at,
+            "last_attempt_at": stmt.excluded.last_attempt_at,
+            "consecutive_failures": stmt.excluded.consecutive_failures,
+            "status": stmt.excluded.status,
+            "note": stmt.excluded.note,
+        },
+    )
+    session.execute(stmt)
