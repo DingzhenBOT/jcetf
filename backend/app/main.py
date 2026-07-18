@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
+from app.db.session import ping_db
 from app.errors import AppError, ConfigError
 from app.logging_conf import clear_request_id, get_logger, setup_logging
 
@@ -139,7 +140,12 @@ def create_app() -> FastAPI:
         s = get_settings()
         s.ensure_dirs()
         writable = _dir_writable(s.paths.data_dir_abs)
-        checks = {"config": "ok", "data_dir_writable": "ok" if writable else "fail"}
+        db_ok = ping_db(s)
+        checks = {
+            "config": "ok",
+            "data_dir_writable": "ok" if writable else "fail",
+            "db": "ok" if db_ok else "fail",
+        }
         ok = all(v == "ok" for v in checks.values())
         return JSONResponse(
             status_code=200 if ok else 503,

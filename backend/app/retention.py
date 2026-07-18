@@ -17,27 +17,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict
 
-from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy import Engine, inspect, text
 
 from app.config import Settings
+from app.db.session import make_engine
 from app.logging_conf import get_logger
 
 logger = get_logger(__name__)
 UTC = timezone.utc
-
-
-def make_engine(settings: Settings) -> Engine:
-    """创建 SQLite 引擎（WAL + busy_timeout），与 P1 引擎保持一致。"""
-    engine = create_engine(
-        settings.sqlite_url,
-        connect_args={"timeout": settings.database.busy_timeout_ms / 1000.0},
-        future=True,
-    )
-    with engine.connect() as conn:
-        if settings.database.wal_mode:
-            conn.exec_driver_sql("PRAGMA journal_mode=WAL")
-        conn.exec_driver_sql(f"PRAGMA busy_timeout={settings.database.busy_timeout_ms}")
-    return engine
 
 
 def prune_market_quotes(engine: Engine, snapshot_days: int, bar_days: int) -> Dict[str, int]:
