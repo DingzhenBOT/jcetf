@@ -275,3 +275,49 @@ python3.11 -m pytest -q                                  # 94 passed
 - `GET /api/signals/latest`（前端 30s 轮询）、`GET /api/etfs`、`GET /api/signals/history`、`GET /api/opinions/{etf}`。
 - 无鉴权层（DESIGN §0）；只读 SQLite，复用 `repository` 读函数。
 - 前端轮询见于 P5。
+
+---
+
+## P4 — FastAPI 查询接口（已完成，2026-07-19）
+
+> 用户确认 P4 范围 = devlog 4 端点 **+** `/api/market/breadth/latest` + `/api/market/overview`（让 P5 总览页 30s 轮询开箱即用）。
+> 铁律保持：LLM 只润色不判断；DESIGN §9 冻结；strategy_hash 不可覆盖；API 无鉴权层。
+
+### 交付文件
+| 文件 | 作用 |
+|---|---|
+| `app/api/__init__.py` | API 包标识 |
+| `app/api/deps.py` | `get_db` 依赖 + `build_read_engine`（只读引擎，`PRAGMA query_only=ON` 兜底防误写） |
+| `app/api/schemas.py` | Pydantic 响应模型（SignalOut/OpinionOut/EtfListItem/SignalHistoryPage/OpinionsForEtf/BreadthOut/IndexSnapshotOut/MarketOverviewOut） |
+| `app/api/serializers.py` | ORM→dict：档位中文映射（TIER_TEXT / position_text_of）、时间 ISO 化（naive UTC） |
+| `app/api/routers/{signals,etfs,opinions,market}.py` | 6 个端点 |
+| `app/api/routers/__init__.py` | 聚合 router |
+| `app/repository/signal_repo.py` | **只读** 信号/意见查询（get_latest_signals / get_latest_signal_for_etf / get_signal_history / get_opinions_for_etf） |
+| `app/repository/quote_repo.py` | 新增 `get_latest_breadth` |
+| `app/repository/__init__.py` | 导出上述读函数 |
+| `app/main.py` | lifespan 创建只读引擎存入 `app.state.db_factory` 并 shutdown dispose；`create_app` 挂载 4 个 router（tags 分组） |
+| `tests/conftest.py` | 新增 `api_client` / `api_client_no_breadth` fixtures（临时 SQLite 播种映射/信号/意见/宽度/指数 BAR + 依赖覆盖） |
+| `tests/test_api_signals.py` / `test_api_etfs.py` / `test_api_opinions.py` / `test_api_market.py` | 端点测试（17 例） |
+
+### 端点契约
+- `GET /api/signals/latest`：每支生效 ETF 最新一条（`MAX(generated_at)`）；空库返回 `[]`。
+- `GET /api/signals/history`：`?etf_code=&trading_date=YYYY-MM-DD&limit=1..200&offset>=0`；非法日期/越界 → 422；返回 `{items,total,limit,offset}`。
+- `GET /api/etfs`：ETF 列表含 `latest_signal`（无信号则 `null`）。
+- `GET /api/opinions/{etf}`：未知 ETF → 404；`?phase=` 非法 → 422；按 `generated_at desc`；可空列表。
+- `GET /api/market/breadth/latest`：最新宽度（含 `advance_ratio`）；无数据返回字段全 `null`（不 404）。
+- `GET /api/market/overview`：宽基指数最新 BAR + 宽度 + `signal_risk` 汇总（只读统计，非规则重算）；`as_of` 取最大交易日。
+
+### 关键约定
+- **只读**：API 进程独立只读引擎（`query_only=ON` 已验证拦截写 → OperationalError）；与 worker 共享 SQLite（WAL 并发读）。
+- **档位中文**：响应同时给 `signal_type`（英文码）+ `signal_type_text`（中文）+ `position_text`（文字仓位），前端无需重实现映射。
+- **降级兼容**：em 不可达导致 `failed_rules` 含 `broad_index_missing`/`breadth_missing` 等时原样返回，前端据以标「观察期数据不足」。
+- **未破坏冻结契约**：仅新增读函数与路由，未动 `strategy_engine`/`opinion_engine`/DESIGN §9；`strategy_version` 仍不可覆盖。
+
+### 验证
+- `python3.11 -m pytest -q` → **111 passed**（P3 94 + P4 17）。
+- 真实库（`data/etf_monitor.db` 已有 16 信号）冒烟：6 端点均 200/404 符合预期（沙箱库无 mapping/signal 故部分返回空，逻辑由测试覆盖）。
+- 只读引擎写拦截验证通过。
+
+### 下一步：P5（Vue 核心页面）
+基于 P4 已就绪的 `signals/latest` + `market/overview` + `market/breadth/latest`（30s 轮询双端齐备）+ `etfs` + `opinions/{etf}` 构建 5 页 + ECharts；可顺带补 `/api/opinions/current|history`。P6 持仓分析、P7 回测、P8 nginx 部署（Basic Auth + HTTPS + 反代 `/api/*`）。
+

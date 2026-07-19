@@ -244,3 +244,18 @@ def get_sector_quotes(
     if trading_date is not None:
         stmt = stmt.where(MarketQuote.trading_date == trading_date)
     return list(session.execute(stmt).scalars().all())
+
+
+def get_latest_breadth(session: Session) -> Optional[MarketBreadth]:
+    """宽度表按 trading_date 最大的一条（idx_breadth_date）；无数据返回 None。
+
+    供 /api/market/breadth/latest（P4）。
+    """
+    row = (
+        session.execute(
+            select(MarketBreadth)
+            .order_by(MarketBreadth.trading_date.desc())
+            .limit(1)
+        ).first()
+    )
+    return row[0] if row else None

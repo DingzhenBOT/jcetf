@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.db.session import ping_db
+from app.api.deps import build_read_engine, build_session_factory
 from app.errors import AppError, ConfigError
 from app.logging_conf import clear_request_id, get_logger, setup_logging
 
@@ -38,6 +39,10 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging(settings)
     settings.ensure_dirs()
+    # P4：为 API 进程创建只读引擎 + session 工厂（与 worker 共享 SQLite，WAL 并发读）。
+    read_engine = build_read_engine(settings)
+    app.state.read_engine = read_engine
+    app.state.db_factory = build_session_factory(read_engine)
     logger.info(
         "etf-api lifespan start",
         extra={"environment": settings.app.environment, "host": settings.server.host, "port": settings.server.port},
@@ -45,7 +50,11 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        # P0 无长连接资源；P1+ 在此关闭 DB 引擎 / 连接池。
+        # 关闭 DB 引擎 / 连接池（P4）。
+        try:
+            read_engine.dispose()
+        except Exception:  # noqa: BLE001 - 关闭失败不影响退出
+            pass
         logger.info("etf-api lifespan shutdown")
 
 
@@ -155,6 +164,19 @@ def create_app() -> FastAPI:
                 "timestamp": _now_iso(),
             },
         )
+
+    # ---- 业务路由（P4+，无鉴权层；鉴权在 Nginx） ----
+    from app.api.routers import (
+        etfs_router,
+        market_router,
+        opinions_router,
+        signals_router,
+    )
+
+    app.include_router(signals_router)
+    app.include_router(etfs_router)
+    app.include_router(opinions_router)
+    app.include_router(market_router)
 
     return app
 

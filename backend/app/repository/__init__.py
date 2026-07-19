@@ -15,12 +15,19 @@ from app.repository.quote_repo import (
     get_breadth_on_date,
     get_data_source_status,
     get_last_source_for_symbol_type,
+    get_latest_breadth,
     get_latest_quote,
     get_max_bar_timestamp,
     get_sector_quotes,
     record_data_source_status,
     upsert_breadth,
     upsert_market_quotes,
+)
+from app.repository.signal_repo import (
+    get_latest_signal_for_etf,
+    get_latest_signals,
+    get_opinions_for_etf,
+    get_signal_history,
 )
 
 __all__ = [
@@ -35,9 +42,15 @@ __all__ = [
     "get_bar_history",
     "get_max_bar_timestamp",
     "get_breadth_on_date",
+    "get_latest_breadth",
     "get_sector_quotes",
     # mapping_repo
     "get_active_mappings",
     "upsert_mapping",
     "get_mappings_for_backfill",
+    # signal_repo 读（P4）
+    "get_latest_signals",
+    "get_latest_signal_for_etf",
+    "get_signal_history",
+    "get_opinions_for_etf",
 ]
