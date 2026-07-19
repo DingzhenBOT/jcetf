@@ -109,6 +109,10 @@ class SecurityConfig(BaseModel):
 
 class StrategyConfig(BaseModel):
     version: str = "v1.0.0"
+    # 用于 market_regime 计算的宽基指数代码（北向不可达时也可用于 ETF 相对强弱基准）
+    broad_index_codes: _t.List[str] = Field(
+        default_factory=lambda: ["000300", "000001", "399001"]
+    )
     composite_weights: _t.Dict[str, float] = Field(
         default_factory=lambda: {
             "market": 0.25,
@@ -131,6 +135,21 @@ class StrategyConfig(BaseModel):
             "downgrade_on_chase_high": True,
         }
     )
+
+
+class BackfillConfig(BaseModel):
+    """历史 BAR 回填（P3）。
+
+    - lookback_days：首次回填回看天数（增量后按 max(timestamp)+1 续拉）。
+    - broad_index_codes：market_regime 所需的宽基指数集合（与 strategy.broad_index_codes 默认一致）。
+    - major_sector_codes：额外强制回填的板块代码（种子未覆盖时）。
+    """
+
+    lookback_days: int = 250
+    broad_index_codes: _t.List[str] = Field(
+        default_factory=lambda: ["000300", "000001", "399001"]
+    )
+    major_sector_codes: _t.List[str] = Field(default_factory=list)
 
 
 class BacktestConfig(BaseModel):
@@ -169,6 +188,7 @@ class Settings(BaseModel):
     cors: CorsConfig = CorsConfig()
     security: SecurityConfig = SecurityConfig()
     strategy: StrategyConfig = StrategyConfig()
+    backfill: BackfillConfig = BackfillConfig()
     backtest: BacktestConfig = BacktestConfig()
     portfolio: PortfolioConfig = PortfolioConfig()
     housekeeping: HousekeepingConfig = HousekeepingConfig()

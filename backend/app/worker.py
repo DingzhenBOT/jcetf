@@ -24,6 +24,7 @@ from app.collector.collector import Collector
 from app.data_provider import build_provider
 from app.config import get_settings
 from app.db import make_engine, session_scope
+from app.evaluation.pipeline import post_collection_evaluate
 from app.logging_conf import get_logger, setup_logging
 from scripts.db_backup import run_backup
 
@@ -152,6 +153,35 @@ def job_post_close() -> None:
         run_job("post_close_review", _collector().collect_all, session)
 
 
+# --------------------------------------------------------------------------- #
+# P3 评估任务（采集后评估 + 历史回填；均先查交易日历守卫）
+# --------------------------------------------------------------------------- #
+def job_backfill_history() -> None:
+    """盘后回填历史 BAR（指数/ETF/板块）。增量（按 max(timestamp)+1）；非交易时段也可跑（历史不限于盘中）。"""
+    with session_scope(_engine()) as session:
+        run_job("backfill_history", _collector().backfill_history, session)
+
+
+def job_pre_close_evaluate() -> None:
+    """收盘前评估（14:59）：生成 pre_close 阶段意见。非交易日跳过。"""
+    from app.market_calendar import is_trading_day, trading_date_for
+
+    if not is_trading_day(trading_date_for()):
+        return
+    with session_scope(_engine()) as session:
+        run_job("pre_close_evaluate", post_collection_evaluate, session, get_settings(), phase="pre_close")
+
+
+def job_post_close_evaluate() -> None:
+    """收盘后评估（15:10）：生成 post_close 复盘意见。非交易日跳过。"""
+    from app.market_calendar import is_trading_day, trading_date_for
+
+    if not is_trading_day(trading_date_for()):
+        return
+    with session_scope(_engine()) as session:
+        run_job("post_close_evaluate", post_collection_evaluate, session, get_settings(), phase="post_close")
+
+
 def build_scheduler(settings) -> BlockingScheduler:
     scheduler = BlockingScheduler(timezone=settings.scheduler.timezone)
     if not settings.scheduler.enabled:
@@ -196,6 +226,22 @@ def build_scheduler(settings) -> BlockingScheduler:
     scheduler.add_job(
         job_post_close, CronTrigger(hour=15, minute=10),
         id="post_close_review", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    # ---- P3 评估任务 ----
+    # 历史 BAR 回填 16:30（增量；em-only 板块历史失败非致命）
+    scheduler.add_job(
+        job_backfill_history, CronTrigger(hour=16, minute=30),
+        id="backfill_history", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    # 收盘前评估 14:59（pre_close 阶段意见）
+    scheduler.add_job(
+        job_pre_close_evaluate, CronTrigger(hour=14, minute=59),
+        id="pre_close_evaluate", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    # 收盘后评估 15:10（post_close 复盘意见）
+    scheduler.add_job(
+        job_post_close_evaluate, CronTrigger(hour=15, minute=10),
+        id="post_close_evaluate", replace_existing=True, max_instances=1, coalesce=True,
     )
     return scheduler
 

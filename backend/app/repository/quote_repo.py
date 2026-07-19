@@ -11,7 +11,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from sqlalchemy import select
+from datetime import date
+
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -141,3 +143,104 @@ def record_data_source_status(
         },
     )
     session.execute(stmt)
+
+
+# --------------------------------------------------------------------------- #
+# 读函数（P3：引擎层依赖；复用已有索引）
+# --------------------------------------------------------------------------- #
+def get_latest_quote(
+    session: Session,
+    symbol_type: str,
+    symbol: str,
+    data_kind: str = "SNAPSHOT",
+    timeframe: str = "snapshot",
+) -> Optional[MarketQuote]:
+    """该 (symbol_type, symbol, data_kind, timeframe) 的最新一条行情（idx_quote_symbol_time）。"""
+    row = (
+        session.execute(
+            select(MarketQuote)
+            .where(
+                MarketQuote.symbol_type == symbol_type,
+                MarketQuote.symbol == symbol,
+                MarketQuote.data_kind == data_kind,
+                MarketQuote.timeframe == timeframe,
+            )
+            .order_by(MarketQuote.timestamp.desc())
+            .limit(1)
+        ).first()
+    )
+    return row[0] if row else None
+
+
+def get_bar_history(
+    session: Session,
+    symbol_type: str,
+    symbol: str,
+    start_date: date,
+    end_date: date,
+    timeframe: str = "1d",
+    data_kind: str = "BAR",
+) -> List[MarketQuote]:
+    """[start_date, end_date] 区间内的 BAR（升序，idx_quote_symbol_time + trading_date）。"""
+    rows = session.execute(
+        select(MarketQuote)
+        .where(
+            MarketQuote.symbol_type == symbol_type,
+            MarketQuote.symbol == symbol,
+            MarketQuote.data_kind == data_kind,
+            MarketQuote.timeframe == timeframe,
+            MarketQuote.trading_date >= start_date,
+            MarketQuote.trading_date <= end_date,
+        )
+        .order_by(MarketQuote.timestamp.asc())
+    ).scalars().all()
+    return list(rows)
+
+
+def get_max_bar_timestamp(
+    session: Session,
+    symbol_type: str,
+    symbol: str,
+    timeframe: str = "1d",
+    data_kind: str = "BAR",
+) -> Optional[datetime]:
+    """该 (symbol_type, symbol) 的 BAR 最大时间戳（增量回填起点判断）。"""
+    row = (
+        session.execute(
+            select(func.max(MarketQuote.timestamp)).where(
+                MarketQuote.symbol_type == symbol_type,
+                MarketQuote.symbol == symbol,
+                MarketQuote.data_kind == data_kind,
+                MarketQuote.timeframe == timeframe,
+            )
+        ).first()
+    )
+    return row[0] if row else None
+
+
+def get_breadth_on_date(session: Session, trading_date: date) -> Optional[MarketBreadth]:
+    """指定交易日的市场宽度（idx_breadth_date）。"""
+    row = (
+        session.execute(
+            select(MarketBreadth).where(MarketBreadth.trading_date == trading_date)
+        ).first()
+    )
+    return row[0] if row else None
+
+
+def get_sector_quotes(
+    session: Session,
+    sector_type: str,
+    codes: List[str],
+    trading_date: Optional[date] = None,
+) -> List[MarketQuote]:
+    """指定板块类型的快照行情（idx_quote_trade_type）；codes 空返回 []。"""
+    if not codes:
+        return []
+    stmt = select(MarketQuote).where(
+        MarketQuote.symbol_type == sector_type,
+        MarketQuote.symbol.in_(codes),
+    )
+    if trading_date is not None:
+        stmt = stmt.where(MarketQuote.trading_date == trading_date)
+    return list(session.execute(stmt).scalars().all())

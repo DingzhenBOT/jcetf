@@ -6,8 +6,8 @@ Collector 把「provider 取数 -> normalize 映射 -> 质量评估 -> 切源标
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -16,8 +16,8 @@ from app.config import Settings
 from app.data_provider.base import BaseDataProvider
 from app.data_quality.checker import assess
 from app.logging_conf import get_logger
-from app.market_calendar import is_trading_now
-from app.repository import quote_repo
+from app.market_calendar import is_trading_now, trading_date_for
+from app.repository import mapping_repo, quote_repo
 
 
 class Collector:
@@ -186,3 +186,158 @@ class Collector:
         out = self.collect_market(session)
         out["breadth"] = self.collect_breadth(session)
         return out
+
+    # ---- 历史 BAR 采集（ETF / 指数 / 板块趋势 / 板块资金流） ----
+    def _collect_bar(
+        self,
+        session: Session,
+        symbol_type: str,
+        symbol: str,
+        fetch_fn: Callable[[], Any],
+        normalize_fn: Callable[[Any, str, str, datetime], List[Dict[str, Any]]],
+        *,
+        source_hint: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """采集单标的历史 BAR；失败记 FAILED 不抛出（em-only 板块历史在沙箱/用户服务器均会失败，须非致命）。"""
+        now = self._now()
+        source: Optional[str] = source_hint
+        try:
+            df = fetch_fn()
+            if df is None or (hasattr(df, "empty") and df.empty):
+                raise ValueError("data source returned empty")
+            source = df.attrs.get("__source") or source_hint or "unknown"
+            rows = normalize_fn(df, source, symbol, now)
+            if not rows:
+                raise ValueError("no parseable rows after normalize")
+        except Exception as e:  # noqa: BLE001 - 历史采集失败：记状态，不抛出，继续回填其他标的
+            self.log.error("collect bar failed", extra={"symbol_type": symbol_type, "symbol": symbol, "err": str(e)})
+            self._record_failure(session, source=source, symbol_type=symbol_type, now=now, err=str(e))
+            session.commit()
+            return {"symbol_type": symbol_type, "symbol": symbol, "status": "FAILED", "error": str(e)}
+
+        n = quote_repo.upsert_market_quotes(session, rows)
+        self._record_success(
+            session, source=source, symbol_type=symbol_type, now=now, note=f"rows={n}"
+        )
+        session.commit()
+        return {
+            "symbol_type": symbol_type,
+            "symbol": symbol,
+            "status": "OK",
+            "source": source,
+            "count": n,
+        }
+
+    def collect_etf_history(self, session: Session, symbol: str, start: str, end: str) -> Dict[str, Any]:
+        return self._collect_bar(
+            session, "ETF", symbol,
+            lambda: self.provider.get_etf_history(symbol, start, end),
+            normalize.normalize_etf_bar,
+            source_hint=self.settings.data_source.preferred,
+        )
+
+    def collect_index_history(self, session: Session, symbol: str, start: str, end: str) -> Dict[str, Any]:
+        return self._collect_bar(
+            session, "INDEX", symbol,
+            lambda: self.provider.get_index_history(symbol, start, end),
+            normalize.normalize_index_bar,
+            source_hint=self.settings.data_source.preferred,
+        )
+
+    def collect_sector_history(self, session: Session, symbol: str, start: str, end: str) -> Dict[str, Any]:
+        return self._collect_bar(
+            session, "SECTOR", symbol,
+            lambda: self.provider.get_sector_history(symbol, start, end),
+            normalize.normalize_sector_bar,
+            source_hint=self.settings.data_source.preferred,
+        )
+
+    def collect_sector_fund_flow_history(self, session: Session, symbol: str, start: str, end: str) -> Dict[str, Any]:
+        return self._collect_bar(
+            session, "SECTOR", symbol,
+            lambda: self.provider.get_sector_fund_flow_history(symbol, start, end),
+            normalize.normalize_sector_fund_flow_bar,
+            source_hint=self.settings.data_source.preferred,
+        )
+
+    # ---- 增量回填编排（bounded：符号列表 + lookback_days；增量按 max(timestamp)+1） ----
+    def _backfill_start(self, session: Session, symbol_type: str, symbol: str, as_of: date, lookback_days: int) -> Optional[str]:
+        """返回该标的本次应拉取的 start（YYYYMMDD）；已齐或无需拉取返回 None。"""
+        max_ts = quote_repo.get_max_bar_timestamp(session, symbol_type, symbol)
+        if max_ts is not None:
+            start = max_ts.date() + timedelta(days=1)
+        else:
+            start = as_of - timedelta(days=lookback_days)
+        if start > as_of:
+            return None
+        return start.strftime("%Y%m%d")
+
+    @staticmethod
+    def _tally(bucket: Dict[str, int], res: Dict[str, Any]) -> None:
+        if res.get("status") == "OK":
+            bucket["ok"] += 1
+        else:
+            bucket["failed"] += 1
+
+    def backfill_history(
+        self,
+        session: Session,
+        *,
+        as_of: Optional[date] = None,
+        lookback_days: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """回填所有相关标的的历史 BAR（指数/ETF/板块趋势/板块资金流）。
+
+        - as_of 默认北京时间今日；end = as_of。
+        - ETF 列表来自生效映射；宽基指数来自 settings.strategy.broad_index_codes；
+          板块来自映射 related_sector_codes 并集 + settings.backfill.major_sector_codes。
+        - 每个标的按 max(timestamp) 增量；em-only 板块历史失败被记为 FAILED 并继续（D4 优雅降级）。
+        """
+        if as_of is None:
+            as_of = trading_date_for()
+        if lookback_days is None:
+            lookback_days = self.settings.backfill.lookback_days
+        end = as_of.strftime("%Y%m%d")
+
+        result: Dict[str, Any] = {
+            "as_of": as_of.isoformat(),
+            "etf": {"ok": 0, "failed": 0},
+            "index": {"ok": 0, "failed": 0},
+            "sector": {"ok": 0, "failed": 0},
+            "sector_flow": {"ok": 0, "failed": 0},
+        }
+
+        # ETF（来自生效映射）
+        mappings = mapping_repo.get_active_mappings(session, as_of)
+        for m in mappings:
+            start = self._backfill_start(session, "ETF", m.etf_code, as_of, lookback_days)
+            if start is None:
+                continue
+            r = self.collect_etf_history(session, m.etf_code, start, end)
+            self._tally(result["etf"], r)
+
+        # 宽基指数（market_regime 基准）
+        for code in self.settings.strategy.broad_index_codes:
+            start = self._backfill_start(session, "INDEX", code, as_of, lookback_days)
+            if start is None:
+                continue
+            r = self.collect_index_history(session, code, start, end)
+            self._tally(result["index"], r)
+
+        # 板块（行业/概念 BK 代码并集 + 额外 major）
+        sector_codes: set = set()
+        for m in mappings:
+            if m.related_sector_codes:
+                sector_codes.update(m.related_sector_codes)
+        sector_codes.update(self.settings.backfill.major_sector_codes)
+        for code in sorted(sector_codes):
+            start = self._backfill_start(session, "SECTOR", code, as_of, lookback_days)
+            if start is None:
+                continue
+            r = self.collect_sector_history(session, code, start, end)
+            self._tally(result["sector"], r)
+            r2 = self.collect_sector_fund_flow_history(session, code, start, end)
+            self._tally(result["sector_flow"], r2)
+
+        self.log.info("backfill done", extra=result)
+        return result

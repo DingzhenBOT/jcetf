@@ -22,6 +22,7 @@ from app.logging_conf import get_logger, setup_logging
 def main() -> int:
     ap = argparse.ArgumentParser(description="一次性采集（P2 自测）")
     ap.add_argument("--market", action="store_true", help="仅盘中四类快照，不含 breadth")
+    ap.add_argument("--backfill", action="store_true", help="仅回填历史 BAR（P3，需联网）")
     args = ap.parse_args()
 
     settings = get_settings()
@@ -32,6 +33,13 @@ def main() -> int:
     eng = make_engine(settings)
     init_db(eng, settings)
     collector = Collector(build_provider(settings), settings)
+
+    if args.backfill:
+        with session_scope(eng) as session:
+            res = collector.backfill_history(session)
+        print("backfill:", res)
+        print("done. 数据已写入", settings.paths.sqlite_path_abs)
+        return 0
 
     with session_scope(eng) as session:
         if args.market:

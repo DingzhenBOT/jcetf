@@ -11,7 +11,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -241,3 +241,157 @@ def normalize_breadth(df: pd.DataFrame, source: str, collected_at: datetime) -> 
         "collected_at": collected_at,
         "data_quality_status": "OK",
     }
+
+
+# --------------------------------------------------------------------------- #
+# 历史 BAR（ETF / 指数 / 板块趋势 / 板块资金流，data_kind="BAR", timeframe="1d"）
+# --------------------------------------------------------------------------- #
+def _parse_date(v: Any) -> Optional[date]:
+    """解析日期列（akshare 多为 'YYYY-MM-DD' 或 Timestamp）为 date；失败返回 None。"""
+    if v is None or (isinstance(v, float) and v != v):
+        return None
+    try:
+        ts = pd.to_datetime(v, errors="coerce")
+    except Exception:  # noqa: BLE001
+        return None
+    if ts is None or ts != ts:  # NaT
+        return None
+    return ts.date()
+
+
+def _bar_row(
+    source: str, symbol_type: str, symbol: str, bar_date: date, collected_at: datetime
+) -> Dict[str, Any]:
+    """BAR 基础形态。timestamp = 该交易日的 UTC naive 午夜（确定性；trading_date = 该日）。
+
+    历史数据不校验时间新鲜度 -> data_quality_status 固定 "OK"。
+    metric_source = source：资金持续性必须「同数据源同口径」（见 sector_engine）。
+    """
+    return {
+        "data_source": source,
+        "symbol_type": symbol_type,
+        "symbol": symbol,
+        "data_kind": "BAR",
+        "timeframe": "1d",
+        "trading_date": bar_date,
+        "timestamp": datetime(bar_date.year, bar_date.month, bar_date.day),
+        "open": None,
+        "high": None,
+        "low": None,
+        "close": None,
+        "previous_close": None,
+        "volume": None,
+        "amount": None,
+        "change_percent": None,
+        "turnover_rate": None,
+        "main_net_inflow": None,
+        "large_order_inflow": None,
+        "rise_count": None,
+        "fall_count": None,
+        "limit_up_count": None,
+        "limit_down_count": None,
+        "collected_at": collected_at,
+        "source_timestamp": None,
+        "metric_source": source,
+        "metric_definition_version": METRIC_DEF_VERSION,
+        "source_switched": 0,
+        "data_quality_status": "OK",
+    }
+
+
+def normalize_etf_bar(
+    df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
+) -> List[Dict[str, Any]]:
+    """ETF 日线 BAR（fund_etf_hist_em 等）：日期,开盘,收盘,最高,最低,成交量,成交额,振幅,涨跌幅,涨跌额,换手率。"""
+    rows: List[Dict[str, Any]] = []
+    for _, r in df.iterrows():
+        d = _parse_date(r.get("日期"))
+        if d is None:
+            continue
+        row = _bar_row(source, "ETF", symbol, d, collected_at)
+        row.update(
+            open=_f(r.get("开盘")),
+            high=_f(r.get("最高")),
+            low=_f(r.get("最低")),
+            close=_f(r.get("收盘")),
+            volume=_f(r.get("成交量")),
+            amount=_f(r.get("成交额")),
+            change_percent=_f(r.get("涨跌幅")),
+            turnover_rate=_f(r.get("换手率")),
+        )
+        rows.append(row)
+    return rows
+
+
+def normalize_index_bar(
+    df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
+) -> List[Dict[str, Any]]:
+    """指数日线 BAR（stock_zh_index_daily_em / _tx）：date,open,high,low,close,volume（无 amount/change）。"""
+    rows: List[Dict[str, Any]] = []
+    for _, r in df.iterrows():
+        d = _parse_date(r.get("date")) or _parse_date(r.get("日期"))
+        if d is None:
+            continue
+        row = _bar_row(source, "INDEX", symbol, d, collected_at)
+        row.update(
+            open=_f(r.get("open")),
+            high=_f(r.get("high")),
+            low=_f(r.get("low")),
+            close=_f(r.get("close")),
+            volume=_f(r.get("volume")),
+            amount=_f(r.get("amount")),
+            change_percent=_f(r.get("change")),
+        )
+        rows.append(row)
+    return rows
+
+
+def normalize_sector_bar(
+    df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
+) -> List[Dict[str, Any]]:
+    """板块趋势日线 BAR（stock_board_industry_hist_em）：日期,开盘,收盘,最高,最低,成交量,成交额,振幅,涨跌幅,涨跌额,换手率。
+
+    symbol_type 统一存 "SECTOR"（行业/概念历史 BAR 共用，按代码查询；与快照 INDUSTRY/CONCEPT 区分于 data_kind）。
+    """
+    rows: List[Dict[str, Any]] = []
+    for _, r in df.iterrows():
+        d = _parse_date(r.get("日期")) or _parse_date(r.get("date"))
+        if d is None:
+            continue
+        row = _bar_row(source, "SECTOR", symbol, d, collected_at)
+        row.update(
+            open=_f(r.get("开盘")),
+            high=_f(r.get("最高")),
+            low=_f(r.get("最低")),
+            close=_f(r.get("收盘")),
+            volume=_f(r.get("成交量")),
+            amount=_f(r.get("成交额")),
+            change_percent=_f(r.get("涨跌幅")),
+            turnover_rate=_f(r.get("换手率")),
+        )
+        rows.append(row)
+    return rows
+
+
+def normalize_sector_fund_flow_bar(
+    df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
+) -> List[Dict[str, Any]]:
+    """板块历史资金流（stock_sector_fund_flow_hist）：日期,主力净流入-净额,主力净流入-净占比,超大单净流入-净额,…。
+
+    仅取主力净额/超大单净额（用于资金持续性）；symbol_type 同存 "SECTOR"。
+    """
+    rows: List[Dict[str, Any]] = []
+    for _, r in df.iterrows():
+        d = _parse_date(r.get("日期")) or _parse_date(r.get("date"))
+        if d is None:
+            continue
+        row = _bar_row(source, "SECTOR", symbol, d, collected_at)
+        row.update(
+            main_net_inflow=_f(r.get("主力净流入-净额")),
+            large_order_inflow=_f(r.get("超大单净流入-净额")),
+            amount=_f(r.get("成交额")),
+            close=_f(r.get("收盘")),
+            change_percent=_f(r.get("涨跌幅")),
+        )
+        rows.append(row)
+    return rows

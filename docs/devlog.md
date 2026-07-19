@@ -206,3 +206,72 @@ python3.11 -c "..."             # collect_market: index 562(sina) / etf 1602(sin
 ### 下一步
 - **P1**：8 张核心表 ORM + 索引 + `init_db.py`，并落实 `timestamp` naive UTC 约束；`/ready` 接 DB ping；把 opinion/signal 清理接入 `run_retention`。
 - GitHub：等你给仓库信息后 push 基线。
+
+---
+
+## P3 — 指标与策略引擎（已交付，待真机自测）
+
+> 状态：代码已写完、单测全绿（94 passed）、离线端到端冒烟通过（seed 16 映射 → 16 信号/16 意见，幂等重跑稳定，strategy_version 不可覆盖两行）。
+> 计划文件：`/root/.codebuddy/plans/stellar-beacon-newton.md`
+
+### 交付文件（相对 `/workspace/backend`）
+| 文件 | 变更 |
+|---|---|
+| `app/config.py` | 新增 `BackfillConfig`（lookback_days/broad_index_codes/major_sector_codes）；`StrategyConfig.broad_index_codes`（D5，加法不改既有 YAML） |
+| `app/strategy_versioning.py` | 新增 `mint_strategy_version(session, settings, rules)`：hash 不同→插入新不可覆盖行；已存在则复用，绝不 UPDATE |
+| `app/repository/quote_repo.py` | 新增读函数：`get_latest_quote` / `get_bar_history` / `get_max_bar_timestamp` / `get_breadth_on_date` / `get_sector_quotes`（复用既有索引） |
+| `app/repository/mapping_repo.py` | 新增：`get_active_mappings`（按 as_of 生效窗）/ `upsert_mapping`（etf_code+mapping_version 幂等）/ `get_mappings_for_backfill` |
+| `app/repository/__init__.py` | 导出上述函数 |
+| `app/collector/normalize.py` | 新增 `normalize_etf_bar` / `normalize_index_bar` / `normalize_sector_bar` / `normalize_sector_fund_flow_bar`（data_kind=BAR, timeframe=1d，timestamp=交易日 UTC 午夜，metric_source=source） |
+| `app/collector/collector.py` | 新增 `_collect_bar` + 四类 `collect_*_history` + `backfill_history`（增量按 max(timestamp)+1；em-only 板块历史失败非致命，D4） |
+| `app/indicator_engine/{__init__,indicators,engine}.py` | 纯 pandas 指标（SMA/斜率/RSI(Wilder)/MACD/动量/动量分位/量比/ATR/ATR%/滚动RS）+ `IndicatorEngine.compute(bar_df, benchmark_close)`；只吃 BAR |
+| `app/sector_engine/{__init__,engine}.py` | 板块趋势评分 + 资金持续性（**仅同 metric_source**） |
+| `app/strategy_engine/{__init__,rules,engine}.py` | `RULES_V1` 冻结规则字典（DESIGN §9 转录）；`StrategyEngine.evaluate_etf`；纯函数 `compute_composite`/`decide_tier`（缺失重归一化+降置信，D4） |
+| `app/risk_engine/{__init__,engine}.py` | veto / downgrade / high_vol / chase_high，受 `settings.strategy.risk_filter` 开关约束 |
+| `app/opinion_engine/{__init__,phrase,templates,engine}.py` | `template-v1` 确定性生成（D1：默认 `TemplatePhraseClient` 无 LLM；`LLMPhraseClient` 桩禁用） |
+| `app/evaluation/{__init__,pipeline}.py` | `post_collection_evaluate(session, settings, *, phase, as_of)`：mint 版本→逐映射评估→**幂等 upsert** Signal/Opinion |
+| `app/worker.py` | 新增 `job_backfill_history`(16:30) / `job_pre_close_evaluate`(14:59) / `job_post_close_evaluate`(15:10)，均交易日历守卫 |
+| `scripts/seed_mapping.py` | 16 支 ETF→`etf_mapping`（valid_from=2000-01-01 对任何 as_of 生效；幂等） |
+| `scripts/run_evaluate.py` | 一次性 `post_collection_evaluate`（--phase / --backfill） |
+| `scripts/collect_once.py` | 增加 `--backfill`（仅回填历史 BAR） |
+| `tests/test_*.py`（7 个） | indicator/strategy/risk/opinion/pipeline_idempotency/repository_read/collector_history，共 50 例 |
+
+**架构约束已遵守**：引擎层不开 HTTP、不碰 `fastapi`/Request；所有 Session 写操作集中在 `evaluation/pipeline.py` 与 `worker.py`；引擎为纯函数返回 dict。
+
+### 默认决策（计划 D1-D5，已落地）
+- **D1**：意见仅模板生成，`LLMPhraseClient` 为禁用桩（DESIGN §0：LLM 只润色不判断）。
+- **D2**：`Signal.signal_type` 存英文档位码（`NO_PARTICIPATE`/`OBSERVE`/`SMALL_POSITION`/`OPPORTUNITY_ENHANCE`/`NO_CHASE_HIGH`/`MARKET_RISK_HIGH`），中文在 `suggested_action` + opinion。
+- **D3**：`post_collection_evaluate` 每 (trading_date,target_etf,version) 写一条 Signal（原地更新幂等）；每 (trading_date,signal_id,phase) 写一条 Opinion。`pre_close`+`post_close` 两档评估。
+- **D4**：缺失 sector/fund_flow/etf_rs 数据→**不自动否决**，综合分对可用项重归一化、降置信（每缺一项 -15）。唯一硬否决 = 大盘 BEAR **且** 宽基/宽度数据缺失。
+- **D5**：加法配置 `BackfillConfig` + `strategy.broad_index_codes`，既有 YAML 仍可直接加载。
+
+### 已知限制（P3，重要 → 真机表现）
+1. **板块历史/资金流历史在用户服务器也取不到**（与沙箱一致：P2 实测返回 sina/ths 而非 em）。因此 `stock_board_industry_hist_em` / `stock_sector_fund_flow_hist` 失败 → `sector_trend_score` 与 `fund_flow_score` 在**沙箱与用户服务器均为 None**。`composite` 仅由 `market_score`（宽基指数 BAR + 宽度）+ `etf_rs`（ETF vs 宽基指数）构成；板块评分只在 em 可达时激活。
+2. **板块身份差异**：seed 用 em 板块代码（BKxxxx），而沙箱 ths 回落返回板块名称；即使板块历史可达，`related_sector_codes` 也可能 join 不到任何 BAR → 引擎降级（D4），不崩溃。
+3. **首跑回填联网重**：~16 ETF + 3 宽基 + ~10 板块 ×250d；按 max(timestamp) 增量续拉。
+4. **`market_regime` 依赖 breadth**：breadth 仅交易时段累计（P2）。盘前评估可能缺同日 breadth→`advance_ratio` 缺失→`market_score` 部分降级（非否决，除非 BEAR+缺失）。
+5. **RS 同业排名**：缺 peer 集时回退宽基指数作基准（已实现）；纯 ETF 间排名待 P7 回测数据。
+6. **LLM 润色未接**（D1）：`content` 为模板文案，P3 不含自然语言润色。
+7. **无 schema 变更**：P3 复用 P1/P2 全部表，用户既有 P2 库无需迁移即可跑（Opinion 未加 target_etf 列，意见以 `signal_id+phase` 唯一键幂等，避免 ALTER TABLE 破坏既有库）。
+
+### 真机自测步骤（用户服务器）
+```bash
+cd /workspace/backend
+python3.11 -m pip install -r backend/requirements.txt   # 沙箱已满足，服务器按需
+python3.11 -m scripts.init_db                           # 建表 + 注入 baseline strategy_version
+python3.11 -m scripts.seed_mapping                      # 16 ETF 映射（幂等）
+python3.11 -m scripts.run_evaluate --phase post_close   # 离线评估（无 BAR 时全 NO_PARTICIPATE，验证链路）
+python3.11 -m scripts.collect_once --backfill           # 回填历史 BAR（联网；板块历史会 FAILED，属预期）
+python3.11 -m scripts.run_evaluate --phase post_close   # 有 BAR 后重评，信号应开始分化
+# sqlite 校验
+sqlite3 ../data/etf_monitor.db "SELECT target_etf,signal_type,score,confidence,market_regime,strategy_version FROM signal ORDER BY target_etf;"
+sqlite3 ../data/etf_monitor.db "SELECT count(*) FROM opinion; SELECT version,strategy_hash FROM strategy_version;"  # 应为 2 行
+# 幂等：重跑 run_evaluate，signal/opinion 行数不变
+python3.11 -m pytest -q                                  # 94 passed
+```
+> 注：计划 §9 写的 `cd /workspace` 是笔误，脚本实际在 `backend/scripts`，需从 `/workspace/backend` 运行。
+
+### 下一步：P4（FastAPI 查询接口）
+- `GET /api/signals/latest`（前端 30s 轮询）、`GET /api/etfs`、`GET /api/signals/history`、`GET /api/opinions/{etf}`。
+- 无鉴权层（DESIGN §0）；只读 SQLite，复用 `repository` 读函数。
+- 前端轮询见于 P5。
