@@ -321,3 +321,89 @@ python3.11 -m pytest -q                                  # 94 passed
 ### 下一步：P5（Vue 核心页面）
 基于 P4 已就绪的 `signals/latest` + `market/overview` + `market/breadth/latest`（30s 轮询双端齐备）+ `etfs` + `opinions/{etf}` 构建 5 页 + ECharts；可顺带补 `/api/opinions/current|history`。P6 持仓分析、P7 回测、P8 nginx 部署（Basic Auth + HTTPS + 反代 `/api/*`）。
 
+---
+
+## P5 — Vue 核心前端页面（已完成，2026-07-19）
+
+> 状态：脚手架 + 6 端点类型化 API 层 + 30s 轮询 store + UI/图表组件 + 5 页面全部落地；`npm run build`（vue-tsc 类型检查 + vite 打包）通过（620 模块）；运行冒烟 5 路由 Playwright 截图 `PAGE_ERRORS: none`，无运行时 JS 错误。
+> 铁律保持：前端只展示不判断（LLM 只润色不判断 / DESIGN §9 冻结 / strategy_hash 不可覆盖 全部在后端）；API 无鉴权层（DESIGN §0）。
+
+### 技术栈
+- Vue 3.4 + Vite 5.4 + TypeScript 5.5（strict）+ Tailwind 3.4 + ECharts 5.5 + vue-router 4（**hash 模式**，免 Nginx 额外 rewrite）。
+- Node v22.13.1 / npm 11.9.0。
+- A股惯例 **红涨绿跌**：Tailwind 语义色 `up=#dc2626` / `down=#16a34a` / `flat=#64748b`（禁纯黑、禁 Inter、禁 emoji，遵循 frontend-dev 硬规则；与 DESIGN 冲突以 DESIGN 为准）。
+- 时间：后端 naive UTC ISO → 前端统一按北京时间（UTC+8）展示。
+- 档位：严格复用后端 `TIER_TEXT` 中文映射（前后端同一份语义，不另造）。
+
+### 交付文件（相对 `/workspace/frontend`）
+| 文件 | 职责 |
+|---|---|
+| `package.json` / `vite.config.ts` / `tsconfig*.json` / `tailwind.config.js` / `postcss.config.js` / `index.html` | 脚手架：scripts（dev/build/type-check/preview）、`@`→`src`、`server.proxy['/api']→:8000`、`manualChunks` 拆 echarts/vue、`strict` + `@/*` 路径、system-ui 字体、up/down/flat 语义色、zh-CN |
+| `src/vite-env.d.ts` | vite client + `*.vue` 模块声明（冗余根 `env.d.ts` 已删除，避免不被 tsconfig include 的游离文件） |
+| `src/main.ts` / `src/App.vue` | 入口 + 根布局（`min-h-[100dvh]` flex 列；`onMounted` 启动 30s 轮询、`onUnmounted` 停止；footer 免责声明） |
+| `src/styles/main.css` | tailwind 指令 + `tnum` 等宽数字 + 滚动条 + `prefers-reduced-motion` |
+| `src/api/types.ts` | 接口严格镜像 P4 Pydantic schema（IndexSnapshot/Breadth/SignalRisk/MarketOverview/Signal/EtfListItem/SignalHistoryPage/Opinion/OpinionsForEtf） |
+| `src/api/client.ts` | `ApiError` + `apiGet<T>`（fetch 封装、统一错误）；`API_BASE = import.meta.env.VITE_API_BASE ?? '/api'` |
+| `src/api/endpoints.ts` | `getOverview/getBreadthLatest/getSignalsLatest/getSignalsHistory/getEtfs/getOpinions` |
+| `src/lib/tier.ts` | `TIER_TEXT`/`TIER_ORDER`/`TIER_BADGE`/`TIER_COLOR`/`REGIME_TEXT`/`PHASE_TEXT` + 徽标完整类名（避免 Tailwind 动态拼接 JIT 失效） |
+| `src/lib/format.ts` | `fmtPct/fmtNum/fmtInt/fmtAmountYi/fmtScore/fmtConfidence`（**confidence 后端为 0–100 整数百分比，直接 `Math.round(v)%` 展示**，修复了 ×100 导致 5500% 的 bug）/ `changeColor`（红涨绿跌） |
+| `src/lib/time.ts` | `asUtc`（naive UTC 补 Z）/`toBeijing`/`toBeijingDate`/`toRelative`/`daysSinceBeijingDate` |
+| `src/stores/market.ts` | 全局 30s 轮询 store：`tick()` 并行 `getOverview`+`getSignalsLatest`；`startPolling(30000)`/`stopPolling`/`refreshNow`；只轮询 DESIGN 指定的 overview+signals/latest |
+| `src/components/ui/{Card,Badge,StatePanel,AppNav}.vue` | Card（title/subtitle+actions slot）、Badge（仅形状，text+class 由父传）、StatePanel（Loading 骨架/Error+重试/Empty/正常 四态，`role=alert`/`aria-live`）、AppNav（sticky 导航 + 风险徽标 + 连接状态点 + 相对更新时间，移动端响应式） |
+| `src/components/charts/{BaseChart,BreadthChart,IndexBars,SignalRiskChart}.vue` | BaseChart（`echarts.init`+`setOption(opt,true)`+resize+dispose）；BreadthChart（pie 红涨绿跌）；IndexBars（横向 bar 涨红跌绿）；SignalRiskChart（pie TIER_COLOR） |
+| `src/components/sections/{SignalTable,EtfTable,OpinionList}.vue` | SignalTable（`showEtf` 列）、EtfTable（行点击→详情）、OpinionList |
+| `src/views/{MarketOverview,SectorView,EtfList,EtfDetail,SystemStatus}.vue` | 5 个页面（详见下） |
+| `src/router/index.ts` | `createWebHashHistory()`；`/` `/sectors` `/etfs` `/etfs/:code` `/system` + 兜底 redirect |
+
+### 页面与端点对接
+- **市场总览 `/`**：标题 + 手动刷新；三栏（IndexBars/BreadthChart/SignalRiskChart）+ 最新信号表；由 30s 轮询 store 驱动（`overview` + `signals/latest`）。风险徽标 `风险 ${market_risk_level}`。
+- **板块 SectorView `/sectors`**：按 `etf.category` 分组 + `related_sector_codes` 聚合展示；**诚实标注**「实时板块排行接口后续接入」（P4 未实现 `/api/sectors/*`，当前为派生视图）。
+- **ETF 列表 `/etfs`**：搜索 + 分类筛选，按 `latest_signal.score` 排序。
+- **ETF 详情 `/etfs/:code`**：`getEtfs`+`getOpinions`+`getSignalsHistory` 并行；最新信号卡片、数据缺失琥珀横幅、`failed_rules` 含 missing 提示、意见列表、历史信号表。
+- **系统 SystemStatus `/system`**：由 overview+etfs 派生（API 连接 / 数据新鲜度 / 市场风险 / 宽度数据源 / 策略版本 / ETF 覆盖）；注明完整系统端点待 P8。
+
+### 关键约定
+- **30s 轮询范围**：仅 `overview` + `signals/latest`（DESIGN §7 指定）；`etfs`/`opinions` 由页面按需自拉并监听 `lastUpdated` 刷新。
+- **Sector / System 为派生视图**：P4 实际只落地 6 个只读端点（无 `/api/sectors/*`、`/api/system/*`），前端据 `etfs` 的 `category`+`related_sector_codes` / overview 派生，UI 已明确标注，非实时排行。
+- **观察期空数据兜底**：初始库 mapping/signal 为空时各端点返回 `[]`/`null`，前端 Empty/Error 三态正确渲染（已用空库验证）。
+- **置信度单位**：后端 `confidence` 是 0–100 整数（curl 实测 `55.0`），前端直接展示百分比，不乘 100。
+- **红涨绿跌**：所有涨跌幅、指数涨跌、宽度、信号风险图配色遵循 A股惯例，不随系统主题反转。
+
+### 验证（本轮已跑通）
+```bash
+cd /workspace/frontend
+npm install                       # 装 vue/echarts/vue-router + dev 工具链
+npm run build                     # vue-tsc -b && vite build → 620 模块，类型检查通过
+# 运行冒烟：后端 API(:8000) + vite dev(:5173, /api 代理) 起好后，用 Playwright 截 5 路由
+node shot.mjs                     # 收集 window 错误 → PAGE_ERRORS: none（无运行时 JS 报错）
+```
+- **数据契约 1:1**：curl 6 端点（空库→Empty 兜底；seed 16 映射 + run_evaluate 后）JSON 字段与 `src/api/types.ts` 逐字段吻合。
+- **构建产物**：`index 32.83KB / vue 92.09KB / echarts 1.03MB`（gzip 343KB，echarts 已单独拆 chunk，首屏不阻塞）。
+- **类型检查**：`vue-tsc -b` 通过（修复了 `import.meta.env`、`node:url` 两处类型错误）。
+
+> 说明：沙箱当前无法以图像方式肉眼校验渲染（Read 工具对 PNG 返回过滤），故以「Playwright 无 JS 错误 + curl 数据契约 + TS 类型检查」三重替代视觉验证；请你在服务器 `npm run dev` 自测视觉效果。
+
+### 已知限制（P5）
+1. **Sector / System 为派生视图**：非 P4 实时板块排行/系统端点，待 P8 补齐对应只读接口后前端直连。
+2. **echarts 体积**：单 chunk ~1MB（gzip 343KB），已拆独立 chunk 并行加载；若需更低首屏可后续按需引入 echarts 子模块（P8 优化项）。
+3. **观察期空数据**：mapping/信号为空时页面大量 Empty，属预期（种子数据后正常）。
+4. **无单测**：前端未引入 Vitest（P5 以类型检查 + 构建 + 运行冒烟替代）；如需可 P6 补组件测试。
+5. **视觉校验受限**：沙箱无法读图，渲染正确性以你服务器自测为准。
+
+### 真机自测步骤（用户服务器）
+```bash
+cd /workspace && git pull                       # 拉取 P5 前端
+cd /workspace/frontend
+npm install                                    # 安装依赖（含 package-lock.json 锁定）
+npm run build                                   # 类型检查 + 打包到 dist/（P8 由 Nginx 静态托管）
+# 或本地开发预览：
+npm run dev                                     # vite :5173，/api 代理到 :8000（需后端 API 已起）
+# 生产：P8 用 Nginx 反代 /api/* 到 :8000 + Basic Auth + HTTPS，前端 dist/ 同源静态托管
+```
+> 依赖：`frontend` 与 `backend` 相互独立；前端不依赖 pandas/akshare，仅 Node 工具链。后端 API 需先按 P4 起在 :8000（P8 前可用 `python3.11 -m uvicorn app.main:app --host 127.0.0.1 --port 8000`）。
+> 注意：P5 运行冒烟时沙箱对 `data/etf_monitor.db` 执行过 `seed_mapping`（16 映射）+ `run_evaluate --phase post_close`（16 信号/16 意见，幂等），属项目自带脚本，属副作用已如实记录。
+
+### 下一步：P6（持仓分析）
+- 基于 P5 详情页 + P4 信号数据，叠加持仓成本/盈亏/信号匹配（需 `positions` 数据源，待定）。
+- P7 回测、P8 nginx 部署（Basic Auth + HTTPS + 反代 `/api/*` + 前端静态托管）。
+

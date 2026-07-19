@@ -1,0 +1,7 @@
+node_modules
+dist
+dist-ssr
+*.local
+.vite
+# 临时验证脚本（Playwright 截图），不入库
+shot.mjs
