@@ -223,9 +223,15 @@ def main() -> int:
         market_calendar.init_calendar(_collector().provider)
     except Exception as e:  # noqa: BLE001
         log.warning("calendar init failed; heuristic fallback", extra={"err": str(e)})
+    jobs = [j.id for j in scheduler.get_jobs()]
     log.info(
-        "etf-worker started",
-        extra={"timezone": settings.scheduler.timezone, "enabled": settings.scheduler.enabled},
+        "etf-worker started; jobs registered (%d): %s",
+        len(jobs), jobs,
+        extra={
+            "timezone": settings.scheduler.timezone,
+            "enabled": settings.scheduler.enabled,
+            "jobs_registered": jobs,
+        },
     )
 
     def _handle_signal(signum, _frame):
