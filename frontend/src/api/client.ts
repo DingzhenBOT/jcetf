@@ -52,4 +52,33 @@ export async function apiGet<T>(path: string): Promise<T> {
   return (await res.json()) as T
 }
 
+export async function apiPost<T>(path: string, payload: unknown): Promise<T> {
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'unknown network error'
+    throw new ApiError(0, `网络请求失败：${msg}`, null)
+  }
+
+  if (!res.ok) {
+    let msg = `请求失败（HTTP ${res.status}）`
+    let body: unknown = null
+    try {
+      body = await res.json()
+      const em = (body as { error?: { message?: string } })?.error?.message
+      if (em) msg = em
+    } catch {
+      // 响应体非 JSON，保留默认文案
+    }
+    throw new ApiError(res.status, msg, body)
+  }
+
+  return (await res.json()) as T
+}
+
 export { API_BASE }

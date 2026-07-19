@@ -1,11 +1,13 @@
-// 6 个已落地端点的类型化封装（P4）。对应 backend/app/api/routers/*.py。
-import { apiGet, buildQuery } from './client'
+// 6 个已落地端点的类型化封装（P4）+ P6 持仓分析。对应 backend/app/api/routers/*.py。
+import { apiGet, apiPost, buildQuery } from './client'
 import type {
   Breadth,
   EtfListItem,
   MarketOverview,
   Opinion,
   OpinionsForEtf,
+  PortfolioAnalyzeResponse,
+  PortfolioPosition,
   Signal,
   SignalHistoryPage,
 } from './types'
@@ -43,4 +45,9 @@ export function getEtfs(): Promise<EtfListItem[]> {
 // GET /api/opinions/{etf} —— 某 ETF 全部意见（可选 phase 过滤）
 export function getOpinions(etf: string, phase?: string): Promise<OpinionsForEtf> {
   return apiGet<OpinionsForEtf>(`/opinions/${encodeURIComponent(etf)}${buildQuery({ phase })}`)
+}
+
+// POST /api/portfolio/analyze —— 提交持仓即时计算（无状态，不落库）
+export function analyzePortfolio(positions: PortfolioPosition[]): Promise<PortfolioAnalyzeResponse> {
+  return apiPost<PortfolioAnalyzeResponse>('/portfolio/analyze', { positions })
 }

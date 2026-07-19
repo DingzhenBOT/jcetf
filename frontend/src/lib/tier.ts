@@ -1,7 +1,23 @@
 // 档位 / 状态 中文映射与配色 —— 与后端 opinion_engine.templates.TIER_TEXT 严格一致。
 // 注意：A股惯例「红涨绿跌」，故 SMALL_POSITION/OPPORTUNITY_ENHANCE 用绿系，
 //      NO_CHASE_HIGH/MARKET_RISK_HIGH 用橙/玫红警示。配色为 Tailwind 静态类名，勿动态拼接。
-import type { SignalType } from '@/api/types'
+import type { PortfolioAction, SignalType } from '@/api/types'
+
+// 持仓分析动作（DESIGN §9.5）：继续持有 / 降低仓位 / 触发退出条件 / 等待重新确认
+export const ACTION_TEXT: Record<PortfolioAction, string> = {
+  HOLD: '继续持有',
+  REDUCE: '降低仓位',
+  EXIT: '触发退出',
+  RECONFIRM: '等待确认',
+}
+
+// 动作徽标配色（完整类，勿动态拼接）
+export const ACTION_BADGE: Record<PortfolioAction, string> = {
+  HOLD: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  REDUCE: 'bg-amber-100 text-amber-700 border-amber-200',
+  EXIT: 'bg-rose-100 text-rose-700 border-rose-200',
+  RECONFIRM: 'bg-slate-100 text-slate-600 border-slate-200',
+}
 
 export const TIER_TEXT: Record<SignalType, string> = {
   NO_PARTICIPATE: '暂不参与',

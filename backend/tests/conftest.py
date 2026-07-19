@@ -27,7 +27,7 @@ def _reset_config_cache():
     clear_cache()
 
 
-def _seed(tmp_path, with_breadth: bool = True):
+def _seed(tmp_path, with_breadth: bool = True, with_etf_quote: bool = False):
     """建库 + 播种：3 支生效 ETF（其中 510050 无信号）、信号、意见、宽度、指数 BAR。"""
     from app.config import get_settings
 
@@ -117,6 +117,22 @@ def _seed(tmp_path, with_breadth: bool = True):
             "source_switched": 0, "data_quality_status": "OK",
         }])
 
+        # 可选：510300 的 ETF 最新 SNAPSHOT（供 P6 盈亏计算测试）
+        if with_etf_quote:
+            quote_repo.upsert_market_quotes(session, [{
+                "data_source": "sina", "symbol_type": "ETF", "symbol": "510300",
+                "data_kind": "SNAPSHOT", "timeframe": "snapshot", "trading_date": date(2025, 7, 18),
+                "timestamp": datetime(2025, 7, 18, 15, 0),
+                "open": 3.90, "high": 4.05, "low": 3.88, "close": 4.00,
+                "previous_close": 3.90, "volume": 5_000_000, "amount": 2.0e10,
+                "change_percent": 2.56, "turnover_rate": None, "main_net_inflow": None,
+                "large_order_inflow": None, "rise_count": None, "fall_count": None,
+                "limit_up_count": None, "limit_down_count": None,
+                "collected_at": datetime(2025, 7, 18, 15, 5), "source_timestamp": None,
+                "metric_source": "sina", "metric_definition_version": "v1",
+                "source_switched": 0, "data_quality_status": "OK",
+            }])
+
     return s, eng
 
 
@@ -150,6 +166,17 @@ def api_client(tmp_path):
 @pytest.fixture()
 def api_client_no_breadth(tmp_path):
     s, eng = _seed(tmp_path, with_breadth=False)
+    client = _make_client(eng)
+    with client:
+        yield client
+    app.dependency_overrides.clear()
+    eng.dispose()
+
+
+@pytest.fixture()
+def api_client_quote(tmp_path):
+    """带 510300 ETF 最新行情的客户端（供 P6 盈亏计算测试）。"""
+    s, eng = _seed(tmp_path, with_breadth=True, with_etf_quote=True)
     client = _make_client(eng)
     with client:
         yield client

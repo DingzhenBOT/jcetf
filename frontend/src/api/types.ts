@@ -115,6 +115,38 @@ export interface OpinionsForEtf {
   items: Opinion[]
 }
 
+// ---- P6：按需持仓分析（无状态，默认不落库） ----
+// 动作码（DESIGN §9.5）
+export type PortfolioAction = 'HOLD' | 'REDUCE' | 'EXIT' | 'RECONFIRM'
+
+export interface PortfolioPosition {
+  etf_code: string
+  cost_price: number
+  position_percent: number
+  quantity?: number | null
+}
+
+export interface PortfolioAnalyzeRequest {
+  positions: PortfolioPosition[]
+}
+
+export interface PortfolioAnalyzeItem {
+  etf_code: string
+  action: PortfolioAction
+  reason: string
+  risk: string
+  return_percent?: number | null
+  pnl_amount?: number | null
+  suggested_position_text?: string | null
+  suggested_position_range?: number[] | null
+  invalidation_conditions: string[]
+  review_time?: string | null
+}
+
+export interface PortfolioAnalyzeResponse {
+  items: PortfolioAnalyzeItem[]
+}
+
 // 通用列表查询状态（Loading / Empty / Error）
 export interface FetchState<T> {
   data: T

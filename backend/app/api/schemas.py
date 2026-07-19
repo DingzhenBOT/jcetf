@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.portfolio.analyzer import MAX_POSITIONS
 
 
 class SignalOut(BaseModel):
@@ -91,3 +93,34 @@ class MarketOverviewOut(BaseModel):
     indices: List[IndexSnapshotOut]
     breadth: Optional[BreadthOut] = None
     signal_risk: Dict[str, Any]
+
+
+# ---- P6：按需持仓分析（无状态，默认不落库） ----
+class PortfolioPosition(BaseModel):
+    etf_code: str = Field(..., min_length=1, max_length=32)
+    cost_price: float = Field(..., gt=0, description="成本单价 > 0")
+    position_percent: float = Field(..., ge=0, le=100, description="单项仓位百分比 [0,100]")
+    quantity: Optional[float] = Field(None, gt=0, description="持仓数量（可选；有则算盈亏金额）")
+
+
+class PortfolioAnalyzeRequest(BaseModel):
+    positions: List[PortfolioPosition] = Field(
+        ..., min_length=1, max_length=MAX_POSITIONS, description=f"最多 {MAX_POSITIONS} 只 ETF，不允许重复"
+    )
+
+
+class PortfolioAnalyzeItem(BaseModel):
+    etf_code: str
+    action: str
+    reason: str
+    risk: str
+    return_percent: Optional[float] = None
+    pnl_amount: Optional[float] = None
+    suggested_position_text: Optional[str] = None
+    suggested_position_range: Optional[List[float]] = None
+    invalidation_conditions: List[str] = []
+    review_time: Optional[str] = None
+
+
+class PortfolioAnalyzeResponse(BaseModel):
+    items: List[PortfolioAnalyzeItem]

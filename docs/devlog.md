@@ -407,3 +407,83 @@ npm run dev                                     # vite :5173，/api 代理到 :8
 - 基于 P5 详情页 + P4 信号数据，叠加持仓成本/盈亏/信号匹配（需 `positions` 数据源，待定）。
 - P7 回测、P8 nginx 部署（Basic Auth + HTTPS + 反代 `/api/*` + 前端静态托管）。
 
+---
+
+## P6 — 按需持仓分析（已完成，2026-07-20）
+
+> 状态：后端 analyzer + 无状态端点 + 11 项测试全绿（pytest 共 122 passed）；前端 `/portfolio` 页 + 表单/结果组件构建通过（626 模块），Playwright 冒烟 `PAGE_ERRORS: none`。
+> 设计铁律（DESIGN § 按需持仓分析 / §9.5）：**无状态、默认不落库**；不保存持仓、不产生用户状态、仅主动调用时计算。P9 用户系统（保存个人持仓）明确暂缓。
+
+### 端点契约（DESIGN §10 P6）
+- `POST /api/portfolio/analyze`：提交持仓即时计算，默认不落库。
+- 请求：`{ positions: [{ etf_code, cost_price>0, position_percent∈[0,100], quantity? }] }`（最多 20 只、不重复、合计 ≤ 100）。
+- 返回每项：`action`(HOLD/REDUCE/EXIT/RECONFIRM) / `reason` / `risk` / `return_percent` / `pnl_amount` / `suggested_position_text` / `suggested_position_range` / `invalidation_conditions`(中文列表) / `review_time`。
+
+### 交付文件
+| 文件 | 职责 |
+|---|---|
+| `app/portfolio/__init__.py` | 包标识 |
+| `app/portfolio/analyzer.py` | **纯函数** `analyze_portfolio(positions, session)`：复用 `signal_repo`/`quote_repo`（只读）；按 §9.5 推导动作；算 `return_percent`/`pnl_amount`；`invalidation_conditions`(bool 字典)→中文触发项列表。**不写库** |
+| `app/api/schemas.py` | `PortfolioPosition`/`PortfolioAnalyzeRequest`/`PortfolioAnalyzeItem`/`PortfolioAnalyzeResponse`（含 Pydantic 基础校验） |
+| `app/api/routers/portfolio.py` | `POST /api/portfolio/analyze`：**服务端强校验**（≤20 / 不重复 / cost_price>0 / position_percent∈[0,100] / 合计≤100 / 仅 `etf_mapping` 白名单）；调用 analyzer；全只读 |
+| `app/api/routers/__init__.py` | 导出 `portfolio_router` |
+| `app/main.py` | 挂载 `portfolio_router`（沿用只读引擎） |
+| `tests/conftest.py` | 新增 `api_client_quote` fixture（播种 510300 ETF 最新 SNAPSHOT，供盈亏测试；原 fixture 默认不变） |
+| `tests/test_api_portfolio.py` | 11 用例：合法分析（得分下降→REDUCE / NO_PARTICIPATE→RECONFIRM / 无信号→RECONFIRM）、白名单拒绝、重复、合计>100、cost≤0、空、超 20、带行情盈亏、无数量仅收益率 |
+| `frontend/src/api/client.ts` | 新增 `apiPost<T>`（POST 封装，统一错误） |
+| `frontend/src/api/types.ts` | `PortfolioAction` / `PortfolioPosition` / `PortfolioAnalyzeRequest` / `PortfolioAnalyzeItem` / `PortfolioAnalyzeResponse` |
+| `frontend/src/api/endpoints.ts` | `analyzePortfolio(positions)` |
+| `frontend/src/lib/tier.ts` | `ACTION_TEXT` / `ACTION_BADGE`（继续持有/降低仓位/触发退出/等待确认，静态色类防 JIT 失效） |
+| `frontend/src/components/sections/PortfolioForm.vue` | 持仓录入：可增删行、客户端校验（空码/重复/成本>0/仓位 0–100/合计≤100/≤20），提交 emit 合法 positions |
+| `frontend/src/components/sections/PortfolioResults.vue` | 结果卡片：动作徽标 + 收益率/盈亏（红涨绿跌）+ 建议仓位/区间 + 理由/风险 + 失效条件（琥珀横幅） |
+| `frontend/src/views/PortfolioView.vue` | `/portfolio` 页：说明无状态不保存；表单 `:key` 随 `?etf=` 重挂实现预填；StatePanel 四态 |
+| `frontend/src/router/index.ts` | 新增 `/portfolio` 路由（hash 模式） |
+| `frontend/src/components/ui/AppNav.vue` | 导航加「持仓」 |
+| `frontend/src/views/EtfDetail.vue` | 头部加「在持仓分析中查看」→ `/portfolio?etf=<code>`（落实 DESIGN 「EtfDetail 内嵌持仓分析」意图，用跳转预填而非弹窗） |
+
+### 动作决策（§9.5，确定性）
+优先级 **EXIT > REDUCE > RECONFIRM > HOLD**：
+- **EXIT**（触发退出条件）：`risk_flags.veto` 或 `market_regime==BEAR` 或 ETF 相对强弱转负（`etf_rs_20d<1.0`）或 `close_below_ma20`。
+- **REDUCE**（降低仓位）：`risk_flags.downgrade` 或 综合分较前一日下降 ≥5 或 档位 `NO_CHASE_HIGH`。
+- **RECONFIRM**（等待重新确认）：档位 `NO_PARTICIPATE`/`OBSERVE` 或 `failed_rules` 非空（数据不全）或 `market_regime==WEAK` 或 信号超 `STALE_THRESHOLD_DAYS`(=5)。
+- **HOLD**（继续持有）：其余。
+
+### 关键约定
+- **无状态**：analyzer 仅 `SELECT`，绝不写库；每次提交即时重算（DESIGN §：「不保存持仓；不产生用户状态」）。
+- **盈亏来源**：当前价取 `quote_repo.get_latest_quote(session, "ETF", etf_code).close`（注意规范 `symbol_type` 为大写 `"ETF"`）；无 ETF 最新行情则 `return_percent`/`pnl_amount` 降级为 `null`（D4 缺失不崩溃）。
+- **失效条件可读化**：存储为 bool 字典，返回时转中文触发项列表（仅 True 项），前端直接展示。
+- **白名单**：仅 `etf_mapping` 内 ETF 可分析，防止任意代码进入计算。
+
+### 验证（本轮已跑通）
+```bash
+cd /workspace/backend && python3.11 -m pytest -q        # 122 passed（P5 111 + P6 11）
+cd /workspace/frontend && npm run build                  # vue-tsc -b && vite build → 626 模块，类型检查通过
+# 运行冒烟（API:8000 + vite dev:5173，/api 代理）：
+# Playwright 访问 /#/portfolio?etf=510300 → 预填生效、提交后结果渲染、PAGE_ERRORS: none
+curl -X POST :8000/api/portfolio/analyze -d '{"positions":[{"etf_code":"510300","cost_price":3.82,"position_percent":30,"quantity":10000}]}'
+# 真实库返回：action=RECONFIRM（510300 实际信号 NO_PARTICIPATE）、suggested「不新增」、
+# invalidation「数据不完整」、return_percent=null（沙箱无 ETF 实时行情）——符合预期。
+```
+- **踩坑修复**：analyzer 初版用 `get_latest_quote(session,"etf",...)`（小写）查不到行情 → 修正为规范大写 `"ETF"`，盈亏计算恢复。
+- **构建产物**：`index 41.48KB / vue 92.09KB / echarts 1.03MB(gzip 343KB)`。
+
+### 已知限制（P6）
+1. **不持久化（设计如此）**：刷新/重开需重新录入；个人持仓长期保存属 P9（用户系统），明确暂缓。
+2. **盈亏依赖 ETF 实时行情**：采集未跑则 `return_percent`/`pnl_amount` 为 `null`，仅给动作与建议仓位（前端已做「无行情」占位）。
+3. **动作阈值是常量**：`score_drop≥5`、`STALE_THRESHOLD_DAYS=5` 写在 `analyzer.py`，后续如需按环境调，可迁到 `settings.yaml`（未动配置以保持 P6 聚焦）。
+4. **视觉校验受限**：沙箱无法读图，渲染正确性以你服务器 `npm run dev` 自测为准（已用 Playwright 无错 + curl 真实数据双重替代）。
+
+### 真机自测步骤（用户服务器）
+```bash
+cd /workspace && git pull
+cd /workspace/backend && python3.11 -m pytest -q        # 应 122 passed
+cd /workspace/frontend && npm run build                  # 类型检查 + 打包
+# 或本地预览（需后端 API 已起在 :8000）：
+npm run dev                                              # :5173，访问 /#/portfolio
+```
+> 持仓分析需后端有信号（`run_evaluate` 已产出）与 ETF 最新行情（采集运行后）才能算盈亏；否则仅返回动作与建议仓位。
+
+### 下一步：P7（回测）
+- 回测引擎（异步，Worker 执行）：基于历史 BAR 与信号，输出策略表现（样本内/外分离，DESIGN R5）。
+- P8 nginx 部署（Basic Auth + HTTPS + 反代 `/api/*` + 前端静态托管）收尾上线。
+

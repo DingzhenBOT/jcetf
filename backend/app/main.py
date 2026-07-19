@@ -170,6 +170,7 @@ def create_app() -> FastAPI:
         etfs_router,
         market_router,
         opinions_router,
+        portfolio_router,
         signals_router,
     )
 
@@ -177,6 +178,7 @@ def create_app() -> FastAPI:
     app.include_router(etfs_router)
     app.include_router(opinions_router)
     app.include_router(market_router)
+    app.include_router(portfolio_router)
 
     return app
 

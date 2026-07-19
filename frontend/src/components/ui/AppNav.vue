@@ -8,6 +8,7 @@ const links = [
   { to: '/', label: '总览' },
   { to: '/sectors', label: '板块' },
   { to: '/etfs', label: 'ETF 列表' },
+  { to: '/portfolio', label: '持仓' },
   { to: '/system', label: '系统状态' },
 ]
 

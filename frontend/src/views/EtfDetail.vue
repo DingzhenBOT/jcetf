@@ -71,11 +71,17 @@ const missingRules = computed(() =>
               }}
             </p>
           </div>
-          <div v-if="etf.latest_signal">
+          <div v-if="etf.latest_signal" class="flex flex-col items-end gap-2">
             <Badge
               :text="etf.latest_signal.signal_type_text"
               :class="TIER_BADGE[etf.latest_signal.signal_type]"
             />
+            <router-link
+              :to="{ path: '/portfolio', query: { etf: etf.etf_code } }"
+              class="text-xs px-2.5 py-1 rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50 whitespace-nowrap"
+            >
+              在持仓分析中查看
+            </router-link>
           </div>
         </div>
 
