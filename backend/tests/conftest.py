@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -180,5 +180,121 @@ def api_client_quote(tmp_path):
     client = _make_client(eng)
     with client:
         yield client
+    app.dependency_overrides.clear()
+    eng.dispose()
+
+
+# --------------------------------------------------------------------------- #
+# P7 回测测试数据（合成 ETF/指数/宽度 BAR，250+ 交易日；含样本内/外各一段行情）
+# --------------------------------------------------------------------------- #
+def _weekdays(start: date, n: int):
+    out = []
+    d = start
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def _seed_backtest(session, settings, n_days: int = 260):
+    """在已开 session 内播种回测所需数据：映射 + ETF BAR + 指数 BAR + 每日宽度。
+
+    价格形态：上涨 -> 下跌 -> 再上涨，使样本内/外各产生交易（便于验证 R5 分离）。
+    """
+    import math
+
+    mapping_repo.upsert_mapping(
+        session, etf_code="510300", etf_name="沪深300ETF",
+        related_sector_codes=["BK0465"], related_index_code="000300",
+        category="宽基", mapping_version="v1",
+        valid_from=date(2000, 1, 1), valid_to=None, notes="bt",
+    )
+
+    days = _weekdays(date(2024, 1, 1), n_days)
+    base = 3.5
+    prices = []
+    for i in range(n_days):
+        if i < 150:
+            trend = 1 + 0.004 * i
+        elif i < 200:
+            trend = 1 + 0.004 * 150 - 0.004 * (i - 150)
+        else:
+            trend = 1 + 0.004 * 150 - 0.004 * 50 + 0.004 * (i - 200)
+        prices.append(round(max(0.5, base * trend * (1 + 0.01 * math.sin(i / 7.0))), 4))
+
+    etf_rows = []
+    idx_rows = []
+    for i, d in enumerate(days):
+        close = prices[i]
+        prev = prices[i - 1] if i > 0 else close
+        op = round(prev * (1 + 0.002 * math.sin(i)), 4)
+        hi = round(max(op, close) * 1.003, 4)
+        lo = round(min(op, close) * 0.997, 4)
+        etf_rows.append({
+            "data_source": "sina", "symbol_type": "ETF", "symbol": "510300",
+            "data_kind": "BAR", "timeframe": "1d", "trading_date": d,
+            "timestamp": datetime(d.year, d.month, d.day, 15, 0),
+            "open": op, "high": hi, "low": lo, "close": close,
+            "previous_close": prev, "volume": 1_000_000, "amount": 2.0e9,
+            "change_percent": round((close / prev - 1) * 100, 3) if i > 0 else 0.0,
+            "turnover_rate": None, "main_net_inflow": None, "large_order_inflow": None,
+            "rise_count": None, "fall_count": None, "limit_up_count": None, "limit_down_count": None,
+            "collected_at": datetime(d.year, d.month, d.day, 15, 5), "source_timestamp": None,
+            "metric_source": "sina", "metric_definition_version": "v1",
+            "source_switched": 0, "data_quality_status": "OK",
+        })
+        iclose = round(3000 * (1 + 0.003 * i) * (1 + 0.008 * math.sin(i / 9.0)), 2)
+        iprev = round(3000 * (1 + 0.003 * (i - 1)) * (1 + 0.008 * math.sin((i - 1) / 9.0)), 2) if i > 0 else iclose
+        iop = round(iprev * 1.001, 2)
+        idx_rows.append({
+            "data_source": "sina", "symbol_type": "INDEX", "symbol": "000300",
+            "data_kind": "BAR", "timeframe": "1d", "trading_date": d,
+            "timestamp": datetime(d.year, d.month, d.day, 15, 0),
+            "open": iop, "high": round(max(iop, iclose) * 1.002, 2), "low": round(min(iop, iclose) * 0.998, 2),
+            "close": iclose, "previous_close": iprev, "volume": 1_000_000, "amount": 2.0e11,
+            "change_percent": round((iclose / iprev - 1) * 100, 3) if i > 0 else 0.0,
+            "turnover_rate": None, "main_net_inflow": None, "large_order_inflow": None,
+            "rise_count": None, "fall_count": None, "limit_up_count": None, "limit_down_count": None,
+            "collected_at": datetime(d.year, d.month, d.day, 15, 5), "source_timestamp": None,
+            "metric_source": "sina", "metric_definition_version": "v1",
+            "source_switched": 0, "data_quality_status": "OK",
+        })
+    quote_repo.upsert_market_quotes(session, etf_rows)
+    quote_repo.upsert_market_quotes(session, idx_rows)
+    for i, d in enumerate(days):
+        adv = 0.55 + 0.1 * math.sin(i / 11.0)
+        quote_repo.upsert_breadth(session, {
+            "trading_date": d, "timestamp": datetime(d.year, d.month, d.day, 7, 0),
+            "total_rise": int(adv * 5000), "total_fall": int((1 - adv) * 5000), "total_flat": 200,
+            "limit_up": 40, "limit_down": 15, "total_amount": 9.0e10,
+            "data_source": "sina", "data_quality_status": "OK",
+        })
+    return days
+
+
+@pytest.fixture()
+def backtest_db(tmp_path):
+    """回测引擎单测用：(eng, settings, days)，已播种合成历史数据。"""
+    s, eng = _seed(tmp_path, with_breadth=True)
+    from app.db.session import session_scope
+
+    with session_scope(eng) as session:
+        days = _seed_backtest(session, s)
+    yield eng, s, days
+    eng.dispose()
+
+
+@pytest.fixture()
+def backtest_client(tmp_path):
+    """回测端点测试用：TestClient（读库覆盖）+ eng（供测试内模拟 Worker 执行）。"""
+    s, eng = _seed(tmp_path, with_breadth=True)
+    from app.db.session import session_scope
+
+    with session_scope(eng) as session:
+        _seed_backtest(session, s)
+    client = _make_client(eng)
+    with client:
+        yield client, eng
     app.dependency_overrides.clear()
     eng.dispose()

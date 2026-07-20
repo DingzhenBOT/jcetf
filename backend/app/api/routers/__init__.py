@@ -1,6 +1,7 @@
 """API 路由聚合（P4 +）。"""
 from __future__ import annotations
 
+from app.api.routers.backtest import router as backtest_router
 from app.api.routers.etfs import router as etfs_router
 from app.api.routers.market import router as market_router
 from app.api.routers.opinions import router as opinions_router
@@ -13,4 +14,5 @@ __all__ = [
     "opinions_router",
     "market_router",
     "portfolio_router",
+    "backtest_router",
 ]

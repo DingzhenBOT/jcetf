@@ -34,6 +34,16 @@ def build_read_engine(settings: Settings) -> Engine:
     return eng
 
 
+def build_write_engine(settings: Settings) -> Engine:
+    """可写引擎：**仅回测任务生命周期**（建 PENDING / 读进度/结果）使用。
+
+    默认查询端点仍走只读引擎（query_only=ON，杜绝误写，DESIGN §0）。回测提交是
+    *有意*的写（非误写），故用独立 writer；与 worker 写同一 SQLite(WAL) 文件，靠
+    busy_timeout 串行化，冲突窗口极小（提交任务稀有，worker 跑在收盘后）。
+    """
+    return make_engine(settings)
+
+
 def build_session_factory(engine: Engine) -> sessionmaker:
     return make_session_factory(engine)
 
@@ -44,6 +54,18 @@ def get_db(request: Request) -> Iterator[Session]:
     测试用 app.dependency_overrides[get_db] 切到临时库。
     """
     factory = getattr(request.app.state, "db_factory", None)
+    if factory is None:
+        raise UnavailableError("database not ready")
+    session = factory()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def get_backtest_db(request: Request) -> Iterator[Session]:
+    """回测路由专用可写 session（app.state.backtest_db_factory，由 lifespan 创建）。"""
+    factory = getattr(request.app.state, "backtest_db_factory", None)
     if factory is None:
         raise UnavailableError("database not ready")
     session = factory()

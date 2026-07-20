@@ -182,6 +182,17 @@ def job_post_close_evaluate() -> None:
         run_job("post_close_evaluate", post_collection_evaluate, session, get_settings(), phase="post_close")
 
 
+# --------------------------------------------------------------------------- #
+# P7 回测任务（收盘后 15:40 或手动触发；盘中由 API 端拒重型回测）
+# --------------------------------------------------------------------------- #
+def job_run_backtest() -> None:
+    """取全部 PENDING 回测任务执行（异步，避免与采集竞争 CPU/内存，DESIGN §异步回测）。"""
+    from app.backtest_engine.runner import process_pending_backtests
+
+    with session_scope(_engine()) as session:
+        run_job("run_backtest", process_pending_backtests, session, get_settings())
+
+
 def build_scheduler(settings) -> BlockingScheduler:
     scheduler = BlockingScheduler(timezone=settings.scheduler.timezone)
     if not settings.scheduler.enabled:
@@ -242,6 +253,11 @@ def build_scheduler(settings) -> BlockingScheduler:
     scheduler.add_job(
         job_post_close_evaluate, CronTrigger(hour=15, minute=10),
         id="post_close_evaluate", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    # ---- P7 回测任务（收盘后 15:40 取 PENDING 执行；盘中由 API 端拒重型回测） ----
+    scheduler.add_job(
+        job_run_backtest, CronTrigger(hour=15, minute=40),
+        id="run_backtest", replace_existing=True, max_instances=1, coalesce=True,
     )
     return scheduler
 

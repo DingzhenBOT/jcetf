@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.db.session import ping_db
-from app.api.deps import build_read_engine, build_session_factory
+from app.api.deps import build_read_engine, build_session_factory, build_write_engine
 from app.errors import AppError, ConfigError
 from app.logging_conf import clear_request_id, get_logger, setup_logging
 
@@ -43,6 +43,10 @@ async def lifespan(app: FastAPI):
     read_engine = build_read_engine(settings)
     app.state.read_engine = read_engine
     app.state.db_factory = build_session_factory(read_engine)
+    # P7：回测任务生命周期用独立可写引擎（仅 backtest 路由；默认查询仍只读，DESIGN §0）。
+    backtest_engine = build_write_engine(settings)
+    app.state.backtest_engine = backtest_engine
+    app.state.backtest_db_factory = build_session_factory(backtest_engine)
     logger.info(
         "etf-api lifespan start",
         extra={"environment": settings.app.environment, "host": settings.server.host, "port": settings.server.port},
@@ -50,10 +54,14 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        # 关闭 DB 引擎 / 连接池（P4）。
+        # 关闭 DB 引擎 / 连接池（P4 + P7）。
         try:
             read_engine.dispose()
         except Exception:  # noqa: BLE001 - 关闭失败不影响退出
+            pass
+        try:
+            backtest_engine.dispose()
+        except Exception:  # noqa: BLE001
             pass
         logger.info("etf-api lifespan shutdown")
 
@@ -167,6 +175,7 @@ def create_app() -> FastAPI:
 
     # ---- 业务路由（P4+，无鉴权层；鉴权在 Nginx） ----
     from app.api.routers import (
+        backtest_router,
         etfs_router,
         market_router,
         opinions_router,
@@ -179,6 +188,7 @@ def create_app() -> FastAPI:
     app.include_router(opinions_router)
     app.include_router(market_router)
     app.include_router(portfolio_router)
+    app.include_router(backtest_router)
 
     return app
 

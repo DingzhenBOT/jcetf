@@ -29,6 +29,13 @@ from app.repository.signal_repo import (
     get_opinions_for_etf,
     get_signal_history,
 )
+from app.repository.backtest_repo import (
+    create_run,
+    get_run,
+    list_runs,
+    save_trades,
+    set_progress,
+)
 
 __all__ = [
     # quote_repo 写
@@ -53,4 +60,10 @@ __all__ = [
     "get_latest_signal_for_etf",
     "get_signal_history",
     "get_opinions_for_etf",
+    # backtest_repo 写（P7）
+    "create_run",
+    "get_run",
+    "list_runs",
+    "save_trades",
+    "set_progress",
 ]

@@ -124,3 +124,76 @@ class PortfolioAnalyzeItem(BaseModel):
 
 class PortfolioAnalyzeResponse(BaseModel):
     items: List[PortfolioAnalyzeItem]
+
+
+# ---- P7：日线回测（异步，Worker 执行；API 仅建任务/查进度/查结果） ----
+class BacktestRunRequest(BaseModel):
+    etf_code: str = Field(..., min_length=1, max_length=32, description="回测标的 ETF 代码")
+    start_date: str = Field(..., description="回测开始交易日 YYYY-MM-DD")
+    end_date: str = Field(..., description="回测结束交易日 YYYY-MM-DD")
+    initial_capital: float = Field(100000.0, gt=0, le=100_000_000, description="初始资金 > 0")
+    benchmark: Optional[str] = Field(None, description="基准 ETF 代码（缺省用 settings.backtest.baseline_etf=510300）")
+    strategy_version: Optional[str] = Field(None, description="策略版本（缺省用当前冻结版本；必须已注册）")
+    in_sample_end: Optional[str] = Field(None, description="样本内/外分界日 YYYY-MM-DD（不含；缺省 70/30）")
+
+
+class BacktestTradeOut(BaseModel):
+    etf_code: str
+    sample: str
+    entry_time: str
+    exit_time: Optional[str] = None
+    entry_price: float
+    exit_price: Optional[float] = None
+    qty: float
+    pnl: Optional[float] = None
+    pnl_percent: Optional[float] = None
+    reason: Optional[str] = None
+
+
+class BacktestMetricsOut(BaseModel):
+    total_return_pct: Optional[float] = None
+    annualized_return_pct: Optional[float] = None
+    max_drawdown_pct: Optional[float] = None
+    sharpe: Optional[float] = None
+    trades_count: int = 0
+    win_rate: Optional[float] = None
+    avg_pnl_pct: Optional[float] = None
+
+
+class BacktestSampleOut(BaseModel):
+    start: Optional[str] = None
+    end: Optional[str] = None
+    metrics: BacktestMetricsOut
+    equity_curve: List[Dict[str, Any]]
+
+
+class BacktestResultOut(BaseModel):
+    in_sample: BacktestSampleOut
+    out_of_sample: BacktestSampleOut
+    full: BacktestSampleOut
+    benchmark: Dict[str, Any]
+    params: Dict[str, Any]
+    data_availability: Optional[Dict[str, Any]] = None
+    notes: List[str] = []
+
+
+class BacktestRunOut(BaseModel):
+    id: str
+    strategy_version: str
+    status: str
+    progress: int
+    start_date: str
+    end_date: str
+    benchmark: str
+    params: Dict[str, Any]
+    trades_count: int
+    created_at: str
+    created_by: Optional[str] = None
+    finished_at: Optional[str] = None
+    results: Optional[BacktestResultOut] = None
+    error_message: Optional[str] = None
+
+
+class BacktestRunsList(BaseModel):
+    items: List[BacktestRunOut]
+    total: int

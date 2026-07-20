@@ -3,6 +3,7 @@ from app.db.models.market import MarketBreadth, MarketQuote
 from app.db.models.mapping import EtfMapping, StrategyVersion
 from app.db.models.signal_opinion import Opinion, Signal
 from app.db.models.system import DataSourceStatus, TaskRunLog
+from app.db.models.backtest import BacktestRun, BacktestTrade
 
 __all__ = [
     "MarketQuote",
@@ -13,4 +14,6 @@ __all__ = [
     "Opinion",
     "TaskRunLog",
     "DataSourceStatus",
+    "BacktestRun",
+    "BacktestTrade",
 ]

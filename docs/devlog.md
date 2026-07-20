@@ -487,3 +487,73 @@ npm run dev                                              # :5173，访问 /#/por
 - 回测引擎（异步，Worker 执行）：基于历史 BAR 与信号，输出策略表现（样本内/外分离，DESIGN R5）。
 - P8 nginx 部署（Basic Auth + HTTPS + 反代 `/api/*` + 前端静态托管）收尾上线。
 
+## P7 — 日线回测引擎（已完成，2026-07-20）
+
+> 状态：后端 `backtest_engine` + 新增 2 张回测表（P7）+ 异步 `POST /api/backtest/run` 与 `GET /api/backtest/{id}`、`GET /api/backtest/runs`；**12 项测试全绿**（pytest 共 134 passed，P6 122 + P7 12）；Worker `run_backtest` 任务已注册（收盘后 15:40）。
+> 设计铁律（DESIGN §10 / R4 / R5 / R8 / R9）：**复用冻结规则引擎**（不复制规则逻辑）、**无未来数据**（信号日次根开盘成交）、**样本内/外分离**、**前复权假设**、**涨跌停/停牌约束**。
+
+### 端点契约（DESIGN §10 P7）
+- `POST /api/backtest/run`（202）：仅建 PENDING 任务立即返回 `id`；**不同步执行**；盘中默认拒重型回测（`intraday_heavy_disabled` + `is_trading_now`）→ 409 `BACKTEST_INTRADAY_BLOCKED`。校验：日期合法 `start<end`、ETF 在 `etf_mapping` 白名单、`strategy_version` 必须已注册（白名单，不可现场编造）。
+- `GET /api/backtest/{id}`：查进度（`status`/`progress`）+ 完成后返回 `results`（指标 / 交易 / 净值曲线）。不存在 → 404。
+- `GET /api/backtest/runs`：回测任务列表（降序，分页）。
+- 实际执行：Worker `run_backtest`（15:40 或手动）扫描 PENDING 逐条跑，状态机 `PENDING→RUNNING→DONE/FAILED`。
+
+### 交付文件
+| 文件 | 职责 |
+|---|---|
+| `app/db/models/backtest.py` | **P7 两张表** `BacktestRun`(状态机/参数/结果) + `BacktestTrade`(逐笔，含 `sample` IN/OUT) |
+| `app/db/models/__init__.py` | 注册 `BacktestRun`/`BacktestTrade` 到 `Base.metadata` |
+| `app/backtest_engine/backtester.py` | **纯计算** `_compute_backtest`：按交易日循环调 `StrategyEngine.evaluate_etf` → 立场；次根开盘成交(R4)；涨停不买/跌停不卖/停牌跳过(R9)；佣金+滑点；样本内/外分离(R5)；指标+净值曲线+基准买入持有 |
+| `app/backtest_engine/runner.py` | `run_backtest`(状态机编排 PENDING→DONE/FAILED，写交易+results_json) + `process_pending_backtests`(Worker 入口) |
+| `app/repository/backtest_repo.py` | `create_run`/`get_run`/`list_runs`/`save_trades`/`set_progress`（写库） |
+| `app/api/schemas.py` | `BacktestRunRequest` / `BacktestRunOut` / `BacktestTradeOut` / `BacktestResultOut` / `BacktestRunsList` |
+| `app/api/routers/backtest.py` | 上述 3 端点；`/runs` 必须在 `/{run_id}` 前注册避免被路径参数捕获 |
+| `app/api/deps.py` | 新增 `build_write_engine` + `get_backtest_db`（**仅回测路由用的可写引擎**；默认查询仍走只读引擎 `query_only=ON`，DESIGN §0） |
+| `app/main.py` | lifespan 创建 `backtest_engine`/`backtest_db_factory` 并挂载路由 |
+| `app/api/routers/__init__.py` | 导出 `backtest_router` |
+| `app/worker.py` | `job_run_backtest` + 调度器注册（15:40 收盘后） |
+| `tests/conftest.py` | 新增 `_seed_backtest` + fixtures `backtest_db`/`backtest_client`（合成 260 交易日 ETF/指数/宽度 BAR，含样本内/外各一段行情） |
+| `tests/test_backtest_engine.py` | 6 用例：跑通出交易 / R5 样本分离 / R4 次根开盘无未来数据 / 数据不足失败 / R9 涨停不买 / 基准对比 |
+| `tests/test_api_backtest.py` | 6 用例：建 PENDING(202) / 盘中拒(409) / 校验(422×4) / 全链路 PENDING→DONE / 列表 / 未知 404 |
+
+### 关键设计决策
+- **复用冻结引擎**：回测按日调 `StrategyEngine.evaluate_etf(session, mapping, version, as_of)`，从不复制规则逻辑 → 与 DESIGN §9 冻结引擎完全一致（LLM 只润色不判断）。
+- **R4 无未来数据**：信号基于截至 `as_of` 当日窗口；成交价取**信号日次根 BAR 开盘**。停牌（无 BAR）天然被「下一可用 BAR」跳过。
+- **R5 样本内/外分离**：交易日序列按 `in_sample_end`（缺省 70/30）切分，分别算 `total_return/annualized/max_drawdown/sharpe/win_rate`；每笔交易按入场日标 `IN`/`OUT`；FULL = IN+OUT 聚合。
+- **R8 前复权**：回测价格使用前复权 BAR（回填默认前复权）；实时展示用不复权，靠 `data_kind` 区分。
+- **R9 涨跌停/停牌**：次根 `close≥前收×1.099` 涨停 → 不买；`≤前收×0.901` 跌停 → 不卖；无 BAR → 跳过。
+- **成本模型**：佣金 `commission_per_thousand/1000` + 滑点 `slippage_bps/10000`，双边；`BacktestConfig` 可调（默认 510300 基准）。
+- **立场模型（MVP）**：单 ETF 多头/空仓（long/flat），`OPPORTUNITY_ENHANCE`/`SMALL_POSITION`→满仓，其余→空仓。更细仓位区间（DESIGN §9.6）为后续增强，**不影响信号正确性**。
+- **API 只读 + 回测写**：默认查询端点仍走 `query_only=ON` 只读引擎；回测建任务用独立可写引擎（仅此路由），与 Worker 写同一 SQLite(WAL)，靠 `busy_timeout` 串行化。
+
+### 验证（本轮已跑通）
+```bash
+cd /workspace/backend && python3.11 -m pytest -q        # 134 passed（P6 122 + P7 12）
+# 引擎冒烟（合成 260 日数据）：full 19 笔交易，样本内 9 / 样本外 10；
+#   full 收益 5.71% / 夏普 2.52；基准买入持有 162%（本策略为 long/flat，熊市空仓属预期）
+curl -X POST :8000/api/backtest/run -d '{"etf_code":"510300","start_date":"2024-01-01","end_date":"2024-12-27"}'  # 202 + id
+curl :8000/api/backtest/{id}                            # Worker 跑完后返回 status=DONE + results
+```
+
+### 已知限制（P7）
+1. **立场模型为 long/flat**：未实现 DESIGN §9.6 数值仓位区间（如 25–50% 半仓）；属后续增强，不影响信号/指标正确性。
+2. **前复权假设**：回测直接吃存储的 BAR 视为前复权；若线上 BAR 混用不复权需在建表/回填层保证（DESIGN §0 已约定回填前复权）。
+3. **逐日调引擎（R6 优化项）**：MVP 每日重查 DB（小样本足够）；生产多年数据可改为「批量预读 BAR + 内存计算」以降 CPU/内存，逻辑不变。
+4. **沙箱无真实历史数据**：AkShare em 不可达，无法跑真实库端到端；引擎以合成数据单测 + 接口全链路验证（Worker 执行器在测试中模拟）。
+5. **无前端回测页**：P7 仅后端引擎 + API；前端可视化（净值曲线/样本内外对比）属后续（DESIGN §复杂回测页 第二阶段）。
+
+### 真机自测步骤（用户服务器）
+```bash
+cd /workspace && git pull
+cd /workspace/backend && python3.11 -m pytest -q        # 应 134 passed
+# 手动触发一次回测（绕过盘中限制可在收盘后，或临时将 settings.backtest.intraday_heavy_disabled 置 false）：
+curl -X POST :8000/api/backtest/run -d '{"etf_code":"510300","start_date":"2024-01-01","end_date":"2024-12-27"}'
+# Worker 15:40 自动执行；或手动起 worker 后查看：
+curl :8000/api/backtest/runs
+curl :8000/api/backtest/{id}
+```
+
+### 下一步：P8（部署）
+- nginx（Basic Auth + HTTPS）+ `etf-api`(1 worker)/`etf-worker` 进程分离 + `db_backup` 脚本（`.backup` 本地 7 天 + 周传异地）。
+- 前端静态托管；回测结果可视化为后续（第二阶段复杂回测页）。
+
