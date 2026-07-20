@@ -24,7 +24,8 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/workspace/backend
-EnvironmentFile=/workspace/config/.env
+# 可选：.env 缺失时不再致命（app 回退 settings.yaml 默认值）；存在则叠加覆盖
+EnvironmentFile=-/workspace/config/.env
 # 单 worker 是 DESIGN §0 的硬性要求（SQLite 单写者 + 进程内缓存一致性）
 ExecStart=/workspace/backend/venv/bin/python -m uvicorn app.main:app \
     --host 127.0.0.1 --port 8000 --workers 1 --no-access-log

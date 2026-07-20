@@ -23,7 +23,8 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/workspace/backend
-EnvironmentFile=/workspace/config/.env
+# 可选：.env 缺失时不再致命（app 回退 settings.yaml 默认值）；存在则叠加覆盖
+EnvironmentFile=-/workspace/config/.env
 # __main__ 内部用 fcntl 保证单实例；重复启动会被锁拒绝
 ExecStart=/workspace/backend/venv/bin/python -m app.worker
 Restart=on-failure
