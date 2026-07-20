@@ -75,6 +75,19 @@ journalctl -u etf-api -u etf-worker -f
 
 ## 5. 反向代理 + HTTPS：nginx
 
+> ### 5.0 无域名临时方案（仅 IP / 纯 HTTP）— 先看效果用这个
+> 域名还没注册时**无法申请 Let's Encrypt 证书**（LE 不给裸 IP 发证，且要求域名已解析到你服务器）。
+> 此时跳到 §5.4/§5.6 会失败，属正常。请改用纯 HTTP 配置先用 IP 看效果：
+> ```bash
+> sudo cp /workspace/deploy/nginx.http.conf /etc/nginx/sites-available/jcetf
+> sudo ln -sf /etc/nginx/sites-available/jcetf /etc/nginx/sites-enabled/jcetf
+> sudo rm -f /etc/nginx/sites-enabled/default
+> sudo nginx -t && sudo systemctl enable --now nginx && sudo systemctl reload nginx
+> # 浏览器打开： http://<你的服务器公网IP>/
+> ```
+> 等域名注册并解析到本机后，再 `cp deploy/nginx.conf` 覆盖、跑 §5.4 申请证书、换回 HTTPS。
+> 注意：云服务器（腾讯云 CVM 等）还需在**安全组**放行入站 80 端口，否则公网打不开。
+
 ```bash
 # 5.1 安装 nginx + certbot
 sudo apt update
@@ -108,14 +121,14 @@ sudo certbot renew --dry-run
 ## 6. 验证
 
 ```bash
-# 健康检查（nginx 层对 /health 关闭了 Basic Auth）
+# 无域名（纯 HTTP / IP）时：
+curl -sS http://<你的公网IP>/health
+curl -sS -u admin:密码 http://<你的公网IP>/api/market/overview | head
+# 浏览器打开： http://<你的公网IP>/   -> 输入 Basic Auth 后见总览页
+
+# 已有域名 + HTTPS 时：
 curl -sS https://jiucaietf.icu/health
-
-# API 需 Basic Auth（用户即 5.3 设置的 admin）
 curl -sS -u admin:密码 https://jiucaietf.icu/api/market/overview | head
-
-# 前端页面（浏览器访问）
-#   https://jiucaietf.icu/   -> 输入 Basic Auth 后见总览页
 ```
 
 预期：`/health` 返回 `{"status":"ok"}` 类；`/api/market/overview` 返回 JSON；浏览器首页可加载。
