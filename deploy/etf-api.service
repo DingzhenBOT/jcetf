@@ -1,0 +1,38 @@
+# ============================================================================
+# systemd 单元：etf-api（FastAPI / uvicorn，1 worker）
+# ----------------------------------------------------------------------------
+# 对应 DESIGN §0 / §10：API 仅 1 个 uvicorn worker，监听 127.0.0.1:8000，
+# 由 nginx 反代；无鉴权层（鉴权在 nginx Basic Auth）。
+#
+# 部署（详见 docs/ops.md）：
+#   sudo cp deploy/etf-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now etf-api
+#
+# 说明：
+#   - WorkingDirectory 设 /workspace/backend 才能 `import app` / `scripts`
+#   - 配置走 /workspace/config/settings.yaml（由 config.py 上溯三级定位）
+#   - 敏感覆盖从 /workspace/config/.env 注入（.env 不入库）
+#   - venv 路径按实际创建位置调整（默认 /workspace/backend/venv）
+# ============================================================================
+[Unit]
+Description=etf-monitor API (FastAPI/uvicorn, 1 worker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/workspace/backend
+EnvironmentFile=/workspace/config/.env
+# 单 worker 是 DESIGN §0 的硬性要求（SQLite 单写者 + 进程内缓存一致性）
+ExecStart=/workspace/backend/venv/bin/python -m uvicorn app.main:app \
+    --host 127.0.0.1 --port 8000 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=5
+# 优雅关闭给足时间让在途请求完成
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

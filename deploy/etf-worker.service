@@ -1,0 +1,35 @@
+# ============================================================================
+# systemd 单元：etf-worker（APScheduler 定时任务，单实例）
+# ----------------------------------------------------------------------------
+# 对应 DESIGN §8：所有定时任务（采集 / 评估 / 回测 / 备份 / 清理）都在本进程，
+# 单实例运行（fcntl 文件锁保证，见 app/worker.py），避免重复采集/重复写库。
+#
+# 部署（详见 docs/ops.md）：
+#   sudo cp deploy/etf-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now etf-worker
+#
+# 说明：
+#   - WorkingDirectory 设 /workspace/backend 才能 `import app` / `scripts`
+#   - 与 etf-api 共享同一 SQLite（WAL）+ busy_timeout 串行化写入
+#   - 锁文件位于 /workspace/data/.etf_worker.lock
+# ============================================================================
+[Unit]
+Description=etf-monitor Worker (APScheduler, single instance)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/workspace/backend
+EnvironmentFile=/workspace/config/.env
+# __main__ 内部用 fcntl 保证单实例；重复启动会被锁拒绝
+ExecStart=/workspace/backend/venv/bin/python -m app.worker
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

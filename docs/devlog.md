@@ -557,3 +557,50 @@ curl :8000/api/backtest/{id}
 - nginx（Basic Auth + HTTPS）+ `etf-api`(1 worker)/`etf-worker` 进程分离 + `db_backup` 脚本（`.backup` 本地 7 天 + 周传异地）。
 - 前端静态托管；回测结果可视化为后续（第二阶段复杂回测页）。
 
+
+---
+
+## 轮次 P8 — 部署与备份（nginx + systemd + db_backup，2026-07-20）
+
+**状态**：部署产物已落地（nginx.conf / 两个 systemd unit / ops.md）；`db_backup.py` 已在沙箱实测跑通（产出 172K 压缩备）。**真机启用需用户在服务器执行 nginx 安装、证书申请、防火墙与 systemctl**（见 `docs/ops.md`）。
+
+### 本轮交付清单（文件 → 职责）
+| 文件 | 职责 | 关键设计 |
+|---|---|---|
+| `deploy/nginx.conf` | 站点配置：Basic Auth + HTTPS + 反代 `/api/*` + 静态托管前端 | 80→443 跳转仅留 ACME 挑战；API 反代保留 `/api` 前缀；`/health`/`/ready`/`/docs` 关闭 Basic Auth 便于探测 |
+| `deploy/etf-api.service` | systemd 单元：uvicorn **1 worker**，监听 127.0.0.1:8000 | 单 worker 为 DESIGN §0 硬性要求；`WorkingDirectory=/workspace/backend` 才能 `import app` |
+| `deploy/etf-worker.service` | systemd 单元：APScheduler 单实例（fcntl 锁） | 承载采集/评估/回测/备份/清理；与 api 共享 WAL SQLite |
+| `docs/ops.md` | 部署与运维手册 | 含 venv/前端 build/nginx/certbot/systemd/验证/备份/升级全流程 |
+| `backend/scripts/db_backup.py` | 本地日备（已存在，本轮实测） | `sqlite3.backup()` + gzip + 7 天保留；异地周备为占位 hook（`backup_remote_enabled=false`） |
+
+### 关键决策
+- **P8 归属 DevOps**：无前端新页面（前端 P5 已完成，仅 `npm run build` 交 nginx 托管）；回测曲线可视化属第二阶段，不在 P8。
+- **端口隔离**：API 仅监听回环，防火墙封 8000，公网只暴露 443（反代）。符合 DESIGN §0。
+- **鉴权唯一层在 nginx Basic Auth**：FastAPI 无鉴权层（DESIGN §0），运维口令即访问口令。
+- **迁移手动运行 → systemd**：之前手动 `python -m app.worker` 的用户，需先 `pkill` 释放 `.etf_worker.lock` 再启用服务。
+- **部署脚本全部入库可 push**：用户在服务器执行安装/证书/防火墙/起服；agent 仅产出模板与逐条命令。
+
+### 验证（本轮已跑通）
+```bash
+cd /workspace/backend && python3.11 -m scripts.db_backup   # 产出 data/backups/etf_monitor_YYYYMMDD.db.gz
+# db_backup 由 worker 每天 02:00 db_backup 任务自动调用（无需手工 cron）
+```
+
+### 真机自测步骤（用户服务器）
+```bash
+# 按 docs/ops.md §0–§6 依次执行：拉代码 → venv → 前端 build → 配 .env → nginx + certbot → systemd
+systemctl status etf-api etf-worker
+curl -sS https://jiucaietf.icu/health
+curl -sS -u admin:密码 https://jiucaietf.icu/api/market/overview
+# 浏览器打开 https://jiucaietf.icu/ → 输入 Basic Auth → 见总览页
+```
+
+### 已知限制（P8）
+1. **异地周备未启**：`backup_remote_enabled=false`，待对象存储/rclone 就绪后接 `db_backup._upload_remote`。
+2. **Basic Auth 无审计**：内部 10 人够用；按人审计/撤销属 P9 用户系统。
+3. **nginx 真机配置未在沙箱验证**：沙箱无 nginx；配置为标准写法，启用前以 `nginx -t` 校验。
+4. **venv 路径假设**：systemd unit 假设 venv 在 `/workspace/backend/venv`；若不同请同步改 `ExecStart`。
+
+### 下一步
+- 用户在服务器按 `docs/ops.md` 落地并自测（每阶段完成即暂停自测，符合约定）。
+- 可选：P9 用户系统（仅当需要保存个人持仓/历史建议时）；回测结果前端可视化（第二阶段）。
