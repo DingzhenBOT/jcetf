@@ -19,7 +19,10 @@ export const router = createRouter({
     { path: '/system', name: 'system', component: SystemStatus, meta: { title: '系统状态' } },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
-  scrollBehavior() {
+  // 仅在「前进/新页面」时置顶；浏览器前进/后退（savedPosition）时还原原滚动位置，
+  // 避免用户在长页面（如下方信号表）被无谓拉回顶部。
+  scrollBehavior(_to, _from, savedPosition) {
+    if (savedPosition) return savedPosition
     return { top: 0 }
   },
 })

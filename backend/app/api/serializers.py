@@ -66,6 +66,7 @@ def etf_to_dict(m: EtfMapping, latest: Optional[Signal]) -> Dict[str, Any]:
         "etf_code": m.etf_code,
         "etf_name": m.etf_name,
         "category": m.category,
+        "listing": m.listing,  # '场内' / '场外'：前端区分交易场所
         "related_sector_codes": m.related_sector_codes,
         "related_index_code": m.related_index_code,
         "latest_signal": signal_to_dict(latest) if latest is not None else None,

@@ -23,6 +23,7 @@ class EtfMapping(Base):
     related_sector_codes: Mapped[list | None] = mapped_column(JSON)  # JSON 数组
     related_index_code: Mapped[str | None] = mapped_column(String(32))
     category: Mapped[str | None] = mapped_column(String(32))
+    listing: Mapped[str | None] = mapped_column(String(8))  # '场内' / '场外'
     is_active: Mapped[int] = mapped_column(Integer, default=1)
     mapping_version: Mapped[str] = mapped_column(String(32), nullable=False)
     valid_from: Mapped[date] = mapped_column(Date, nullable=False)

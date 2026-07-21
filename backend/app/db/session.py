@@ -75,8 +75,25 @@ def init_db(engine: Engine, settings: Settings | None = None) -> None:
     from app.db import models  # noqa: F401 注册所有模型元数据
 
     Base.metadata.create_all(engine)
+    # SQLite 下 create_all 不会给已存在的表补列；新增列用幂等 ALTER 补充
+    _ensure_columns(engine)
     if settings is not None:
         _seed_strategy_version(engine, settings)
+
+
+def _ensure_columns(engine: Engine) -> None:
+    """对已存在表幂等补充新增列（SQLite 不支持 ALTER 自动加列）。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    existing = {c["name"] for c in inspector.get_columns("etf_mapping")}
+    needed = {
+        "listing": "VARCHAR(8)",  # '场内' / '场外'
+    }
+    with engine.begin() as conn:
+        for col, sqltype in needed.items():
+            if col not in existing:
+                conn.execute(text(f"ALTER TABLE etf_mapping ADD COLUMN {col} {sqltype}"))
 
 
 def _seed_strategy_version(engine: Engine, settings: Settings) -> None:

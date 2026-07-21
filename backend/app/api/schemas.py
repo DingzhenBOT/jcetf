@@ -51,6 +51,7 @@ class EtfListItem(BaseModel):
     etf_code: str
     etf_name: Optional[str] = None
     category: Optional[str] = None
+    listing: Optional[str] = None  # '场内' / '场外'
     related_sector_codes: Optional[List[str]] = None
     related_index_code: Optional[str] = None
     latest_signal: Optional[SignalOut] = None

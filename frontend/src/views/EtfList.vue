@@ -12,6 +12,7 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const keyword = ref('')
 const categoryFilter = ref<string>('全部')
+const listingFilter = ref<string>('全部')
 
 async function load(): Promise<void> {
   loading.value = true
@@ -37,12 +38,16 @@ const categories = computed(() => [
   '全部',
   ...new Set(etfs.value.map((e) => e.category ?? '未分类')),
 ])
+const listings = ['全部', '场内', '场外']
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   return etfs.value
     .filter(
       (e) =>
         categoryFilter.value === '全部' || (e.category ?? '未分类') === categoryFilter.value,
+    )
+    .filter(
+      (e) => listingFilter.value === '全部' || (e.listing ?? '') === listingFilter.value,
     )
     .filter(
       (e) =>
@@ -75,6 +80,12 @@ const filtered = computed(() => {
         class="px-3 py-1.5 text-sm border border-slate-200 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-sky-200"
       >
         <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
+      </select>
+      <select
+        v-model="listingFilter"
+        class="px-3 py-1.5 text-sm border border-slate-200 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-sky-200"
+      >
+        <option v-for="l in listings" :key="l" :value="l">{{ l === '全部' ? '全部场所' : l }}</option>
       </select>
       <span class="text-xs text-slate-400">命中 {{ filtered.length }} 支</span>
     </div>

@@ -20,8 +20,9 @@ function render(): void {
   if (!chart.value) {
     chart.value = echarts.init(el.value)
   }
-  // notMerge=true：避免新旧 option 残留系列导致图形错乱
-  chart.value.setOption(props.option, true)
+  // notMerge=true：避免新旧 option 残留系列导致图形错乱；
+  // lazyUpdate=true：将更新推迟到下一帧，避免轮询刷新时整图闪烁/跳动。
+  chart.value.setOption(props.option, { notMerge: true, lazyUpdate: true })
 }
 
 function resize(): void {

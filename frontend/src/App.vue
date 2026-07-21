@@ -3,8 +3,8 @@ import { onMounted, onUnmounted } from 'vue'
 import AppNav from '@/components/ui/AppNav.vue'
 import { startPolling, stopPolling } from '@/stores/market'
 
-// 启动全局 30s 轮询（总览 + 最新信号）；卸载时停止，避免重复计时器。
-onMounted(() => startPolling(30_000))
+// 启动全局轮询（总览 + 最新信号，默认 60s 间隔）；卸载时停止，避免重复计时器。
+onMounted(() => startPolling())
 onUnmounted(() => stopPolling())
 </script>
 

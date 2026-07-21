@@ -7,10 +7,10 @@ import SignalRiskChart from '@/components/charts/SignalRiskChart.vue'
 import BreadthChart from '@/components/charts/BreadthChart.vue'
 import IndexBars from '@/components/charts/IndexBars.vue'
 import SignalTable from '@/components/sections/SignalTable.vue'
-import { marketState, refreshNow } from '@/stores/market'
+import { marketState, refreshNow, secondsToRefresh } from '@/stores/market'
 import { TIER_TEXT, riskLevelBadge } from '@/lib/tier'
 import { fmtInt } from '@/lib/format'
-import { toBeijingDate, toRelative } from '@/lib/time'
+import { toBeijingDate } from '@/lib/time'
 import type { SignalType } from '@/api/types'
 
 const ov = computed(() => marketState.overview)
@@ -32,7 +32,7 @@ const counts = computed(() => risk.value?.counts ?? {})
         <h1 class="text-xl font-semibold tracking-tight text-slate-800">市场总览</h1>
         <p class="text-sm text-slate-400 mt-0.5">
           数据截至 <span class="tnum">{{ toBeijingDate(ov?.as_of) }}</span>
-          <span class="ml-2 text-slate-300">每 30 秒自动刷新 · {{ toRelative(marketState.lastUpdated) }}</span>
+          <span class="ml-2 text-slate-300">每 60 秒自动刷新 · 还 <span class="tnum">{{ secondsToRefresh }}</span> 秒</span>
         </p>
       </div>
       <button

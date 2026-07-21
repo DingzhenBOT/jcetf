@@ -95,3 +95,14 @@ const RISK_LEVEL_BADGE: Record<string, string> = {
 export function riskLevelBadge(level: string): string {
   return RISK_LEVEL_BADGE[level] ?? RISK_LEVEL_BADGE['未知']
 }
+
+// 场内 / 场外 徽标配色（ETF 交易场所区分）
+const LISTING_BADGE: Record<string, string> = {
+  场内: 'bg-indigo-100 text-indigo-700 border-indigo-200',
+  场外: 'bg-teal-100 text-teal-700 border-teal-200',
+}
+
+export function listingBadge(listing: string | null | undefined): string {
+  if (!listing) return 'bg-slate-100 text-slate-500 border-slate-200'
+  return LISTING_BADGE[listing] ?? 'bg-slate-100 text-slate-500 border-slate-200'
+}

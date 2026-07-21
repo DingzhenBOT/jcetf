@@ -86,6 +86,7 @@ export interface EtfListItem {
   etf_code: string
   etf_name?: string | null
   category?: string | null
+  listing?: string | null // '场内' / '场外'
   related_sector_codes?: string[] | null
   related_index_code?: string | null
   latest_signal: Signal | null

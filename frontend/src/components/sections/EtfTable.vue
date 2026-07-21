@@ -2,7 +2,7 @@
 import { useRouter } from 'vue-router'
 import type { EtfListItem } from '@/api/types'
 import Badge from '@/components/ui/Badge.vue'
-import { TIER_BADGE, regimeText } from '@/lib/tier'
+import { TIER_BADGE, regimeText, listingBadge } from '@/lib/tier'
 import { fmtScore } from '@/lib/format'
 
 defineProps<{ etfs: EtfListItem[] }>()
@@ -17,6 +17,7 @@ const router = useRouter()
           <th class="px-4 py-2 font-medium">代码</th>
           <th class="px-4 py-2 font-medium">名称</th>
           <th class="px-4 py-2 font-medium">分类</th>
+          <th class="px-4 py-2 font-medium">场所</th>
           <th class="px-4 py-2 font-medium">最新信号</th>
           <th class="px-4 py-2 font-medium">综合分</th>
           <th class="px-4 py-2 font-medium">市场环境</th>
@@ -40,6 +41,14 @@ const router = useRouter()
           </td>
           <td class="px-4 py-2 text-slate-600">{{ e.etf_name ?? '--' }}</td>
           <td class="px-4 py-2 text-slate-500">{{ e.category ?? '--' }}</td>
+          <td class="px-4 py-2">
+            <Badge
+              v-if="e.listing"
+              :text="e.listing"
+              :class="listingBadge(e.listing)"
+            />
+            <span v-else class="text-slate-300">--</span>
+          </td>
           <td class="px-4 py-2">
             <Badge
               v-if="e.latest_signal"

@@ -1,14 +1,21 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import type { Signal } from '@/api/types'
 import Badge from '@/components/ui/Badge.vue'
-import { TIER_BADGE, regimeText } from '@/lib/tier'
+import { TIER_BADGE, regimeText, listingBadge } from '@/lib/tier'
 import { fmtScore, fmtConfidence } from '@/lib/format'
 import { toBeijing } from '@/lib/time'
+import { ensureEtfNames, etfName, etfListing } from '@/composables/etfNames'
 
 defineProps<{
   signals: Signal[]
   showEtf?: boolean
 }>()
+
+// 拉取 ETF 名称/场所映射，供信号表按代码显示名称（而非裸代码）。
+onMounted(() => {
+  void ensureEtfNames()
+})
 </script>
 
 <template>
@@ -32,12 +39,22 @@ defineProps<{
           class="border-b border-slate-50 hover:bg-slate-50/60"
         >
           <td v-if="showEtf" class="px-4 py-2">
-            <router-link
-              :to="`/etfs/${s.target_etf}`"
-              class="text-slate-700 hover:text-sky-600 font-medium"
-            >
-              {{ s.target_etf }}
-            </router-link>
+            <div class="flex flex-col gap-0.5">
+              <router-link
+                :to="`/etfs/${s.target_etf}`"
+                class="text-slate-700 hover:text-sky-600 font-medium leading-tight"
+              >
+                {{ etfName(s.target_etf) }}
+              </router-link>
+              <div class="flex items-center gap-1.5">
+                <span class="text-xs text-slate-400 tnum">{{ s.target_etf }}</span>
+                <Badge
+                  v-if="etfListing(s.target_etf)"
+                  :text="etfListing(s.target_etf) ?? ''"
+                  :class="listingBadge(etfListing(s.target_etf))"
+                />
+              </div>
+            </div>
           </td>
           <td class="px-4 py-2">
             <Badge :text="s.signal_type_text" :class="TIER_BADGE[s.signal_type]" />
