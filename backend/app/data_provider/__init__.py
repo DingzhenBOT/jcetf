@@ -7,13 +7,16 @@
 from __future__ import annotations
 
 from app.config import Settings
-from app.data_provider.akshare_adapter import AkShareAdapter
+from app.data_provider.akshare_adapter import AkShareAdapter, install_em_headers_patch
 from app.data_provider.base import BaseDataProvider
 
 
 def build_provider(settings: Settings) -> BaseDataProvider:
     """按配置构造数据源适配器。"""
     if settings.data_source.mode == "real":
+        # 东财 kline 接口需 Referer/UA 头，否则返回空（腾讯云网络通但被应用层拒）。
+        # 在构造适配器前安装幂等补丁（仅作用于 eastmoney URL）。
+        install_em_headers_patch()
         return AkShareAdapter(settings)
     # Mock 适配器在第二阶段实现；当前仅允许 real（DESIGN §0 禁止生产/未实现时降级 Mock）
     raise NotImplementedError(

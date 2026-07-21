@@ -10,14 +10,58 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import akshare as ak
 import pandas as pd
+import requests
 
 from app.config import Settings
 from app.data_provider.base import BaseDataProvider
 from app.errors import DataSourceError
+
+
+# --------------------------------------------------------------------------- #
+# 东财请求头补丁
+# 东财 kline 接口（push2his.eastmoney.com/api/qt/stock/kline/get）不带 Referer
+# 会返回空数据：腾讯云网络层可达，但裸请求被应用层拒绝（0 行 DataFrame）。
+# 仅对 eastmoney URL 注入 Referer/UA，不影响新浪/同花顺等源；幂等。
+# --------------------------------------------------------------------------- #
+_EM_REFERER = "https://quote.eastmoney.com/"
+_EM_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+_patched = False
+
+
+def _em_headers_for(url: str) -> Optional[dict]:
+    """对 eastmoney URL 返回需注入的请求头；非东财返回 None。"""
+    if "eastmoney.com" in str(url):
+        return {"Referer": _EM_REFERER, "User-Agent": _EM_USER_AGENT}
+    return None
+
+
+def install_em_headers_patch() -> None:
+    """猴子补丁 requests.Session.request：仅对 eastmoney URL 注入 Referer/UA（幂等）。
+
+    沙箱/部分网络下东财被墙时此补丁无害（请求仍会失败并降级到新浪）。
+    """
+    global _patched
+    if _patched:
+        return
+    _orig = requests.Session.request
+
+    def _request_with_em_headers(self, method, url, *args, **kwargs):
+        hdr = _em_headers_for(url)
+        if hdr:
+            headers = dict(kwargs.get("headers") or {})
+            headers.update(hdr)
+            kwargs["headers"] = headers
+        return _orig(self, method, url, *args, **kwargs)
+
+    requests.Session.request = _request_with_em_headers
+    _patched = True
 
 
 class AkShareAdapter(BaseDataProvider):
@@ -76,17 +120,30 @@ class AkShareAdapter(BaseDataProvider):
             prefix = "sh" if head == "5" else "sz"
         return prefix + code
 
-    def _history_source_map(self, base_map, kind: str, raw_symbol: str, start: str, end: str) -> Dict[str, Tuple[str, dict]]:
-        """历史 BAR 逐源 kwargs：em 传 symbol+start/end；sina/tx 仅传 symbol（不接受起止参数，且需 sh/sz 前缀）。
+    def _history_symbol(self, kind: str, src: str, raw_symbol: str) -> str:
+        """历史接口每个源期望的 symbol 格式：
+        - sina/tx：一律 sh/sz 前缀（fund_etf_hist_sina / stock_zh_index_daily(_tx) 只认前缀）。
+        - em 指数：stock_zh_index_daily_em 内部不查市场，必须 sh/sz 前缀（裸码静默返回空 DataFrame）。
+        - em ETF：fund_etf_hist_em 内部 get_market_id 自查市场，传裸码即可。
+        """
+        if src in ("sina", "tx"):
+            return self._to_sina_symbol(raw_symbol, kind)
+        if kind == "index":
+            return self._to_sina_symbol(raw_symbol, "index")
+        return raw_symbol
 
-        修复旧实现给所有源统一注入 start_date/end_date 导致新浪/腾讯函数 TypeError 的问题。
+    def _history_source_map(self, base_map, kind: str, raw_symbol: str, start: str, end: str) -> Dict[str, Tuple[str, dict]]:
+        """历史 BAR 逐源 kwargs：em 传 symbol+start/end；sina/tx 仅传 symbol（不接受起止参数）。
+
+        修复旧实现给所有源统一注入 start_date/end_date 导致新浪/腾讯函数 TypeError 的问题；
+        并修正 em 指数需 sh/sz 前缀（裸码会静默返回空，从未真正触网）。
         """
         out: Dict[str, Tuple[str, dict]] = {}
         for src, (func, kw) in base_map.items():
             if src in ("sina", "tx"):
-                out[src] = (func, {**kw, "symbol": self._to_sina_symbol(raw_symbol, kind)})
+                out[src] = (func, {**kw, "symbol": self._history_symbol(kind, src, raw_symbol)})
             else:
-                out[src] = (func, {**kw, "symbol": raw_symbol, "start_date": start, "end_date": end})
+                out[src] = (func, {**kw, "symbol": self._history_symbol(kind, src, raw_symbol), "start_date": start, "end_date": end})
         return out
 
     # ---- 各能力实现 ----

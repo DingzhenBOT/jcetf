@@ -62,7 +62,8 @@ def test_history_source_map_index_per_source_kwargs():
     m = a._history_source_map(a._INDEX_HIST, "index", "000300", "20240101", "20240131")
     em_func, em_kw = m["em"]
     assert em_func == "stock_zh_index_daily_em"
-    assert em_kw["symbol"] == "000300"
+    # em 指数必须 sh/sz 前缀（裸码 stock_zh_index_daily_em 静默返回空）
+    assert em_kw["symbol"] == "sh000300"
     assert em_kw["start_date"] == "20240101"
     # sina：仅 symbol，已转 sh/sz，无 start/end
     sina_func, sina_kw = m["sina"]
@@ -72,3 +73,15 @@ def test_history_source_map_index_per_source_kwargs():
     tx_func, tx_kw = m["tx"]
     assert tx_func == "stock_zh_index_daily_tx"
     assert tx_kw == {"symbol": "sh000300"}
+
+
+def test_history_symbol_format_per_source():
+    a = _adapter()
+    # 指数：em/sina/tx 都需 sh/sz 前缀
+    assert a._history_symbol("index", "em", "000300") == "sh000300"
+    assert a._history_symbol("index", "sina", "000300") == "sh000300"
+    assert a._history_symbol("index", "tx", "399001") == "sz399001"
+    # ETF：em 传裸码（fund_etf_hist_em 内部查市场）；sina/tx 需 sh/sz 前缀
+    assert a._history_symbol("etf", "em", "510300") == "510300"
+    assert a._history_symbol("etf", "sina", "510300") == "sh510300"
+    assert a._history_symbol("etf", "tx", "510300") == "sh510300"
