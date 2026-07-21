@@ -2,8 +2,11 @@
 
 - preferred 优先，失败/空则按 fallback 顺序尝试，首个成功即返回并记录实际来源。
 - 各能力按 source 映射到具体 akshare 函数（已用 P-1/P-1b 真实网络验证）。
-- em 在沙箱被防火墙拦截 -> 自动降级 sina/ths/tx；生产（国内网络）优先 em。
-- 板块历史/板块历史资金流仅 em 提供（生产验证）；沙箱会全部失败并抛 DataSourceError。
+- em 在沙箱/部分生产网络被防火墙拦截 -> 自动降级 sina/ths/tx；生产（国内网络）优先 em。
+- 指数/ETF 历史已回落到新浪（stock_zh_index_daily / fund_etf_hist_sina）；新浪仅接受 symbol
+  且需 sh/sz 前缀（系统存数字代码），由 _to_sina_symbol 转换，且新浪函数不接受 start/end
+  参数，故历史接口的 kwargs 按源分别构造（见 _history_source_map）。
+- 板块历史/板块历史资金流仅 em 提供；新浪无替代，沙箱会全部失败并优雅降级（D4）。
 """
 from __future__ import annotations
 
@@ -54,6 +57,38 @@ class AkShareAdapter(BaseDataProvider):
                     continue
         raise DataSourceError(f"{capability} failed on all sources: {last_err}")
 
+    # ---- 内部：数字代码 -> 新浪 sh/sz 前缀 ----
+    def _to_sina_symbol(self, code: str, kind: str) -> str:
+        """系统存数字代码（如 000300 / 510300），新浪接口需 sh/sz 前缀。
+
+        - 指数：0/6/9 -> sh（含 000300/000001/000016/000688/000905 等上交所指数），3 -> sz（399001/399006）。
+        - ETF：5 -> sh（上交所 51xxxx/56xxxx/58xxxx），1/0 -> sz（深交所 159xxx 及场外联接）。
+        - 已带 sh/sz 前缀则原样返回。
+        注：0 前缀指数统一归 sh（本项目追踪的 0 前缀指数均为上交所）；若将来引入深市 0 前缀指数需在此扩展。
+        """
+        code = str(code).strip().lower()
+        if code[:2] in ("sh", "sz"):
+            return code
+        head = code[0] if code else ""
+        if kind == "index":
+            prefix = "sh" if head in ("0", "6", "9") else "sz"
+        else:  # etf
+            prefix = "sh" if head == "5" else "sz"
+        return prefix + code
+
+    def _history_source_map(self, base_map, kind: str, raw_symbol: str, start: str, end: str) -> Dict[str, Tuple[str, dict]]:
+        """历史 BAR 逐源 kwargs：em 传 symbol+start/end；sina/tx 仅传 symbol（不接受起止参数，且需 sh/sz 前缀）。
+
+        修复旧实现给所有源统一注入 start_date/end_date 导致新浪/腾讯函数 TypeError 的问题。
+        """
+        out: Dict[str, Tuple[str, dict]] = {}
+        for src, (func, kw) in base_map.items():
+            if src in ("sina", "tx"):
+                out[src] = (func, {**kw, "symbol": self._to_sina_symbol(raw_symbol, kind)})
+            else:
+                out[src] = (func, {**kw, "symbol": raw_symbol, "start_date": start, "end_date": end})
+        return out
+
     # ---- 各能力实现 ----
     # 来源 -> (函数名, kwargs)
     _INDEX_SPOT = {
@@ -74,12 +109,17 @@ class AkShareAdapter(BaseDataProvider):
     }
     _TRADE_CALENDAR = {"sina": ("tool_trade_date_hist_sina", {})}
     _BREADTH_RAW = {"sina": ("stock_zh_a_spot", {})}
+    # ETF 历史：em 接受 period/adjust/start/end；新浪 fund_etf_hist_sina 仅接受 symbol（sh/sz 前缀）。
+    # 旧签名 {"period":"daily","adjust":"qfq"} 在新版 akshare 已无效 -> 改为仅 symbol，由 _history_source_map 注入。
     _ETF_HIST = {
         "em": ("fund_etf_hist_em", {"period": "daily", "adjust": "qfq"}),
-        "sina": ("fund_etf_hist_sina", {"period": "daily", "adjust": "qfq"}),
+        "sina": ("fund_etf_hist_sina", {}),
     }
+    # 指数历史：em/tx 仅接受 symbol（sh/sz 前缀）；新浪 stock_zh_index_daily 仅接受 symbol。
+    # 三者均不接受 start/end 参数，故历史 kwargs 按源分别构造。
     _INDEX_HIST = {
         "em": ("stock_zh_index_daily_em", {}),
+        "sina": ("stock_zh_index_daily", {}),
         "tx": ("stock_zh_index_daily_tx", {}),
     }
     # 仅 em（生产验证；沙箱会失败）
@@ -108,11 +148,13 @@ class AkShareAdapter(BaseDataProvider):
         return df
 
     def get_etf_history(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        df, _ = self._call("etf_history", {k: (f, {**kw, "symbol": symbol, "start_date": start, "end_date": end}) for k, (f, kw) in self._ETF_HIST.items()})
+        df, src = self._call("etf_history", self._history_source_map(self._ETF_HIST, "etf", symbol, start, end))
+        df.attrs["__source"] = src
         return df
 
     def get_index_history(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        df, _ = self._call("index_history", {k: (f, {**kw, "symbol": symbol, "start_date": start, "end_date": end}) for k, (f, kw) in self._INDEX_HIST.items()})
+        df, src = self._call("index_history", self._history_source_map(self._INDEX_HIST, "index", symbol, start, end))
+        df.attrs["__source"] = src
         return df
 
     def get_sector_history(self, symbol: str, start: str, end: str) -> pd.DataFrame:

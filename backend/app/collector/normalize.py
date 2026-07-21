@@ -299,25 +299,34 @@ def _bar_row(
     }
 
 
+def _col(r, *names):
+    """取首个非空列名对应的值（兼容同一字段的中英文列名，如 开盘/open、日期/date）。"""
+    for n in names:
+        v = r.get(n)
+        if v is not None:
+            return v
+    return None
+
+
 def normalize_etf_bar(
     df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
 ) -> List[Dict[str, Any]]:
-    """ETF 日线 BAR（fund_etf_hist_em 等）：日期,开盘,收盘,最高,最低,成交量,成交额,振幅,涨跌幅,涨跌额,换手率。"""
+    """ETF 日线 BAR：兼容 em 中文列（日期/开盘/收盘...）与新浪英文列（date/open/close...）。"""
     rows: List[Dict[str, Any]] = []
     for _, r in df.iterrows():
-        d = _parse_date(r.get("日期"))
+        d = _parse_date(_col(r, "日期", "date"))
         if d is None:
             continue
         row = _bar_row(source, "ETF", symbol, d, collected_at)
         row.update(
-            open=_f(r.get("开盘")),
-            high=_f(r.get("最高")),
-            low=_f(r.get("最低")),
-            close=_f(r.get("收盘")),
-            volume=_f(r.get("成交量")),
-            amount=_f(r.get("成交额")),
-            change_percent=_f(r.get("涨跌幅")),
-            turnover_rate=_f(r.get("换手率")),
+            open=_f(_col(r, "开盘", "open")),
+            high=_f(_col(r, "最高", "high")),
+            low=_f(_col(r, "最低", "low")),
+            close=_f(_col(r, "收盘", "close")),
+            volume=_f(_col(r, "成交量", "volume")),
+            amount=_f(_col(r, "成交额", "amount")),
+            change_percent=_f(_col(r, "涨跌幅", "change_percent", "change")),
+            turnover_rate=_f(_col(r, "换手率", "turnover_rate")),
         )
         rows.append(row)
     return rows
@@ -326,21 +335,21 @@ def normalize_etf_bar(
 def normalize_index_bar(
     df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
 ) -> List[Dict[str, Any]]:
-    """指数日线 BAR（stock_zh_index_daily_em / _tx）：date,open,high,low,close,volume（无 amount/change）。"""
+    """指数日线 BAR（stock_zh_index_daily_em / _tx / sina）：date,open,high,low,close,volume（无 amount/change）。"""
     rows: List[Dict[str, Any]] = []
     for _, r in df.iterrows():
-        d = _parse_date(r.get("date")) or _parse_date(r.get("日期"))
+        d = _parse_date(_col(r, "date", "日期"))
         if d is None:
             continue
         row = _bar_row(source, "INDEX", symbol, d, collected_at)
         row.update(
-            open=_f(r.get("open")),
-            high=_f(r.get("high")),
-            low=_f(r.get("low")),
-            close=_f(r.get("close")),
-            volume=_f(r.get("volume")),
-            amount=_f(r.get("amount")),
-            change_percent=_f(r.get("change")),
+            open=_f(_col(r, "open", "开盘")),
+            high=_f(_col(r, "high", "最高")),
+            low=_f(_col(r, "low", "最低")),
+            close=_f(_col(r, "close", "收盘")),
+            volume=_f(_col(r, "volume", "成交量")),
+            amount=_f(_col(r, "amount", "成交额")),
+            change_percent=_f(_col(r, "change", "涨跌幅")),
         )
         rows.append(row)
     return rows

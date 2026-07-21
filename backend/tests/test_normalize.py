@@ -82,3 +82,44 @@ def test_normalize_breadth_counts_and_parses_timestamp():
     assert b["total_amount"] == 7.5e6
     # 时间戳解析：北京 10:00 -> UTC 02:00
     assert b["timestamp"].hour == 2
+
+
+def test_normalize_etf_bar_accepts_sina_english_columns():
+    # 新浪 fund_etf_hist_sina 返回英文列（date/open/high/low/close/volume/amount...）
+    df = pd.DataFrame([
+        {"date": "2024-01-02", "open": 3.7, "high": 3.81, "low": 3.77, "close": 3.8,
+         "volume": 2, "amount": 1e8},
+        {"date": "2024-01-03", "open": 3.79, "high": 3.91, "low": 3.78, "close": 3.9,
+         "volume": 2, "amount": 1e8},
+    ])
+    df.attrs["__source"] = "sina"
+    rows = normalize.normalize_etf_bar(df, "sina", "510300", _now())
+    assert len(rows) == 2
+    assert rows[0]["close"] == 3.8 and rows[0]["open"] == 3.7 and rows[0]["high"] == 3.81
+    assert rows[0]["volume"] == 2 and rows[0]["amount"] == 1e8
+    assert rows[0]["symbol_type"] == "ETF" and rows[0]["data_kind"] == "BAR"
+
+
+def test_normalize_etf_bar_accepts_em_chinese_columns():
+    # em fund_etf_hist_em 返回中文列
+    df = pd.DataFrame([
+        {"日期": "2024-01-02", "开盘": 3.7, "收盘": 3.8, "最高": 3.81, "最低": 3.77,
+         "成交量": 2, "成交额": 1e8, "涨跌幅": 0.5, "换手率": 1.2},
+    ])
+    df.attrs["__source"] = "em"
+    rows = normalize.normalize_etf_bar(df, "em", "510300", _now())
+    assert len(rows) == 1
+    assert rows[0]["close"] == 3.8 and rows[0]["change_percent"] == 0.5
+    assert rows[0]["turnover_rate"] == 1.2
+
+
+def test_normalize_index_bar_accepts_sina_english_columns():
+    df = pd.DataFrame([
+        {"date": "2024-01-02", "open": 3190, "high": 3210, "low": 3188, "close": 3200, "volume": 1},
+        {"date": "2024-01-03", "open": 3200, "high": 3220, "low": 3198, "close": 3215, "volume": 1},
+    ])
+    df.attrs["__source"] = "sina"
+    rows = normalize.normalize_index_bar(df, "sina", "000300", _now())
+    assert len(rows) == 2
+    assert rows[0]["close"] == 3200 and rows[0]["high"] == 3210
+    assert rows[0]["symbol_type"] == "INDEX"
