@@ -22,9 +22,9 @@ from app.repository import mapping_repo
 
 # 种子清单：etf_code, etf_name, related_index_code, related_sector_codes, category
 SEED = [
-    ("510300", "沪深300ETF", "000300", [], "宽基"),
-    ("510500", "中证500ETF", "000905", [], "宽基"),
-    ("510050", "上证50ETF", "000016", [], "宽基"),
+    ("510300", "沪深300ETF", "000300", [], "宽基", "场内"),
+    ("510500", "中证500ETF", "000905", [], "宽基", "场内"),
+    ("510050", "上证50ETF", "000016", [], "宽基", "场内"),
     ("159915", "创业板ETF", "399006", [], "宽基", "场内"),
     ("588000", "科创50ETF", "000688", [], "宽基", "场内"),
     ("512010", "医药ETF", "000300", ["BK0465"], "医药", "场内"),
@@ -63,7 +63,10 @@ def main() -> int:
     init_db(eng, settings)
 
     with session_scope(eng) as session:
-        for code, name, idx, sectors, cat, listing in SEED:
+        # 容错解包：缺 listing 的条目默认 None，避免单行漏写导致整体崩溃
+        for entry in SEED:
+            code, name, idx, sectors, cat = entry[0], entry[1], entry[2], entry[3], entry[4]
+            listing = entry[5] if len(entry) >= 6 else None
             mapping_repo.upsert_mapping(
                 session,
                 etf_code=code,
