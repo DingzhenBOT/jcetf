@@ -85,3 +85,82 @@ def test_history_symbol_format_per_source():
     assert a._history_symbol("etf", "em", "510300") == "510300"
     assert a._history_symbol("etf", "sina", "510300") == "sh510300"
     assert a._history_symbol("etf", "tx", "510300") == "sh510300"
+
+
+def test_bk_to_ths_mapping_resolves_industry_and_concept():
+    a = _adapter()
+    # 行业板：半导体 / 证券(券商) / 银行 / 白酒 / 光伏设备
+    assert a._bk_to_ths("BK1036") == ("industry", "半导体")
+    assert a._bk_to_ths("BK0473") == ("industry", "证券")
+    assert a._bk_to_ths("BK0475") == ("industry", "银行")
+    assert a._bk_to_ths("BK0471") == ("industry", "白酒")
+    assert a._bk_to_ths("BK1035") == ("industry", "光伏设备")
+    # 概念板：军工 / 新能源汽车 / 5G
+    assert a._bk_to_ths("BK0481") == ("concept", "军工")
+    assert a._bk_to_ths("BK0900") == ("concept", "新能源汽车")
+    assert a._bk_to_ths("BK0999") == ("concept", "5G")
+
+
+def test_bk_to_ths_mapping_none_for_unmapped_sectors():
+    a = _adapter()
+    # 医药/消费在 THS 无单一聚合板 -> None（调用方跳过 ths 源，降级 D4）
+    assert a._bk_to_ths("BK0465") is None
+    assert a._bk_to_ths("BK0438") is None
+    # 未知 BK 也返回 None（不臆造映射）
+    assert a._bk_to_ths("BK9999") is None
+
+
+def test_get_sector_history_builds_ths_source_only_for_mapped(monkeypatch):
+    """get_sector_history 为 ths 源解析 BK -> 板块名；无映射则跳过 ths 源（不触网）。"""
+    a = _adapter()
+    seen = {}
+
+    def _fake_call(capability, source_map):
+        seen["map"] = dict(source_map)
+        import pandas as pd
+        df = pd.DataFrame([{"日期": "2024-01-02", "开盘价": 1, "最高价": 2,
+                            "最低价": 0.5, "收盘价": 1.5, "成交量": 10, "成交额": 100}])
+        return df, "ths"
+
+    monkeypatch.setattr(a, "_call", _fake_call)
+    monkeypatch.setattr(a, "_ordered_sources", lambda: ["ths"])
+
+    # 半导体 -> 行业板 stock_board_industry_index_ths
+    df = a.get_sector_history("BK1036", "20240101", "20240131")
+    assert seen["map"]["ths"][0] == "stock_board_industry_index_ths"
+    assert seen["map"]["ths"][1]["symbol"] == "半导体"
+    assert seen["map"]["ths"][1]["start_date"] == "20240101"
+    assert len(df) == 1
+
+    # 军工 -> 概念板 stock_board_concept_index_ths
+    df = a.get_sector_history("BK0481", "20240101", "20240131")
+    assert seen["map"]["ths"][0] == "stock_board_concept_index_ths"
+    assert seen["map"]["ths"][1]["symbol"] == "军工"
+
+    # 医药 -> 无 THS 映射，ths 源被跳过；仅 ths 时 source_map 为空 -> DataSourceError
+    from app.errors import DataSourceError
+    try:
+        a.get_sector_history("BK0465", "20240101", "20240131")
+        assert False, "expected DataSourceError when ths unmapped and only ths source"
+    except DataSourceError:
+        pass
+
+
+def test_get_sector_history_em_source_uses_bk_code(monkeypatch):
+    """em 源直接用 BK 代码（stock_board_industry_hist_em），不经 THS 解析。"""
+    a = _adapter()
+    seen = {}
+
+    def _fake_call(capability, source_map):
+        seen["map"] = dict(source_map)
+        import pandas as pd
+        return pd.DataFrame([{"日期": "2024-01-02", "开盘": 1, "最高": 2,
+                              "最低": 0.5, "收盘": 1.5, "成交量": 10, "成交额": 100,
+                              "涨跌幅": 1.0, "换手率": 0.5}]), "em"
+
+    monkeypatch.setattr(a, "_call", _fake_call)
+    monkeypatch.setattr(a, "_ordered_sources", lambda: ["em"])
+    a.get_sector_history("BK1036", "20240101", "20240131")
+    assert seen["map"]["em"][0] == "stock_board_industry_hist_em"
+    assert seen["map"]["em"][1]["symbol"] == "BK1036"
+    assert seen["map"]["em"][1]["period"] == "daily"

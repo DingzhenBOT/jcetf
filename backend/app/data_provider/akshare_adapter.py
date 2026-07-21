@@ -6,7 +6,12 @@
 - 指数/ETF 历史已回落到新浪（stock_zh_index_daily / fund_etf_hist_sina）；新浪仅接受 symbol
   且需 sh/sz 前缀（系统存数字代码），由 _to_sina_symbol 转换，且新浪函数不接受 start/end
   参数，故历史接口的 kwargs 按源分别构造（见 _history_source_map）。
-- 板块历史/板块历史资金流仅 em 提供；新浪无替代，沙箱会全部失败并优雅降级（D4）。
+- 板块历史：腾讯云东财被 RST 拦截，唯一可用源为同花顺（ths）。
+  em 行业历史（stock_board_industry_hist_em）走 BK 代码，生产/本地网可用；
+  ths 行业/概念历史经 _BK_TO_THS 把 BK 代码解析为同花顺板块名（行业板覆盖半导体/证券/银行/
+  白酒/光伏设备，概念板覆盖军工/新能源汽车/5G）。医药/消费在 THS 无单一聚合板 -> 映射 None，
+  本地/生产网回退 em，腾讯云降级（D4）。
+- 板块历史资金流仅 em 提供（ths 仅当日快照无历史），腾讯云降级（D4）。
 """
 from __future__ import annotations
 
@@ -179,9 +184,32 @@ class AkShareAdapter(BaseDataProvider):
         "sina": ("stock_zh_index_daily", {}),
         "tx": ("stock_zh_index_daily_tx", {}),
     }
-    # 仅 em（生产验证；沙箱会失败）
+    # 板块历史：em（BK 代码，生产/本地网可用）；ths 由 _bk_to_ths 动态解析板块名（腾讯云可用）。
     _SECTOR_HIST = {"em": ("stock_board_industry_hist_em", {"period": "daily", "adjust": "qfq"})}
     _SECTOR_FLOW_HIST = {"em": ("stock_sector_fund_flow_hist", {"period": "daily"})}
+
+    # BK 板块代码 -> 同花顺对应板（type: industry/concept, name: THS 板块名）。
+    # 腾讯云东财被 RST 拦截，行业/概念历史唯一可用源为同花顺。
+    #   THS 行业板 1:1 覆盖：半导体 / 证券(券商) / 银行 / 白酒 / 光伏设备
+    #   THS 概念板 1:1 覆盖：军工 / 新能源汽车 / 5G
+    #   医药、消费在 THS 无单一聚合板 -> None（生产网走 em，腾讯云优雅降级 D4）。
+    # 名称经 _get_stock_board_industry_name_ths / _get_stock_board_concept_name_ths 实测存在。
+    _BK_TO_THS: Dict[str, Optional[Tuple[str, str]]] = {
+        "BK0465": None,                       # 医药：THS 无单一聚合板
+        "BK0481": ("concept", "军工"),
+        "BK0900": ("concept", "新能源汽车"),
+        "BK1035": ("industry", "光伏设备"),
+        "BK1036": ("industry", "半导体"),
+        "BK0999": ("concept", "5G"),
+        "BK0473": ("industry", "证券"),       # 券商 ≈ 证券
+        "BK0475": ("industry", "银行"),
+        "BK0438": None,                       # 消费：THS 无单一聚合板
+        "BK0471": ("industry", "白酒"),
+    }
+
+    def _bk_to_ths(self, bk_code: str) -> Optional[Tuple[str, str]]:
+        """BK 代码 -> (ths_type, ths_name)；无对应板返回 None（调用方应优雅跳过）。"""
+        return self._BK_TO_THS.get(bk_code)
 
     def get_trade_calendar(self) -> list:
         df, _ = self._call("trade_calendar", self._TRADE_CALENDAR)
@@ -215,7 +243,29 @@ class AkShareAdapter(BaseDataProvider):
         return df
 
     def get_sector_history(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        df, _ = self._call("sector_history", {k: (f, {**kw, "symbol": symbol, "start_date": start, "end_date": end}) for k, (f, kw) in self._SECTOR_HIST.items()})
+        """板块历史 BAR。symbol 为 BK 代码（如 BK1036）。
+
+        - em：stock_board_industry_hist_em(symbol=BK代码)（生产/本地网可用）。
+        - ths：经 _bk_to_ths 解析为同花顺行业/概念板名后调用对应函数（腾讯云可用）。
+          解析为 None 的板块（医药/消费）跳过 ths 源；若同时无 em 可用则抛 DataSourceError 降级。
+        """
+        src_map: Dict[str, Tuple[str, dict]] = {}
+        for src in self._ordered_sources():
+            if src == "em":
+                src_map[src] = (
+                    "stock_board_industry_hist_em",
+                    {"symbol": symbol, "period": "daily", "adjust": "qfq", "start_date": start, "end_date": end},
+                )
+            elif src == "ths":
+                ths = self._bk_to_ths(symbol)
+                if ths is None:
+                    continue  # 该板块在 THS 无单一聚合板，跳过 ths 源
+                ths_type, ths_name = ths
+                func = "stock_board_industry_index_ths" if ths_type == "industry" else "stock_board_concept_index_ths"
+                src_map[src] = (func, {"symbol": ths_name, "start_date": start, "end_date": end})
+        if not src_map:
+            raise DataSourceError(f"sector_history: no applicable source for BK {symbol}")
+        df, _ = self._call("sector_history", src_map)
         return df
 
     def get_sector_fund_flow_history(self, symbol: str, start: str, end: str) -> pd.DataFrame:

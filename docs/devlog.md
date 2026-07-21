@@ -609,4 +609,15 @@ curl -sS -u admin:密码 https://jiucaietf.icu/api/market/overview
 - **背景**：`/api/market/overview` 原只查指数日线 BAR（`data_kind=BAR`）显示 close/change；但 em 历史回填在用户云服务器失败（DESIGN 已预言：em-only 历史在沙箱/用户服务器会失败），INDEX BAR 为空 → 指数恒为 null。
 - **改动**：`app/api/routers/market.py` 的 overview 在 BAR 缺失时回退查最新 `SNAPSHOT`（collect_once 已存实时 close）。优先 BAR、回退 SNAPSHOT，纯展示层兜底，**不动冻结的策略引擎**。
 - **效果**：指数当下即显示实时值（盘中随快照刷新）；有日线 BAR 后仍优先用 BAR。
+
+### P9+ 补丁：THS 板块历史源补齐 sector_trend（2026-07-21）
+- **背景**：东财在腾讯云被 RST 拦截（用户实测 `sh000300` → `RemoteDisconnected`），板块历史/资金流（em-only）全缺失 → `sector_trend` 维度无数据 → 置信度上限 70（D4）。用户实测 `stock_board_industry_index_ths('半导体')` 返回 38 行、`stock_fund_flow_industry('即时')` 返回 90 行 → THS 在腾讯云可用。
+- **改动**：
+  - `app/data_provider/akshare_adapter.py`：新增 `_BK_TO_THS`（BK→(ths_type,ths_name)，8 个板块有映射、医药/消费为 None）；`get_sector_history` 按降级链构造 source_map —— `em` 走 `stock_board_industry_hist_em`（BK 码），`ths` 经映射解析后调 `stock_board_industry_index_ths`（行业板）或 `stock_board_concept_index_ths`（概念板）；无映射板块跳过 ths 源，仅 ths 时 source_map 为空则抛 `DataSourceError` 由 collector 优雅降级（D4）。
+  - `app/collector/normalize.py`：`normalize_sector_bar` 兼容 `开盘/收盘`（em）与 `开盘价/收盘价`（THS）。
+  - 测试：`test_data_provider_adapter.py` 增 `_bk_to_ths` 映射/无映射/`get_sector_history` 源构造；`test_normalize.py` 增 THS 列与 em 列两例。
+- **THS 映射覆盖**：半导体/证券(券商)/银行/白酒/光伏设备（行业板）+ 军工/新能源汽车/5G（概念板）= 8/10；医药、消费在 THS 无单一聚合板 → 仍 D4 降级。
+- **验证**：沙箱真实网络 8 个映射板块均返回 38 行，端到端归一化通过；医药/消费抛 `DataSourceError` 被 `_collect_bar` 记 FAILED 不中断回填。全量 152 测试通过。
+- **未做（已知）**：板块资金流历史仍缺失（THS 仅当日快照无历史）→ 仍 D4；补齐需每日存快照自攒历史，本轮不做。
+- **上线**：`git pull` + `systemctl restart etf-worker` + `python -m scripts.run_evaluate --backfill`（ths 生效）。详见 `/workspace/jcetf_p9_deploy.md` 第七章。
 - **已知**：图表/信号仍需价格历史。em 回填失败环境下，信号为"无数据型"（MARKET_RISK_HIGH/NO_PARTICIPATE，D4 优雅降级，符合预期）；价格历史需等交易时段 worker 累积或 em 可用后变丰富。

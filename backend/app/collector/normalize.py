@@ -358,7 +358,11 @@ def normalize_index_bar(
 def normalize_sector_bar(
     df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
 ) -> List[Dict[str, Any]]:
-    """板块趋势日线 BAR（stock_board_industry_hist_em）：日期,开盘,收盘,最高,最低,成交量,成交额,振幅,涨跌幅,涨跌额,换手率。
+    """板块趋势日线 BAR。兼容两种来源列名：
+
+    - em（stock_board_industry_hist_em）：日期,开盘,收盘,最高,最低,成交量,成交额,涨跌幅,换手率
+    - ths（stock_board_industry/concept_index_ths）：日期,开盘价,最高价,最低价,收盘价,成交量,成交额
+      （无涨跌幅/换手率 -> change_percent/turnover_rate 为 None）
 
     symbol_type 统一存 "SECTOR"（行业/概念历史 BAR 共用，按代码查询；与快照 INDUSTRY/CONCEPT 区分于 data_kind）。
     """
@@ -369,14 +373,14 @@ def normalize_sector_bar(
             continue
         row = _bar_row(source, "SECTOR", symbol, d, collected_at)
         row.update(
-            open=_f(r.get("开盘")),
-            high=_f(r.get("最高")),
-            low=_f(r.get("最低")),
-            close=_f(r.get("收盘")),
-            volume=_f(r.get("成交量")),
-            amount=_f(r.get("成交额")),
-            change_percent=_f(r.get("涨跌幅")),
-            turnover_rate=_f(r.get("换手率")),
+            open=_f(_col(r, "开盘", "开盘价")),
+            high=_f(_col(r, "最高", "最高价")),
+            low=_f(_col(r, "最低", "最低价")),
+            close=_f(_col(r, "收盘", "收盘价")),
+            volume=_f(_col(r, "成交量")),
+            amount=_f(_col(r, "成交额")),
+            change_percent=_f(_col(r, "涨跌幅")),
+            turnover_rate=_f(_col(r, "换手率")),
         )
         rows.append(row)
     return rows

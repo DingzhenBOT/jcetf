@@ -123,3 +123,36 @@ def test_normalize_index_bar_accepts_sina_english_columns():
     assert len(rows) == 2
     assert rows[0]["close"] == 3200 and rows[0]["high"] == 3210
     assert rows[0]["symbol_type"] == "INDEX"
+
+
+def test_normalize_sector_bar_accepts_ths_columns_with_price_suffix():
+    # THS 行业/概念历史返回「开盘价/最高价/最低价/收盘价」（带"价"），且无涨跌幅/换手率
+    df = pd.DataFrame([
+        {"日期": "2024-01-02", "开盘价": 100.0, "最高价": 102.0, "最低价": 99.0,
+         "收盘价": 101.5, "成交量": 5000, "成交额": 1.2e9},
+    ])
+    df.attrs["__source"] = "ths"
+    rows = normalize.normalize_sector_bar(df, "ths", "BK1036", _now())
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["symbol_type"] == "SECTOR" and r["symbol"] == "BK1036"
+    assert r["data_kind"] == "BAR" and r["timeframe"] == "1d"
+    assert r["open"] == 100.0 and r["close"] == 101.5
+    assert r["high"] == 102.0 and r["low"] == 99.0
+    assert r["volume"] == 5000 and r["amount"] == 1.2e9
+    # THS 无涨跌幅/换手率 -> None（不臆造）
+    assert r["change_percent"] is None and r["turnover_rate"] is None
+
+
+def test_normalize_sector_bar_accepts_em_columns():
+    # em 行业历史返回「开盘/收盘/最高/最低」（不带"价"）
+    df = pd.DataFrame([
+        {"日期": "2024-01-02", "开盘": 100.0, "最高": 102.0, "最低": 99.0,
+         "收盘": 101.5, "成交量": 5000, "成交额": 1.2e9, "涨跌幅": 1.5, "换手率": 0.8},
+    ])
+    df.attrs["__source"] = "em"
+    rows = normalize.normalize_sector_bar(df, "em", "BK1036", _now())
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["open"] == 100.0 and r["close"] == 101.5
+    assert r["change_percent"] == 1.5 and r["turnover_rate"] == 0.8
