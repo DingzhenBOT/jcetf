@@ -50,8 +50,18 @@ cp /workspace/config/.env.example /workspace/config/.env
 
 ```bash
 cd /workspace/backend
-./venv/bin/python -m scripts.init_db
+./venv/bin/python -m scripts.init_db        # 建表 + 索引
+./venv/bin/python -m scripts.seed_mapping   # 种子 ETF→板块映射（幂等；不跑则评估无对象、无信号）
 ```
+
+> **首次还要生成信号/补齐历史**：`collect_once` 只采实时快照+宽度，不写日线 BAR、不跑评估。
+> 想立刻看到指数 close/change 与信号/风险，再跑：
+> ```bash
+> ./venv/bin/python -m scripts.run_evaluate --phase post_close --backfill
+> #   --backfill 回填历史 BAR（走 em 东方财富；不可达则非致命失败，等交易时段自动累积）
+> #   不跑评估则 /api/market/overview 的 signal_risk 恒为空
+> ```
+> 之后由 `etf-worker` 在交易时段自动采集+评估，无需手动。
 
 ## 4. 进程托管：systemd
 
