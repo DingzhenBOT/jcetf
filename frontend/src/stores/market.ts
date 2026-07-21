@@ -37,7 +37,9 @@ let timer: ReturnType<typeof setInterval> | null = null
 let clock: ReturnType<typeof setInterval> | null = null
 
 async function tick(): Promise<void> {
-  _state.loading = true
+  // 仅首次加载（尚无任何数据）显示骨架屏；后台轮询静默原地更新，避免整屏闪烁。
+  const hasData = _state.overview !== null || _state.latestSignals.length > 0
+  if (!hasData) _state.loading = true
   _state.error = null
   try {
     const [ov, sigs] = await Promise.all([getOverview(), getSignalsLatest()])
@@ -47,9 +49,10 @@ async function tick(): Promise<void> {
     _state.lastUpdated = new Date().toISOString()
   } catch (e) {
     _state.connected = false
-    _state.error = e instanceof Error ? e.message : '未知错误'
+    // 后台轮询失败：保留旧数据，不弹错误面板（仅首次加载失败才显示错误）。
+    if (!hasData) _state.error = e instanceof Error ? e.message : '未知错误'
   } finally {
-    _state.loading = false
+    if (!hasData) _state.loading = false
   }
 }
 

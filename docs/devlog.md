@@ -645,3 +645,9 @@ curl -sS -u admin:密码 https://jiucaietf.icu/api/market/overview
   5. **`lib/format.ts` 置信度三档**：`confidenceLevel` 高/中/低（70%→中），UI 降为次级信息，不压过行动建议。
 - **验证**：`npx vue-tsc --noEmit` 0 错；`npm run build` 成功（echarts 大包警告为既有）；后端 152 测试全过。
 - **未做（第2层，待拍板）**：量价进信号（触及冻结边界，需放宽 strategy_hash 语义才做）；当前 volume 仅存原始字段、未做量价判定。提案见 `docs/ux_redesign_proposal.md` §4。
+
+### 修复：轮询整屏闪烁（2026-07-21）
+- **现象**：每 60s 轮询时整块看板（含信号表）闪一下骨架屏再弹回，用户读"综合分"时被打断，观感差。
+- **根因**：`stores/market.ts` 的 `tick()` 在**每次**轮询开头 `_state.loading=true`；`StatePanel` 用 `v-if="loading"` 在加载时**整体隐藏真实内容、显示骨架屏**。于是每次后台轮询都触发一次全屏骨架闪烁。
+- **修复**：骨架屏仅在**首次加载**（尚无任何数据）显示；后台轮询静默原地更新（Vue 按 key 打补丁，数字就地变）。瞬时轮询失败也保留旧数据、不弹错误面板（仅首次失败才显示错误）。`StatePanel` 组件未改。
+- **验证**：`npx vue-tsc --noEmit` 0 错。部署后后台轮询不再打断阅读。
