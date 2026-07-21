@@ -604,3 +604,9 @@ curl -sS -u admin:密码 https://jiucaietf.icu/api/market/overview
 ### 下一步
 - 用户在服务器按 `docs/ops.md` 落地并自测（每阶段完成即暂停自测，符合约定）。
 - 可选：P9 用户系统（仅当需要保存个人持仓/历史建议时）；回测结果前端可视化（第二阶段）。
+
+### P8 补丁：overview 指数回退 SNAPSHOT（2026-07-21）
+- **背景**：`/api/market/overview` 原只查指数日线 BAR（`data_kind=BAR`）显示 close/change；但 em 历史回填在用户云服务器失败（DESIGN 已预言：em-only 历史在沙箱/用户服务器会失败），INDEX BAR 为空 → 指数恒为 null。
+- **改动**：`app/api/routers/market.py` 的 overview 在 BAR 缺失时回退查最新 `SNAPSHOT`（collect_once 已存实时 close）。优先 BAR、回退 SNAPSHOT，纯展示层兜底，**不动冻结的策略引擎**。
+- **效果**：指数当下即显示实时值（盘中随快照刷新）；有日线 BAR 后仍优先用 BAR。
+- **已知**：图表/信号仍需价格历史。em 回填失败环境下，信号为"无数据型"（MARKET_RISK_HIGH/NO_PARTICIPATE，D4 优雅降级，符合预期）；价格历史需等交易时段 worker 累积或 em 可用后变丰富。

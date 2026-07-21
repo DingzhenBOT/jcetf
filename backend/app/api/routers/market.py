@@ -79,9 +79,14 @@ def market_overview(session: Session = Depends(get_db)):
     indices: List[IndexSnapshotOut] = []
     index_dates: List[str] = []
     for code in codes:
+        # 优先日线 BAR（含 close/change）；BAR 缺失（如 em 历史回填失败）时回退最新 SNAPSHOT
         q = quote_repo.get_latest_quote(
             session, "INDEX", code, data_kind="BAR", timeframe="1d"
         )
+        if q is None:
+            q = quote_repo.get_latest_quote(
+                session, "INDEX", code, data_kind="SNAPSHOT", timeframe="snapshot"
+            )
         if q is not None:
             indices.append(
                 IndexSnapshotOut(
