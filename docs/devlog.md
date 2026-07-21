@@ -620,4 +620,15 @@ curl -sS -u admin:密码 https://jiucaietf.icu/api/market/overview
 - **验证**：沙箱真实网络 8 个映射板块均返回 38 行，端到端归一化通过；医药/消费抛 `DataSourceError` 被 `_collect_bar` 记 FAILED 不中断回填。全量 152 测试通过。
 - **未做（已知）**：板块资金流历史仍缺失（THS 仅当日快照无历史）→ 仍 D4；补齐需每日存快照自攒历史，本轮不做。
 - **上线**：`git pull` + `systemctl restart etf-worker` + `python -m scripts.run_evaluate --backfill`（ths 生效）。详见 `/workspace/jcetf_p9_deploy.md` 第七章。
+
+### P9+ 补丁：prod 回填验证（2026-07-21，腾讯云）
+- 用户实跑 `git pull && systemctl restart etf-worker && python -m scripts.run_evaluate --backfill`，结果：
+  `etf: ok=0/failed=2, index: ok=0/failed=0, sector: ok=4/failed=2, sector_flow: ok=0/failed=6`；evaluate `signals+0~19, opinions+0~19, errors=[]`。
+- **全部符合预期，非回归**：
+  - **ETF failed=2 = 场外联接 110020 + 110003**（沙箱复现确认：新浪 `fund_etf_hist_sina` 对这 2 支无历史；`000008` 联接反而有）。非致命，勿当异常。
+  - **index 0/0** = 已用新浪回填完成，跳过。
+  - **sector ok=4** = THS 在生产生效 ✅；**failed=2** = 医药(BK0465)/消费(BK0438) 无 THS 单一聚合板 → D4（预期）；**4 skipped** = 此前 em 板块接口偶通已存数据，正常。
+  - **sector_flow 0/6** = 东财历史被 RST，THS 仅当日快照无历史 → D4（预期）。
+  - evaluate 0 错误、19 信号/19 意见 → 引擎健康，原"清一色 50"已解决。
+- 已修正 `/workspace/jcetf_p9_deploy.md` 第六章：ETF 不再预期"失败消失"，明确 2 支场外联接预期失败。
 - **已知**：图表/信号仍需价格历史。em 回填失败环境下，信号为"无数据型"（MARKET_RISK_HIGH/NO_PARTICIPATE，D4 优雅降级，符合预期）；价格历史需等交易时段 worker 累积或 em 可用后变丰富。
