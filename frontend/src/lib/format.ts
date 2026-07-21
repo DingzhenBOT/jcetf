@@ -41,3 +41,11 @@ export function changeColor(v: number | null | undefined): string {
   if (v === null || v === undefined || Number.isNaN(v) || v === 0) return 'text-flat'
   return v > 0 ? 'text-up' : 'text-down'
 }
+
+// 置信度三档（弱化大数字，避免压过行动建议）。后端 0–100 百分比。
+export function confidenceLevel(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '未知'
+  if (v >= 80) return '高'
+  if (v >= 60) return '中'
+  return '低'
+}

@@ -8,8 +8,8 @@ import SignalTable from '@/components/sections/SignalTable.vue'
 import OpinionList from '@/components/sections/OpinionList.vue'
 import { getEtfs, getOpinions, getSignalsHistory } from '@/api/endpoints'
 import type { EtfListItem, Opinion, Signal } from '@/api/types'
-import { TIER_BADGE, regimeText } from '@/lib/tier'
-import { fmtScore, fmtConfidence } from '@/lib/format'
+import { TIER_BADGE, TIER_BORDER, regimeText } from '@/lib/tier'
+import { fmtScore, fmtConfidence, confidenceLevel } from '@/lib/format'
 import { toBeijing } from '@/lib/time'
 
 const route = useRoute()
@@ -46,6 +46,14 @@ watch(code, load)
 const missingRules = computed(() =>
   etf.value?.latest_signal?.failed_rules?.filter((r) => r.includes('missing')) ?? [],
 )
+
+// 人话结论（置顶 Hero 用）：优先取最新意见的完整句子，回退 one_liner / suggested_action。
+const heroSentence = computed(() => {
+  const first = opinions.value[0]?.content
+  if (first) return first
+  const s = etf.value?.latest_signal
+  return s?.one_liner ?? s?.suggested_action ?? ''
+})
 </script>
 
 <template>
@@ -84,6 +92,30 @@ const missingRules = computed(() =>
             </router-link>
           </div>
         </div>
+
+        <!-- 结论 Hero（人话置顶） -->
+        <Card
+          v-if="etf.latest_signal"
+          class="border-l-4"
+          :class="TIER_BORDER[etf.latest_signal.signal_type]"
+        >
+          <div class="flex items-start justify-between gap-3 flex-wrap">
+            <div class="min-w-0">
+              <Badge
+                :text="etf.latest_signal.signal_type_text"
+                :class="TIER_BADGE[etf.latest_signal.signal_type]"
+              />
+              <p class="mt-2 text-base leading-relaxed text-slate-700">{{ heroSentence }}</p>
+            </div>
+            <div class="text-right shrink-0">
+              <div class="text-xs text-slate-400">建议仓位</div>
+              <div class="font-semibold text-slate-700">{{ etf.latest_signal.position_text }}</div>
+              <div class="mt-1 text-xs text-slate-400">
+                可信度：{{ confidenceLevel(etf.latest_signal.confidence) }}
+              </div>
+            </div>
+          </div>
+        </Card>
 
         <!-- 最新信号 -->
         <Card

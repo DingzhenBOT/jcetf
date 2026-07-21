@@ -74,6 +74,7 @@ export interface Signal {
   suggested_action?: string | null
   suggested_position_range?: number[] | null
   position_text: string
+  one_liner?: string | null
   supporting_metrics?: Record<string, unknown> | null
   risk_flags?: Record<string, unknown> | null
   triggered_rules?: string[] | null

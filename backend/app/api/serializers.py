@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from app.db.models.mapping import EtfMapping
 from app.db.models.signal_opinion import Opinion, Signal
-from app.opinion_engine.templates import TIER_TEXT, position_text_of
+from app.opinion_engine.templates import TIER_TEXT, position_text_of, key_metrics_text
 
 
 def _iso(v: Any) -> Optional[str]:
@@ -38,6 +38,7 @@ def signal_to_dict(sig: Signal) -> Dict[str, Any]:
         "suggested_action": sig.suggested_action,
         "suggested_position_range": sig.suggested_position_range,
         "position_text": position_text_of(tier, sig.suggested_position_range),
+        "one_liner": key_metrics_text(sig.supporting_metrics if isinstance(sig.supporting_metrics, dict) else {}),
         "supporting_metrics": sig.supporting_metrics,
         "risk_flags": sig.risk_flags,
         "triggered_rules": sig.triggered_rules,

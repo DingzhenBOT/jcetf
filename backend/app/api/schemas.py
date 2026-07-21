@@ -27,6 +27,7 @@ class SignalOut(BaseModel):
     suggested_action: Optional[str] = None
     suggested_position_range: Optional[List[float]] = None
     position_text: str
+    one_liner: Optional[str] = None  # 确定性人话摘要（key_metrics_text），供关注榜/详情页前置展示
     supporting_metrics: Optional[Dict[str, Any]] = None
     risk_flags: Optional[Dict[str, Any]] = None
     triggered_rules: Optional[List[str]] = None

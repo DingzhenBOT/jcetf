@@ -58,6 +58,16 @@ export const TIER_COLOR: Record<SignalType, string> = {
   MARKET_RISK_HIGH: '#e11d48',
 }
 
+// 档位对应的左侧强调边框色（结论 Hero 用；border-l-* 仅染左侧，卡片其余边保持中性）
+export const TIER_BORDER: Record<SignalType, string> = {
+  NO_PARTICIPATE: 'border-l-slate-300',
+  OBSERVE: 'border-l-sky-300',
+  SMALL_POSITION: 'border-l-emerald-300',
+  OPPORTUNITY_ENHANCE: 'border-l-green-300',
+  NO_CHASE_HIGH: 'border-l-amber-300',
+  MARKET_RISK_HIGH: 'border-l-rose-300',
+}
+
 export const REGIME_TEXT: Record<string, string> = {
   STRONG_UP: '强势上行',
   TREND_UP: '震荡上行',

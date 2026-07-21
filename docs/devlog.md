@@ -632,3 +632,16 @@ curl -sS -u admin:密码 https://jiucaietf.icu/api/market/overview
   - evaluate 0 错误、19 信号/19 意见 → 引擎健康，原"清一色 50"已解决。
 - 已修正 `/workspace/jcetf_p9_deploy.md` 第六章：ETF 不再预期"失败消失"，明确 2 支场外联接预期失败。
 - **已知**：图表/信号仍需价格历史。em 回填失败环境下，信号为"无数据型"（MARKET_RISK_HIGH/NO_PARTICIPATE，D4 优雅降级，符合预期）；价格历史需等交易时段 worker 累积或 em 可用后变丰富。
+
+### UX 改进第1层：纯前端直白化（2026-07-21）
+- **背景**：用户复盘认为当前产品"像量化研究员仪表盘，不够人性化/直白"，原始需求（盘中量价+涨跌给建议、收盘复盘）未充分落地。先出 `docs/ux_redesign_proposal.md`（待审），用户批第1层（纯前端、不碰引擎）开工。
+- **铁律守住**：未改 `strategy_engine` 任何评分数学；`strategy_hash`/`LLM只润色不判断` 未触碰。仅动展示层 + 意见模板/序列化（presentation）。
+- **后端（序列化层）**：`SignalOut` 新增 `one_liner` 字段 = `key_metrics_text(supporting_metrics)`（确定性、后端生成的人话摘要）；`schemas.py` + `serializers.py` 同步。
+- **前端**：
+  1. **今日关注榜 `WatchBoard.vue`（新）**：取 `latestSignals`，按档位积极度降序取可操作 TOP5（OPPORTUNITY_ENHANCE/SMALL_POSITION），每条 ETF名+档位徽章(大字)+one_liner+建议仓位；无机会显空态。结论前置。
+  2. **`MarketOverview.vue` 盘中/收盘复盘 双 Tab**：默认按北京时间(>=15点)推断模式；盘中=实时仪表盘，复盘=今日分布+明日观察候选(OBSERVE)。关注榜两种模式都置顶。
+  3. **`EtfDetail.vue` 人话 Hero 置顶**：结论卡（档位徽章+人话句子+建议仓位+可信度三档）放最上方，详细指标下放；左侧强调边框按档位着色（TIER_BORDER）。
+  4. **`OpinionList.vue` 依据折叠**：人话内容置顶，触发依据用原生 `<details>` 渐进披露（input_summary）。
+  5. **`lib/format.ts` 置信度三档**：`confidenceLevel` 高/中/低（70%→中），UI 降为次级信息，不压过行动建议。
+- **验证**：`npx vue-tsc --noEmit` 0 错；`npm run build` 成功（echarts 大包警告为既有）；后端 152 测试全过。
+- **未做（第2层，待拍板）**：量价进信号（触及冻结边界，需放宽 strategy_hash 语义才做）；当前 volume 仅存原始字段、未做量价判定。提案见 `docs/ux_redesign_proposal.md` §4。
