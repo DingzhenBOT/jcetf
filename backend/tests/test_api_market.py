@@ -124,4 +124,4 @@ def test_index_history_unknown_code_returns_empty_points(api_client_index_histor
     body = r.json()
     assert body["points"] == []
     assert body["read"]  # 观察期提示
-    assert "关键指标" not in body["read"] (P10 前端重塑：指数数字带 + 可点开详情抽屉 + 意见人话化)
+    assert "关键指标" not in body["read"]
