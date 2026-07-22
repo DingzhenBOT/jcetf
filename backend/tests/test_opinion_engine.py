@@ -1,4 +1,4 @@
-"""opinion_engine 单测（P3）：template-v1 确定性生成，无 LLM 调用。"""
+"""opinion_engine 单测（P3）：template-v2 确定性生成（人话化），无 LLM 调用。"""
 from app.opinion_engine.engine import OpinionEngine
 from app.opinion_engine.phrase import TemplatePhraseClient
 from app.opinion_engine.templates import TIER_TEXT
@@ -25,7 +25,7 @@ def _signal(tier="SMALL_POSITION", score=78.0, confidence=85, regime="TREND_UP",
 
 def test_generate_contains_etf_tier_score():
     opin = OpinionEngine().generate(_signal(), "post_close", {})
-    assert opin["template_version"] == "template-v1"
+    assert opin["template_version"] == "template-v2"
     assert opin["model_version"] is None
     assert "510300" in opin["content"]
     assert TIER_TEXT["SMALL_POSITION"] in opin["content"]

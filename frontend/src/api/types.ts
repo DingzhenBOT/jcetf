@@ -35,6 +35,22 @@ export interface IndexSnapshot {
   source?: string | null
 }
 
+export interface IndexHistoryPoint {
+  date: string
+  close: number
+  volume: number
+  amount: number
+  change_percent?: number | null
+}
+
+export interface IndexHistory {
+  code: string
+  name: string
+  points: IndexHistoryPoint[]
+  read: string
+  signals: string[]
+}
+
 export interface Breadth {
   trading_date?: string | null
   total_rise?: number | null

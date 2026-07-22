@@ -3,6 +3,7 @@ import { apiGet, apiPost, buildQuery } from './client'
 import type {
   Breadth,
   EtfListItem,
+  IndexHistory,
   MarketOverview,
   Opinion,
   OpinionsForEtf,
@@ -40,6 +41,11 @@ export function getSignalsHistory(params: {
 // GET /api/etfs —— ETF 列表（含最新信号摘要）
 export function getEtfs(): Promise<EtfListItem[]> {
   return apiGet<EtfListItem[]>('/etfs')
+}
+
+// GET /api/market/index/{code}/history —— 指数日线历史 + 人话自解读
+export function getIndexHistory(code: string, days?: number): Promise<IndexHistory> {
+  return apiGet<IndexHistory>(`/market/index/${encodeURIComponent(code)}/history${buildQuery({ days })}`)
 }
 
 // GET /api/opinions/{etf} —— 某 ETF 全部意见（可选 phase 过滤）

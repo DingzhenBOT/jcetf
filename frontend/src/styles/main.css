@@ -22,6 +22,15 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 横向数字带：隐藏滚动条但保留可滚动（移动端横滑） */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* 细滚动条（内部工具，弱化为浅灰） */
 * {
   scrollbar-width: thin;

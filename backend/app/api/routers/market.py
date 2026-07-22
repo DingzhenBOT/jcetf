@@ -15,11 +15,16 @@ from fastapi import APIRouter, Depends
 from app.api.deps import get_db
 from app.api.schemas import (
     BreadthOut,
+    IndexHistoryOut,
+    IndexHistoryPoint,
     IndexSnapshotOut,
     MarketOverviewOut,
 )
+from datetime import date, timedelta
+
 from app.config import get_settings
 from app.db.session import Session
+from app.opinion_engine.index_read import humanize_index_read
 from app.repository import quote_repo, signal_repo
 from app.repository import mapping_repo
 
@@ -147,4 +152,38 @@ def market_overview(session: Session = Depends(get_db)):
         indices=indices,
         breadth=breadth,
         signal_risk=signal_risk,
+    )
+
+
+@router.get("/index/{code}/history", response_model=IndexHistoryOut)
+def index_history(code: str, days: int = 60, session: Session = Depends(get_db)):
+    """指数日线历史 + 人话自解读。
+
+    days：回溯交易日数（默认 60）。无数据返回空 points + 观察期提示（不 404）。
+    """
+    end = date.today()
+    start = end - timedelta(days=int(days) * 2 + 30)  # 自然日窗口，容忍非交易日
+    rows = quote_repo.get_bar_history(
+        session, "INDEX", code, start, end, timeframe="1d", data_kind="BAR"
+    )
+    name = INDEX_LABELS.get(code, code)
+    # 仅保留含收盘价的 BAR，按交易日升序
+    rows = [r for r in rows if r.close is not None]
+    points = [
+        IndexHistoryPoint(
+            date=(r.trading_date.isoformat() if r.trading_date is not None else r.timestamp.isoformat()[:10]),
+            close=float(r.close),
+            volume=float(r.volume or 0),
+            amount=float(r.amount or 0),
+            change_percent=(float(r.change_percent) if r.change_percent is not None else None),
+        )
+        for r in rows
+    ]
+    read_result = humanize_index_read(code, name, rows)
+    return IndexHistoryOut(
+        code=code,
+        name=name,
+        points=points,
+        read=read_result["read"],
+        signals=read_result["signals"],
     )

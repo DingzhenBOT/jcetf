@@ -100,3 +100,28 @@ def test_overview_prefers_realtime_snapshot_over_bar(api_client):
     # 优先 SNAPSHOT：close=4100（而非 BAR 的 4000），change_percent=2.5（而非 0.5）
     assert idx["000300"]["close"] == 4100.0
     assert idx["000300"]["change_percent"] == 2.5
+
+def test_index_history_returns_points_with_volume(api_client_index_history):
+    r = api_client_index_history.get("/api/market/index/000001/history?days=60")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["code"] == "000001"
+    assert body["name"] == "上证综指"
+    assert len(body["points"]) > 10
+    p0 = body["points"][0]
+    assert "date" in p0 and "close" in p0 and "volume" in p0 and "amount" in p0
+    assert p0["volume"] > 0 and p0["amount"] > 0
+    # 人话自解读
+    assert body["read"] and "关键指标" not in body["read"]
+    assert isinstance(body["signals"], list) and len(body["signals"]) > 0
+    # 升序（首点日期 < 末点日期）
+    assert body["points"][0]["date"] <= body["points"][-1]["date"]
+
+
+def test_index_history_unknown_code_returns_empty_points(api_client_index_history):
+    r = api_client_index_history.get("/api/market/index/999999/history")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["points"] == []
+    assert body["read"]  # 观察期提示
+    assert "关键指标" not in body["read"] (P10 前端重塑：指数数字带 + 可点开详情抽屉 + 意见人话化)

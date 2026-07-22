@@ -184,6 +184,41 @@ def api_client_quote(tmp_path):
     eng.dispose()
 
 
+@pytest.fixture()
+def api_client_index_history(tmp_path):
+    """带 000001（上证综指）多日 INDEX BAR 的客户端（供指数历史端点测试）。"""
+    s, eng = _seed(tmp_path, with_breadth=True)
+    from app.db.session import session_scope
+
+    days = _weekdays(date.today() - timedelta(days=45), 30)
+    rows = []
+    prev = 3400.0
+    for i, d in enumerate(days):
+        close = round(prev * (1 + 0.004 * (1 if i % 2 == 0 else -1)), 2)
+        rows.append({
+            "data_source": "sina", "symbol_type": "INDEX", "symbol": "000001",
+            "data_kind": "BAR", "timeframe": "1d", "trading_date": d,
+            "timestamp": datetime(d.year, d.month, d.day, 15, 0),
+            "open": prev, "high": max(prev, close), "low": min(prev, close),
+            "close": close, "previous_close": prev,
+            "volume": 1_000_000 + i * 8_000, "amount": 2.0e11,
+            "change_percent": round((close / prev - 1) * 100, 3),
+            "turnover_rate": None, "main_net_inflow": None, "large_order_inflow": None,
+            "rise_count": None, "fall_count": None, "limit_up_count": None, "limit_down_count": None,
+            "collected_at": datetime(d.year, d.month, d.day, 15, 5), "source_timestamp": None,
+            "metric_source": "sina", "metric_definition_version": "v1",
+            "source_switched": 0, "data_quality_status": "OK",
+        })
+        prev = close
+    with session_scope(eng) as session:
+        quote_repo.upsert_market_quotes(session, rows)
+    client = _make_client(eng)
+    with client:
+        yield client
+    app.dependency_overrides.clear()
+    eng.dispose()
+
+
 # --------------------------------------------------------------------------- #
 # P7 回测测试数据（合成 ETF/指数/宽度 BAR，250+ 交易日；含样本内/外各一段行情）
 # --------------------------------------------------------------------------- #

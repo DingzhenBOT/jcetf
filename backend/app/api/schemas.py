@@ -90,6 +90,22 @@ class IndexSnapshotOut(BaseModel):
     source: Optional[str] = None
 
 
+class IndexHistoryPoint(BaseModel):
+    date: str
+    close: float
+    volume: float
+    amount: float
+    change_percent: Optional[float] = None
+
+
+class IndexHistoryOut(BaseModel):
+    code: str
+    name: str
+    points: List[IndexHistoryPoint]
+    read: str
+    signals: List[str] = []
+
+
 class MarketOverviewOut(BaseModel):
     as_of: Optional[str] = None
     indices: List[IndexSnapshotOut]

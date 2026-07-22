@@ -5,9 +5,10 @@ import StatePanel from '@/components/ui/StatePanel.vue'
 import Badge from '@/components/ui/Badge.vue'
 import SignalRiskChart from '@/components/charts/SignalRiskChart.vue'
 import BreadthChart from '@/components/charts/BreadthChart.vue'
-import IndexBars from '@/components/charts/IndexBars.vue'
 import SignalTable from '@/components/sections/SignalTable.vue'
 import WatchBoard from '@/components/sections/WatchBoard.vue'
+import IndexTicker from '@/components/IndexTicker.vue'
+import IndexDrawer from '@/components/IndexDrawer.vue'
 import { marketState, refreshNow, secondsToRefresh } from '@/stores/market'
 import { TIER_TEXT, riskLevelBadge } from '@/lib/tier'
 import { fmtInt } from '@/lib/format'
@@ -16,7 +17,6 @@ import type { SignalType } from '@/api/types'
 
 const ov = computed(() => marketState.overview)
 const risk = computed(() => ov.value?.signal_risk ?? null)
-const indices = computed(() => ov.value?.indices ?? [])
 const breadth = computed(() => ov.value?.breadth ?? null)
 const signals = computed(() => marketState.latestSignals)
 const hasSignals = computed(() => signals.value.length > 0)
@@ -46,6 +46,9 @@ const avoidCount = computed(
       ),
     ).length,
 )
+
+// 指数详情抽屉：null = 关闭
+const openCode = ref<string | null>(null)
 </script>
 
 <template>
@@ -85,6 +88,9 @@ const avoidCount = computed(
       </div>
     </div>
 
+    <!-- 顶部指数数字带：上证指数 hero + 其余指数红涨绿跌，点开看详情 -->
+    <IndexTicker @open="openCode = $event" />
+
     <!-- 今日关注榜（结论前置，两种模式都显示） -->
     <Card title="今日关注榜" subtitle="按可操作度排序的 TOP 机会">
       <WatchBoard :signals="signals" />
@@ -93,14 +99,7 @@ const avoidCount = computed(
     <StatePanel :loading="marketState.loading" :error="marketState.error" @retry="refreshNow()">
       <!-- 盘中：实时仪表盘 -->
       <template v-if="mode === 'intraday'">
-        <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <Card title="主要指数" subtitle="宽基最新收盘涨跌">
-            <IndexBars :indices="indices" />
-            <div v-if="indices.length === 0" class="py-6 text-center text-sm text-slate-400">
-              暂无指数数据（观察期）
-            </div>
-          </Card>
-
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <Card title="市场宽度" subtitle="涨跌家数分布">
             <BreadthChart :breadth="breadth" />
             <div v-if="breadth" class="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
@@ -197,5 +196,8 @@ const avoidCount = computed(
         </Card>
       </template>
     </StatePanel>
+
+    <!-- 指数详情抽屉 -->
+    <IndexDrawer :code="openCode" @close="openCode = null" />
   </div>
 </template>

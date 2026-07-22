@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 
 from app.opinion_engine.phrase import PhraseClient, TemplatePhraseClient
 from app.opinion_engine.templates import (
+    REGIME_TEXT,
     TEMPLATE_V1,
     TEMPLATE_VERSION,
     TIER_TEXT,
@@ -39,7 +40,7 @@ class OpinionEngine:
         # 数值确定性格式化（避免 NaN/None 污染文案）
         score_s = f"{score:.1f}" if isinstance(score, (int, float)) else "—"
         conf_s = f"{confidence:.0f}" if isinstance(confidence, (int, float)) else "—"
-        regime_s = regime if regime else "未知"
+        regime_s = REGIME_TEXT.get(regime, regime) if regime else "未知"
         review_s = review.strftime("%Y-%m-%d %H:%M") if hasattr(review, "strftime") else (str(review) if review else "—")
 
         content = TEMPLATE_V1.format(
