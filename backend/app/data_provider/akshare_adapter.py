@@ -221,6 +221,24 @@ class AkShareAdapter(BaseDataProvider):
         df.attrs["__source"] = src
         return df
 
+    # ---- 指数快照多源补齐（em 批次可能缺失深市指数 399001/399006） ----
+    def index_spot_sources(self) -> List[str]:
+        """index_snapshot 可按源单独调用的有序源列表（preferred 优先）。"""
+        return [s for s in self._ordered_sources() if s in self._INDEX_SPOT]
+
+    def get_index_snapshot_from(self, src: str) -> pd.DataFrame:
+        """调用指定源的指数快照（供 collect_index_snapshot 补齐 em 缺失代码）。"""
+        spec = self._INDEX_SPOT.get(src)
+        if not spec:
+            raise DataSourceError(f"index_snapshot unsupported source: {src}")
+        func_name, kwargs = spec
+        func = getattr(ak, func_name)
+        df = func(**kwargs)
+        if df is None or (hasattr(df, "empty") and df.empty):
+            raise DataSourceError(f"index_snapshot {src} returned empty")
+        df.attrs["__source"] = src
+        return df
+
     def get_sector_ranking(self, sector_type: str) -> pd.DataFrame:
         src_map = self._SECTOR_INDUSTRY if sector_type == "INDUSTRY" else self._SECTOR_CONCEPT
         df, src = self._call(f"sector_ranking:{sector_type}", src_map)

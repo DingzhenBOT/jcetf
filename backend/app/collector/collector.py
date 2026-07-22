@@ -120,13 +120,61 @@ class Collector:
             "source": source,
             "count": n,
             "switched": switched,
+            "codes": [r["symbol"] for r in rows],
         }
 
     def collect_index_snapshot(self, session: Session) -> Dict[str, Any]:
-        return self._collect_snapshot(
+        """指数快照：主源（em）全量批次优先；对 broad_index_codes 中主源未覆盖的指数
+        （如 em 不含深市 399001/399006）用 sina 等兜底源按代码补齐 SNAPSHOT。
+
+        主路径沿用 _collect_snapshot（保留切源标记/数据源状态/质量评估）；补齐按「主批次
+        实际覆盖的代码」判断缺失——每个采集周期都对缺失指数重新拉取，保证跨天新鲜度
+        （不依赖历史 SNAPSHOT 是否存在）。
+        """
+        primary = self._collect_snapshot(
             session, "INDEX", self.provider.get_index_snapshot,
             source_hint=self.settings.data_source.preferred,
         )
+        covered = set(primary.get("codes") or [])
+        self._fill_index_snapshot_gaps(session, exclude_codes=covered)
+        return primary
+
+    def _fill_index_snapshot_gaps(self, session: Session, exclude_codes: set) -> None:
+        """补齐 broad_index_codes 中主批次未覆盖的指数（em 不含深市指数时触发）。
+
+        每兜底源只拉一次整批，按归一副代码查表填充所有缺失代码，避免重复网络调用。
+        每个周期对缺失代码重新拉取，保证新鲜度。
+        """
+        filler = getattr(self.provider, "get_index_snapshot_from", None)
+        if filler is None:
+            return
+        sources = getattr(self.provider, "index_spot_sources", lambda: [])()
+        preferred = self.settings.data_source.preferred
+        missing = [code for code in self.settings.strategy.broad_index_codes if code not in exclude_codes]
+        if not missing:
+            return
+        now = self._now()
+        for src in sources:
+            if src == preferred or not missing:
+                continue  # 主批次已采，或已补齐完毕
+            try:
+                df = filler(src)
+            except Exception as e:  # noqa: BLE001
+                self.log.warning("index snapshot gap-fill source failed", extra={"src": src, "err": str(e)})
+                continue
+            if df is None or (hasattr(df, "empty") and df.empty):
+                continue
+            by_code = {r["symbol"]: r for r in normalize.normalize_index_snapshot(df, src, now)}
+            filled = False
+            for code in list(missing):
+                row = by_code.get(code)
+                if row is not None:
+                    quote_repo.upsert_market_quotes(session, [row])
+                    self.log.info("index snapshot gap-filled", extra={"code": code, "src": src})
+                    missing.remove(code)
+                    filled = True
+            if filled:
+                session.commit()
 
     def collect_etf_snapshot(self, session: Session) -> Dict[str, Any]:
         return self._collect_snapshot(

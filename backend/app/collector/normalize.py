@@ -127,6 +127,9 @@ def normalize_index_snapshot(df: pd.DataFrame, source: str, collected_at: dateti
     rows: List[Dict[str, Any]] = []
     for _, r in df.iterrows():
         code = _code(r.get("代码"))
+        # 新浪指数代码带 sh/sz 前缀（sz399001），归一到系统数字代码（399001）以匹配 broad_index_codes
+        if source == "sina" and code and code[:2] in ("sh", "sz"):
+            code = code[2:]
         if not code:
             continue
         row = _base_row(source, "INDEX", code, collected_at)

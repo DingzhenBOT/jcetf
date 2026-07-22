@@ -731,3 +731,49 @@ curl -sS -u admin:密码 http://127.0.0.1:8000/api/market/overview | python3 -m 
 ### 未做 / 已知
 - 量价背离/异动仍未驱动档位下调（待用户拍板）。
 - 前端 `IndexBars` 无 `change_percent` 时仍渲染 `0%`——修完涨跌幅反算后应不再触发此兜底。
+
+---
+
+## 轮次 — 指数快照补齐：深市 399001 等 em 缺失指数从 sina 兜底（2026-07-22）
+
+### 背景
+上一轮涨跌幅反算修复后，用户 curl overview 反馈：000300(-0.46, em)、000001(0.07, em) 已修复，
+但 **399001(深证成指) 仍为 `change_percent=null`、`source=sina`**（陈旧 BAR 回退）。
+
+### 根因（实网验证）
+- `stock_zh_index_spot_em`（东财指数快照）返回 268 行，**只覆盖沪市类指数**（000300/000001 是沪市，
+  故有；399001 是深市，批次里根本不含）。
+- overview 优先 SNAPSHOT，查不到 399001 的 SNAPSHOT → 回退到陈旧的 sina BAR（无涨跌幅）。
+- 新浪 `stock_zh_index_spot_sina` **含 399001**，且代码带 `sz` 前缀（`sz399001`）、带 `涨跌幅` 列。
+
+### 改动
+1. **`data_provider/akshare_adapter.py`**：`AkshareAdapter` 新增两个具体方法（不进 base 抽象，避免破坏测试）：
+   - `index_spot_sources()`：返回 index_snapshot 可按源单独调用的有序源列表。
+   - `get_index_snapshot_from(src)`：调用指定源的指数快照（供补齐用）。
+2. **`collector/normalize.py`**：`normalize_index_snapshot` 对 `source=="sina"` 的指数代码去 `sh/sz` 前缀
+   （`sz399001` → `399001`），匹配 `broad_index_codes`。
+3. **`collector/collector.py`**：
+   - `_collect_snapshot` 返回增加 `codes`（本次落库代码集合）。
+   - `collect_index_snapshot` 主批次（em）采集后，按「主批次实际覆盖代码」计算缺失的
+     `broad_index_codes`，对每个采集周期都从 sina 等兜底源重新拉取补齐（保证跨天新鲜度，不止于首次为空）。
+   - 新增 `_fill_index_snapshot_gaps`：每兜底源只拉一次整批，按归一副代码查表填充所有缺失指数。
+
+### 测试
+- 新增 `tests/test_index_snapshot_gapfill.py`：
+  - `test_index_snapshot_gapfills_missing_sz_index`：em 缺 399001 → sina 补齐 SNAPSHOT，
+    source=sina、change_percent=-1.422（用源显式值）、close=14061.44；em 主源指数仍正常。
+  - `test_index_snapshot_gapfill_skips_when_em_has_code`：em 已含的指数不被 sina 覆盖。
+- 全量 167 测试通过（原 165 + 新 2）。
+
+### 上线步骤（prod）
+```bash
+cd /workspace && git pull origin main
+# 后端无需重启也能生效：worker 下一轮盘中采集即自动补齐；手动立即见效：
+cd backend && ./venv/bin/python -m scripts.collect_once
+curl -sS -u admin:密码 http://127.0.0.1:8000/api/market/overview | python3 -m json.tool
+# 预期：399001 change_percent 不再为 null（来自 sina 快照，含真实涨跌幅）
+```
+
+### 未做 / 已知
+- 仅指数快照做多源补齐；ETF/板块走 em（生产优先）不在本范围。
+- 量价背离/异动仍未驱动档位下调（待用户拍板）。
