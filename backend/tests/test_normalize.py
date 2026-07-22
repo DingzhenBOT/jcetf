@@ -156,3 +156,34 @@ def test_normalize_sector_bar_accepts_em_columns():
     r = rows[0]
     assert r["open"] == 100.0 and r["close"] == 101.5
     assert r["change_percent"] == 1.5 and r["turnover_rate"] == 0.8
+
+
+def test_normalize_index_snapshot_derives_change_percent_when_missing():
+    # sina 实时指数接口无"涨跌幅"列时，用 最新价/昨收 反算
+    df = pd.DataFrame([{
+        "代码": "000001", "名称": "上证指数", "最新价": 3200.5,
+        "昨收": 3190.3, "今开": 3195.0, "最高": 3210.0,
+        "最低": 3188.0, "成交量": 123456, "成交额": 1.5e9,
+    }])
+    df.attrs["__source"] = "sina"
+    r = normalize.normalize_index_snapshot(df, "sina", _now())[0]
+    assert r["close"] == 3200.5 and r["previous_close"] == 3190.3
+    assert abs(r["change_percent"] - (3200.5 - 3190.3) / 3190.3 * 100) < 1e-3
+
+
+def test_normalize_index_bar_derives_change_percent_from_prev_close():
+    # 日线无"涨跌幅"列时，用前一天收盘反算当日涨跌幅
+    df = pd.DataFrame([
+        {"date": "2024-01-02", "open": 3190, "high": 3210, "low": 3188, "close": 3200, "volume": 1},
+        {"date": "2024-01-03", "open": 3200, "high": 3220, "low": 3198, "close": 3215, "volume": 1},
+        {"date": "2024-01-04", "open": 3215, "high": 3230, "low": 3210, "close": 3190, "volume": 1},
+    ])
+    df.attrs["__source"] = "sina"
+    rows = normalize.normalize_index_bar(df, "sina", "000300", _now())
+    assert len(rows) == 3
+    # 第一天：无昨收 -> None
+    assert rows[0]["change_percent"] is None
+    # 第二天：(3215-3200)/3200*100
+    assert abs(rows[1]["change_percent"] - (3215 - 3200) / 3200 * 100) < 1e-3
+    # 第三天：(3190-3215)/3215*100
+    assert abs(rows[2]["change_percent"] - (3190 - 3215) / 3215 * 100) < 1e-3

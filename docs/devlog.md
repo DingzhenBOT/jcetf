@@ -670,3 +670,64 @@ curl -sS -u admin:密码 https://jiucaietf.icu/api/market/overview
 - **测试**：新增 `test_ta_volume_price.py`（8 例：量能分档/各形态/强度边界）；`test_strategy_engine.py` 增 5 例量价增强（含 vp=None 回归保护）；`test_opinion_engine.py` 增 one_liner 含量价 + 旧文案断言更新。修正 `conftest/test_api_etfs/test_api_signals` 旧文案断言。**后端全量 152 测试通过**；前端 `vue-tsc` 0 错 + `npm run build` 成功。
 - **上线步骤**（prod）：`git pull` + `systemctl restart etf-worker`（引擎自动按新 hash 铸造 v2 策略行）；下次 `run_evaluate` 起信号含量价字段与增强档位，旧信号保留原版本。
 - **未做**：量价背离/异动尚未单独驱动档位下调（仅作风险提示写入指标与 one_liner）；若后续要"背离即降级"需再放宽规则并升版。
+
+---
+
+## 轮次 — 盘中每小时评估 + 14:50 收盘前操作参考 + 指数实时 SNAPSHOT + 涨跌幅反算兜底（2026-07-22）
+
+### 背景 / 用户反馈
+- 盘中信号只在 14:59 跑一次，其余时间"不动"——客户盘中看不到更新的观望/操作建议。
+- 首页"主要指数"卡片看不到实时涨跌（大盘指数不显示）。
+- 生产机 root/ubuntu 混用导致手动命令 `PermissionError`（日志文件属主 root）。
+- 源数据"涨跌幅"列缺失导致 `change_percent=null`，前端 `IndexBars` 渲染成 `0%`。
+
+### 改动（commit `3cc50a5` → `???`）
+
+#### 1. worker 调度（`app/worker.py`）
+- **新增 `job_intraday_evaluate`**：交易时段整点 10:00 / 11:00 / 13:00 / 14:00 触发 `post_collection_evaluate(phase="midday")`，生成盘中观望意见。非交易日跳过。
+- **收盘前评估提前**：从 `14:59` 改为 **`14:50`**（收盘前 10 分钟，客户有下单窗口）。原 14:59 取消。
+- **已注册调度**：
+  - `intraday_evaluate`：`CronTrigger(hour="10,11,13,14", minute=0)`
+  - `pre_close_evaluate`：`CronTrigger(hour=14, minute=50)`
+- 改动不影响策略权重/哈希/版本升版；`midday` phase 已在 `pipeline` / `opinions` / `run_evaluate` 中支持（conftest 早有 `midday` 种子意见）。
+
+#### 2. overview 优先实时 SNAPSHOT（`app/api/routers/market.py`）
+- 指数优先取 `SNAPSHOT`（盘中每 3 分钟更新，含真实涨跌），缺失才回退 `BAR`（收盘/历史）。
+- 原因：原逻辑优先 `BAR` → 盘中显示昨收日线 `close` 但 `change_percent=null`（回填未存涨跌幅）→ 前端 `IndexBars` 渲染 `0%`。
+
+#### 3. 涨跌幅反算兜底（`app/collector/normalize.py`）
+- 新增 `_derive_change_percent(explicit, close, prev_close)`：优先用源显式值；缺失时用 `(close - prev_close) / prev_close * 100` 反算。
+- 应用范围：
+  - `normalize_index_snapshot`：源"涨跌幅"缺失 → 反算（close=最新价, prev_close=昨收）。
+  - `normalize_etf_snapshot`：同上。
+  - `normalize_index_bar`：日线无"涨跌幅"列 → 用**前一天收盘**反算（`prev_close` 取自上一行的 close，首行无昨收→None）。
+- 无论 sina/em/ths 返回什么列，指数涨跌幅都能正确落库。
+
+#### 4. 部署权限根治
+- `deploy/etf-api.service` / `deploy/etf-worker.service` 建议 `User=ubuntu`（生产机执行 `sudo sed -i 's/^User=root/User=ubuntu/'` + `sudo chown -R ubuntu:ubuntu /home/ubuntu/workspace/data`），避免 root/ubuntu 混用导致 `PermissionError`。
+
+### 测试
+- 新增 `test_worker.py`（3 例）：调度时间验证 / midday phase 验证 / 非交易日跳过。
+- 新增 `test_api_market.py` 1 例：`test_overview_prefers_realtime_snapshot_over_bar`。
+- 新增 `test_normalize.py` 2 例：指数快照/日线反算兜底。
+- **后端全量 165 测试通过**。
+
+### 上线步骤（prod）
+```bash
+cd /workspace && git pull origin main
+cd frontend && npm install && npm run build && cd ..
+# 权限根治（如果之前 root/ubuntu 混用）：
+sudo chown -R ubuntu:ubuntu /home/ubuntu/workspace/data
+sudo sed -i 's/^User=root/User=ubuntu/' /etc/systemd/system/etf-api.service /etc/systemd/system/etf-worker.service
+sudo systemctl daemon-reload
+sudo systemctl restart etf-api etf-worker
+# 验证：重新采集一次（让反算涨跌幅写入）
+cd backend && ./venv/bin/python -m scripts.collect_once
+curl -sS -u admin:密码 http://127.0.0.1:8000/api/market/overview | python3 -m json.tool
+# 非交易时段手动验证盘中评估：
+./venv/bin/python -m scripts.run_evaluate --phase midday
+```
+
+### 未做 / 已知
+- 量价背离/异动仍未驱动档位下调（待用户拍板）。
+- 前端 `IndexBars` 无 `change_percent` 时仍渲染 `0%`——修完涨跌幅反算后应不再触发此兜底。

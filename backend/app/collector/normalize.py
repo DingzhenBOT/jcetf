@@ -47,6 +47,17 @@ def _f(v: Any) -> Optional[float]:
     return f
 
 
+def _derive_change_percent(
+    explicit: Optional[float], close: Optional[float], prev_close: Optional[float]
+) -> Optional[float]:
+    """涨跌幅：优先用源显式值；缺失时用 收盘/昨收 反算（源接口无涨跌幅列时也正确）。"""
+    if explicit is not None:
+        return explicit
+    if close is not None and prev_close not in (None, 0):
+        return round((close - prev_close) / prev_close * 100, 4)
+    return None
+
+
 def _code(v: Any) -> Optional[str]:
     if v is None:
         return None
@@ -127,7 +138,7 @@ def normalize_index_snapshot(df: pd.DataFrame, source: str, collected_at: dateti
             previous_close=_f(r.get("昨收")),
             volume=_f(r.get("成交量")),
             amount=_f(r.get("成交额")),
-            change_percent=_f(r.get("涨跌幅")),
+            change_percent=_derive_change_percent(_f(r.get("涨跌幅")), _f(r.get("最新价")), _f(r.get("昨收"))),
         )
         rows.append(row)
     return rows
@@ -149,7 +160,7 @@ def normalize_etf_snapshot(df: pd.DataFrame, source: str, collected_at: datetime
             previous_close=_f(r.get("昨收")),
             volume=_f(r.get("成交量")),
             amount=_f(r.get("成交额")),
-            change_percent=_f(r.get("涨跌幅")),
+            change_percent=_derive_change_percent(_f(r.get("涨跌幅")), _f(r.get("最新价")), _f(r.get("昨收"))),
             turnover_rate=_f(r.get("换手率")),
         )
         rows.append(row)
@@ -337,19 +348,23 @@ def normalize_index_bar(
 ) -> List[Dict[str, Any]]:
     """指数日线 BAR（stock_zh_index_daily_em / _tx / sina）：date,open,high,low,close,volume（无 amount/change）。"""
     rows: List[Dict[str, Any]] = []
+    prev_close: Optional[float] = None  # 前一天收盘，作为当日昨收反算涨跌幅
     for _, r in df.iterrows():
         d = _parse_date(_col(r, "date", "日期"))
         if d is None:
             continue
+        close = _f(_col(r, "close", "收盘"))
+        cp = _derive_change_percent(_f(_col(r, "change", "涨跌幅")), close, prev_close)
+        prev_close = close
         row = _bar_row(source, "INDEX", symbol, d, collected_at)
         row.update(
             open=_f(_col(r, "open", "开盘")),
             high=_f(_col(r, "high", "最高")),
             low=_f(_col(r, "low", "最低")),
-            close=_f(_col(r, "close", "收盘")),
+            close=close,
             volume=_f(_col(r, "volume", "成交量")),
             amount=_f(_col(r, "amount", "成交额")),
-            change_percent=_f(_col(r, "change", "涨跌幅")),
+            change_percent=cp,
         )
         rows.append(row)
     return rows
