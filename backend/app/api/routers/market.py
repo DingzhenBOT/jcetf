@@ -1,9 +1,10 @@
 """市场总览路由（P4，纯只读聚合，不调用任何 engine）。
 
 GET /api/market/breadth/latest -> 最新市场宽度（涨跌家数/涨跌停/上涨占比/成交额）
-GET /api/market/overview      -> 主要指数最新 BAR + 宽度 + 成交额 + 信号风险汇总（P5 每 30s 轮询）
+GET /api/market/overview      -> 主要指数实时 SNAPSHOT（回退 BAR）+ 宽度 + 成交额 + 信号风险汇总（P5 每 60s 轮询）
 
-注：em 不可达时指数 BAR / 宽度可能缺失，接口返回 null 而非 500，前端据以标「观察期数据不足」。
+注：指数优先取实时 SNAPSHOT（盘中每 3 分钟更新，含真实涨跌）；SNAPSHOT 与 BAR 均缺失（如数据源不可达）
+    时该指数项仅含名称、无涨跌数据，前端标「观察期数据不足」。接口本身不抛 500。
 """
 from __future__ import annotations
 
@@ -79,13 +80,13 @@ def market_overview(session: Session = Depends(get_db)):
     indices: List[IndexSnapshotOut] = []
     index_dates: List[str] = []
     for code in codes:
-        # 优先日线 BAR（含 close/change）；BAR 缺失（如 em 历史回填失败）时回退最新 SNAPSHOT
+        # 优先最新实时 SNAPSHOT（盘中每 3 分钟更新，含实时涨跌）；缺失（如数据源不可达）回退日线 BAR（收盘/历史）
         q = quote_repo.get_latest_quote(
-            session, "INDEX", code, data_kind="BAR", timeframe="1d"
+            session, "INDEX", code, data_kind="SNAPSHOT", timeframe="snapshot"
         )
         if q is None:
             q = quote_repo.get_latest_quote(
-                session, "INDEX", code, data_kind="SNAPSHOT", timeframe="snapshot"
+                session, "INDEX", code, data_kind="BAR", timeframe="1d"
             )
         if q is not None:
             indices.append(

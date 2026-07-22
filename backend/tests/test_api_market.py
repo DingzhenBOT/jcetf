@@ -64,3 +64,39 @@ def test_overview_no_index_bar_no_500(api_client):
     # overview 在指数 BAR 缺失时不应 500（已通过播种覆盖；此处断言整体健壮性）
     r = api_client.get("/api/market/overview")
     assert r.status_code == 200
+
+
+def test_overview_prefers_realtime_snapshot_over_bar(api_client):
+    """指数应优先取盘中实时 SNAPSHOT（含真实涨跌），而非昨收日线 BAR。"""
+    from app.api.deps import get_db
+    from app.main import app
+    from app.repository import quote_repo
+    from datetime import date, datetime
+
+    # 通过依赖覆盖拿到与 api_client 相同的临时库 session
+    gen = app.dependency_overrides[get_db]()
+    session = next(gen)
+    try:
+        quote_repo.upsert_market_quotes(session, [{
+            "data_source": "sina", "symbol_type": "INDEX", "symbol": "000300",
+            "data_kind": "SNAPSHOT", "timeframe": "snapshot", "trading_date": date(2025, 7, 18),
+            "timestamp": datetime(2025, 7, 18, 11, 0),
+            "open": 4080.0, "high": 4110.0, "low": 4070.0, "close": 4100.0,
+            "previous_close": 4000.0, "volume": 1_000_000, "amount": 2.0e11,
+            "change_percent": 2.5, "turnover_rate": None, "main_net_inflow": None,
+            "large_order_inflow": None, "rise_count": None, "fall_count": None,
+            "limit_up_count": None, "limit_down_count": None,
+            "collected_at": datetime(2025, 7, 18, 11, 5), "source_timestamp": None,
+            "metric_source": "sina", "metric_definition_version": "v1",
+            "source_switched": 0, "data_quality_status": "OK",
+        }])
+        session.commit()
+    finally:
+        session.close()
+
+    r = api_client.get("/api/market/overview")
+    assert r.status_code == 200
+    idx = {i["code"]: i for i in r.json()["indices"]}
+    # 优先 SNAPSHOT：close=4100（而非 BAR 的 4000），change_percent=2.5（而非 0.5）
+    assert idx["000300"]["close"] == 4100.0
+    assert idx["000300"]["change_percent"] == 2.5

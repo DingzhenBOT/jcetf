@@ -182,6 +182,16 @@ def job_post_close_evaluate() -> None:
         run_job("post_close_evaluate", post_collection_evaluate, session, get_settings(), phase="post_close")
 
 
+def job_intraday_evaluate() -> None:
+    """盘中每小时观望评估（整点触发）：生成 midday 阶段意见。非交易日跳过。"""
+    from app.market_calendar import is_trading_day, trading_date_for
+
+    if not is_trading_day(trading_date_for()):
+        return
+    with session_scope(_engine()) as session:
+        run_job("intraday_evaluate", post_collection_evaluate, session, get_settings(), phase="midday")
+
+
 # --------------------------------------------------------------------------- #
 # P7 回测任务（收盘后 15:40 或手动触发；盘中由 API 端拒重型回测）
 # --------------------------------------------------------------------------- #
@@ -239,14 +249,19 @@ def build_scheduler(settings) -> BlockingScheduler:
         id="post_close_review", replace_existing=True, max_instances=1, coalesce=True,
     )
     # ---- P3 评估任务 ----
+    # 盘中每小时观望评估（交易时段整点 10/11/13/14，midday 阶段意见）
+    scheduler.add_job(
+        job_intraday_evaluate, CronTrigger(hour="10,11,13,14", minute=0),
+        id="intraday_evaluate", replace_existing=True, max_instances=1, coalesce=True,
+    )
     # 历史 BAR 回填 16:30（增量；em-only 板块历史失败非致命）
     scheduler.add_job(
         job_backfill_history, CronTrigger(hour=16, minute=30),
         id="backfill_history", replace_existing=True, max_instances=1, coalesce=True,
     )
-    # 收盘前评估 14:59（pre_close 阶段意见）
+    # 收盘前评估 14:50（pre_close 阶段意见；收盘前 10 分钟，方便客户操作）
     scheduler.add_job(
-        job_pre_close_evaluate, CronTrigger(hour=14, minute=59),
+        job_pre_close_evaluate, CronTrigger(hour=14, minute=50),
         id="pre_close_evaluate", replace_existing=True, max_instances=1, coalesce=True,
     )
     # 收盘后评估 15:10（post_close 复盘意见）
