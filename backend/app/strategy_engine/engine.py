@@ -10,8 +10,10 @@ signal_id/trading_date/target_etf/strategy_version，由 evaluation/pipeline 负
   4. etf_rs_score：ETF 相对关联指数/宽基的滚动 20 日 RS；缺失 -> None。
   5. composite = Σ wᵢ·scoreᵢ（缺失项权重重归一化，D4）。
   6. risk = RiskEngine.evaluate(...)：veto / downgrade / high_vol / chase_high。
-  7. tier（决策优先级，§9 + D4）。
+  7. tier（决策优先级，§9 + D4；方案B 量价形态增强为 additive 上调一档）。
   8. confidence = 100 - 缺失项惩罚（缺数据降级置信，但不自动否决，除非 BEAR+缺失）。
+  9. 方案B：量价关系技术分析（analyze_volume_price）作为 additive 触发规则写入
+     supporting_metrics / triggered_rules，不改变 composite 权重。
 
 纯函数 compute_composite / decide_tier 暴露出来供单测以「强制分数」直接验证档位映射与降级逻辑。
 """
@@ -27,6 +29,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.db.models.market import MarketBreadth
 from app.indicator_engine.engine import IndicatorEngine
+from app.indicator_engine.ta_volume_price import analyze_volume_price, VP_PATTERN_TEXT
 from app.market_calendar import beijing_to_utc, next_trading_day
 from app.opinion_engine.templates import TIER_TEXT
 from app.repository import quote_repo
@@ -103,6 +106,7 @@ def decide_tier(
     fund_flow: Optional[Dict[str, Any]],
     etf_rs: Optional[Dict[str, Any]],
     thresholds: Dict[str, Any],
+    vp: Optional[Dict[str, Any]] = None,
 ) -> str:
     """档位决策（§9 + D4 决策优先级）。
 
@@ -110,6 +114,8 @@ def decide_tier(
     2) risk.chase_high -> NO_CHASE_HIGH
     3) market_regime∈{WEAK,BEAR} 或 high_vol -> MARKET_RISK_HIGH
     4) 否则按 composite（命中降级则先下调一档）映射到 OPPORTUNITY_ENHANCE / SMALL_POSITION / OBSERVE / NO_PARTICIPATE
+    5) 方案B：量价形态增强（扩展而非覆盖原权重）——仅在量价强势突破 + 相对强弱确认时上调一档。
+       vp=None 时退化为原逻辑，保持历史测试不变。
     """
     if risk.get("veto"):
         return "NO_PARTICIPATE"
@@ -139,12 +145,24 @@ def decide_tier(
     )
 
     if c >= opp and fund_flow_strong and etf_rs_strong:
-        return "OPPORTUNITY_ENHANCE"
-    if c >= small:
-        return "SMALL_POSITION"
-    if c >= obs:
-        return "OBSERVE"
-    return "NO_PARTICIPATE"
+        base = "OPPORTUNITY_ENHANCE"
+    elif c >= small:
+        base = "SMALL_POSITION"
+    elif c >= obs:
+        base = "OBSERVE"
+    else:
+        base = "NO_PARTICIPATE"
+
+    # 方案B：量价形态增强（仅在非降级、量价强势突破 + 相对强弱确认时上调一档）
+    if vp and not risk.get("downgrade"):
+        bullish = set(vp.get("vp_patterns", []))
+        strong_breakout = "breakout_volume" in bullish or "segment_up" in bullish
+        if strong_breakout and etf_rs_strong:
+            if base == "SMALL_POSITION":
+                return "OPPORTUNITY_ENHANCE"
+            if base == "OBSERVE":
+                return "SMALL_POSITION"
+    return base
 
 
 class StrategyEngine:
@@ -273,6 +291,8 @@ class StrategyEngine:
             if len(idf) > 0:
                 benchmark_close = list(idf["close"].astype("float64"))
         etf_ind = self.ind.compute(etf_df, benchmark_close) if len(etf_df) > 0 else {}
+        # 方案B：量价关系技术分析（确定性，additive）
+        vp = analyze_volume_price(etf_df) if len(etf_df) > 0 else {}
 
         # 3) 板块趋势
         sector_trend = None
@@ -337,6 +357,7 @@ class StrategyEngine:
             fund_flow if fund_flow and fund_flow.get("available") else None,
             {"score": etf_rs_score} if etf_rs_score is not None else None,
             self.settings.strategy.thresholds,
+            vp if vp else None,
         )
 
         # 支持指标 / 触发与失败规则
@@ -350,6 +371,14 @@ class StrategyEngine:
             "fund_flow_score": fund_flow["score"] if fund_flow and fund_flow.get("available") else None,
             "advance_ratio": advance_ratio,
             "market_regime": regime,
+            # 方案B：量价关系技术分析
+            "vp_state": vp.get("vp_state"),
+            "vp_state_text": vp.get("vp_state_text"),
+            "vp_vol_ratio_state": vp.get("vp_vol_ratio_state"),
+            "vp_vol_ratio_ma20": vp.get("vp_vol_ratio_ma20"),
+            "vp_patterns": vp.get("vp_patterns"),
+            "vp_strength": vp.get("vp_strength"),
+            "vp_anomaly": vp.get("vp_anomaly"),
         }
         triggered: List[str] = []
         failed: List[str] = []
@@ -373,6 +402,9 @@ class StrategyEngine:
             triggered.append("etf_rs_available")
         else:
             failed.append("etf_rs_missing")
+        # 方案B：量价形态作为 additive 触发规则（不改变评分权重）
+        for p in vp.get("vp_patterns", []) or []:
+            triggered.append("vp_" + p)
 
         # 9) 复核时间：下一交易日的盘前 08:50（北京）-> UTC
         next_day = next_trading_day(as_of + timedelta(days=1))

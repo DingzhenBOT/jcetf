@@ -18,7 +18,7 @@ def test_etfs_latest_signal_present_or_null(api_client):
     by_code = {e["etf_code"]: e for e in r.json()}
     # 有信号的 etf
     assert by_code["510300"]["latest_signal"] is not None
-    assert by_code["510300"]["latest_signal"]["signal_type_text"] == "市场风险较高"
+    assert by_code["510300"]["latest_signal"]["signal_type_text"] == "市场风险大，先观望"
     assert by_code["510500"]["latest_signal"]["signal_type"] == "NO_PARTICIPATE"
     # 无信号的 etf -> null
     assert by_code["510050"]["latest_signal"] is None

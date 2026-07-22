@@ -99,3 +99,42 @@ def test_tier_downgrade_lowers_one_tier():
     t = decide_tier(90, "TREND_UP", _risk(downgrade=True),
                     {"score": 50, "consecutive_positive_days": 1}, {"score": 40}, TH)
     assert t == "SMALL_POSITION"
+
+
+# ---- 方案B：量价形态增强（additive，不改变原权重） ----
+def test_tier_vp_enhance_small_to_opportunity():
+    # SMALL_POSITION + 放量突破 + 相对强弱确认 -> 上调至 OPPORTUNITY_ENHANCE
+    vp = {"vp_patterns": ["breakout_volume"]}
+    t = decide_tier(80, "TREND_UP", _risk(),
+                    {"score": 50, "consecutive_positive_days": 1}, {"score": 70}, TH, vp)
+    assert t == "OPPORTUNITY_ENHANCE"
+
+
+def test_tier_vp_enhance_observe_to_small():
+    # OBSERVE + 分段量涨阳线 + 相对强弱确认 -> 上调至 SMALL_POSITION
+    vp = {"vp_patterns": ["segment_up"]}
+    t = decide_tier(65, "VOLATILE", _risk(), None, {"score": 65}, TH, vp)
+    assert t == "SMALL_POSITION"
+
+
+def test_tier_vp_no_enhance_without_rs():
+    # 量价强势但相对强弱不足 -> 不上调
+    vp = {"vp_patterns": ["breakout_volume"]}
+    t = decide_tier(80, "TREND_UP", _risk(),
+                    {"score": 50, "consecutive_positive_days": 1}, {"score": 40}, TH, vp)
+    assert t == "SMALL_POSITION"
+
+
+def test_tier_vp_no_enhance_when_downgrade():
+    # 降级命中时量价增强被抑制
+    vp = {"vp_patterns": ["breakout_volume"]}
+    t = decide_tier(90, "TREND_UP", _risk(downgrade=True),
+                    {"score": 50, "consecutive_positive_days": 1}, {"score": 70}, TH, vp)
+    assert t == "SMALL_POSITION"
+
+
+def test_tier_vp_none_preserves_legacy():
+    # vp=None 退化为原逻辑，保证历史测试不变
+    t = decide_tier(80, "TREND_UP", _risk(),
+                    {"score": 50, "consecutive_positive_days": 1}, {"score": 40}, TH)
+    assert t == "SMALL_POSITION"

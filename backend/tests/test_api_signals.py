@@ -15,7 +15,7 @@ def test_signals_latest_per_etf_one_row(api_client):
     # 510300 应取 MAX(generated_at) 那条 = MARKET_RISK_HIGH（非更旧的 OBSERVE）
     s300 = next(s for s in body if s["target_etf"] == "510300")
     assert s300["signal_type"] == "MARKET_RISK_HIGH"
-    assert s300["signal_type_text"] == "市场风险较高"
+    assert s300["signal_type_text"] == "市场风险大，先观望"
     assert s300["position_text"]  # 中文仓位文字非空
     assert s300["failed_rules"] == ["broad_index_missing", "breadth_missing"]
 

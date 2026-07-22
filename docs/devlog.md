@@ -651,3 +651,22 @@ curl -sS -u admin:密码 https://jiucaietf.icu/api/market/overview
 - **根因**：`stores/market.ts` 的 `tick()` 在**每次**轮询开头 `_state.loading=true`；`StatePanel` 用 `v-if="loading"` 在加载时**整体隐藏真实内容、显示骨架屏**。于是每次后台轮询都触发一次全屏骨架闪烁。
 - **修复**：骨架屏仅在**首次加载**（尚无任何数据）显示；后台轮询静默原地更新（Vue 按 key 打补丁，数字就地变）。瞬时轮询失败也保留旧数据、不弹错误面板（仅首次失败才显示错误）。`StatePanel` 组件未改。
 - **验证**：`npx vue-tsc --noEmit` 0 错。部署后后台轮询不再打断阅读。
+
+### 方案B：量价关系技术分析进信号（2026-07-22）
+- **背景**：UX 第1层（纯前端）已交付，用户批准做第2层——把量价关系真正变成信号并展示（"异动/分段量涨阳线"等真实算法，而非 AI 润色）。用户原话"降低风险敞口我都看不懂"，故本步**同时**重写文案为直白口语，并放宽冻结边界（量价进信号）。
+- **原则（扩展而非覆盖）**：原 composite 五类权重公式**一字未改**；量价作为 **additive 触发规则 + 档位增强** 接入，不改变分数。因规则字典新增 `volume_price_ta` 段 → 哈希变化 → 自动铸造**新** strategy_version（`d6eb96e811a5` → `12d80968c44a`），旧版本行保留不可改写。
+- **新增 `app/indicator_engine/ta_volume_price.py`**（确定性，无网络/无随机，参考 A股短线交易技能 ta_signals.md）：
+  - `analyze_volume_price(bar_df)`：量价关系矩阵（放量涨/缩量涨/放量跌/缩量跌/缩量横）、量能状态（量比 vs MA20：放量>1.5/温和100-150%/平量80-100%/缩量<80%/极度缩量<50%）、形态识别（放量突破/缩量洗盘/量价背离/分段量涨阳线/异动放量）、强度分(0-100)。
+  - 数据已采集（BAR 含 open/high/low/close/volume），**无需新数据源**；样本 <21 根返回空结论优雅降级。
+- **引擎接入**（`strategy_engine/engine.py`）：
+  - `evaluate_etf` 调用 `analyze_volume_price(etf_df)`，把 `vp_state/vp_state_text/vp_vol_ratio_state/vp_vol_ratio_ma20/vp_patterns/vp_strength/vp_anomaly` 写入 `supporting_metrics`；各形态作为 `vp_*` 追加进 `triggered_rules`（additive）。
+  - `decide_tier` 新增可选 `vp` 参数：**量价强势突破(breakout_volume|segment_up) + 相对强弱>=60 + 非降级** 时，OBSERVE→SMALL_POSITION / SMALL_POSITION→OPPORTUNITY_ENHANCE（上调一档）。`vp=None` 退化为原逻辑，历史测试不变。
+  - `rules.py`：`RULES_V1` 升 `version=2.0` + 新增 `volume_price_ta` 段（量能分档/状态矩阵/形态定义/档位增强规则/强度分口径）。
+- **文案直白化**（`opinion_engine/templates.py`）：
+  - `TIER_TEXT`：暂不参与→**先别碰**、机会增强→**可以加仓**、禁止追高→**别追高**、市场风险较高→**市场风险大，先观望** 等。
+  - `POSITION_TEXT`：删除"降低风险敞口"，改为"别再加，等回调"/"减仓观望"等；`position_text_of` 统一追加区间并跳过 0-0。
+  - `key_metrics_text`：量价关系置前展示（"量价：放量上涨（放量）"），并列出量价形态（"量价信号：放量突破、分段量涨阳线"）→ 即 `one_liner`，前端关注榜/详情 Hero **已自动展示**。
+  - 前端 `frontend/src/lib/tier.ts` 的 `TIER_TEXT` 同步更新，保证 UI 与后端一致。
+- **测试**：新增 `test_ta_volume_price.py`（8 例：量能分档/各形态/强度边界）；`test_strategy_engine.py` 增 5 例量价增强（含 vp=None 回归保护）；`test_opinion_engine.py` 增 one_liner 含量价 + 旧文案断言更新。修正 `conftest/test_api_etfs/test_api_signals` 旧文案断言。**后端全量 152 测试通过**；前端 `vue-tsc` 0 错 + `npm run build` 成功。
+- **上线步骤**（prod）：`git pull` + `systemctl restart etf-worker`（引擎自动按新 hash 铸造 v2 策略行）；下次 `run_evaluate` 起信号含量价字段与增强档位，旧信号保留原版本。
+- **未做**：量价背离/异动尚未单独驱动档位下调（仅作风险提示写入指标与 one_liner）；若后续要"背离即降级"需再放宽规则并升版。

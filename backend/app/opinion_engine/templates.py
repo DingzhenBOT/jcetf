@@ -8,24 +8,27 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-# signal_type（英文档位码，D2） -> 中文展示
+from app.indicator_engine.ta_volume_price import VP_PATTERN_TEXT
+
+# signal_type（英文档位码，D2） -> 中文展示（直白口语，避免术语）
 TIER_TEXT: Dict[str, str] = {
-    "NO_PARTICIPATE": "暂不参与",
+    "NO_PARTICIPATE": "先别碰",
     "OBSERVE": "加入观察",
-    "SMALL_POSITION": "允许小仓位试错",
-    "OPPORTUNITY_ENHANCE": "机会增强",
-    "NO_CHASE_HIGH": "禁止追高",
-    "MARKET_RISK_HIGH": "市场风险较高",
+    "SMALL_POSITION": "小仓位试一试",
+    "OPPORTUNITY_ENHANCE": "可以加仓",
+    "NO_CHASE_HIGH": "别追高",
+    "MARKET_RISK_HIGH": "市场风险大，先观望",
 }
 
-# suggested_position_range（数值 [low, high]） -> 文字（DESIGN §9.6）
+# suggested_position_range（数值 [low, high]） -> 文字（DESIGN §9.6，直白）
+# 文字本身不含数字区间；区间由 position_text_of 统一追加（避免重复）。
 POSITION_TEXT: Dict[str, str] = {
-    "NO_PARTICIPATE": "不新增",
-    "OBSERVE": "轻仓试错（0-10%）",
-    "SMALL_POSITION": "维持低仓位（10-25%）",
-    "OPPORTUNITY_ENHANCE": "可适度加仓（25-50%）",
-    "NO_CHASE_HIGH": "逐步降低风险敞口",
-    "MARKET_RISK_HIGH": "逐步降低风险敞口",
+    "NO_PARTICIPATE": "不加仓",
+    "OBSERVE": "轻仓试错",
+    "SMALL_POSITION": "低仓位持有",
+    "OPPORTUNITY_ENHANCE": "可以适度加仓",
+    "NO_CHASE_HIGH": "别再加，等回调",
+    "MARKET_RISK_HIGH": "减仓观望",
 }
 
 TEMPLATE_V1: str = (
@@ -38,19 +41,37 @@ TEMPLATE_VERSION = "template-v1"
 
 
 def position_text_of(tier: str, position_range: List[float] | None = None) -> str:
-    base = POSITION_TEXT.get(tier, "不新增")
+    base = POSITION_TEXT.get(tier, "不加仓")
     if position_range and len(position_range) == 2:
-        return f"{base}（{position_range[0]:.0f}-{position_range[1]:.0f}%）"
+        low, high = position_range
+        if not (low == 0 and high == 0):
+            return f"{base}（{low:.0f}-{high:.0f}%）"
     return base
 
 
 def key_metrics_text(supporting: Dict) -> str:
-    """把 supporting_metrics 中关键项拼成一句中文；确定性、不引入外部判断。"""
+    """把 supporting_metrics 中关键项拼成一句直白中文；确定性、不引入外部判断。
+
+    量价关系最贴近「盘中该不该动」，故置前展示。
+    """
     if not supporting:
         return "（数据不足，关键指标缺失）"
     parts: List[str] = []
+    # 量价关系（最直白，置前）
+    vp_text = supporting.get("vp_state_text")
+    vp_vol = supporting.get("vp_vol_ratio_state")
+    if vp_text and vp_text not in ("数据不足", "样本不足"):
+        s = f"量价：{vp_text}"
+        if vp_vol and vp_vol != "未知":
+            s += f"（{vp_vol}）"
+        parts.append(s)
+    vp_patterns = supporting.get("vp_patterns") or []
+    if vp_patterns:
+        names = [VP_PATTERN_TEXT.get(p, p) for p in vp_patterns]
+        parts.append("量价信号：" + "、".join(names))
+    # 原有指标
     if supporting.get("etf_rsi14") is not None:
-        parts.append(f"ETF RSI {supporting['etf_rsi14']:.0f}")
+        parts.append(f"RSI {supporting['etf_rsi14']:.0f}")
     if supporting.get("etf_rs_20d") is not None:
         rs = supporting["etf_rs_20d"]
         parts.append(f"20日相对强弱 {rs:.2f}")

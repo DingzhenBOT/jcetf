@@ -83,7 +83,7 @@ def _seed(tmp_path, with_breadth: bool = True, with_etf_quote: bool = False):
         session.add(Opinion(
             opinion_id="op1", signal_id="sig-510300-MARKET_RISK_HIGH",
             generated_at=datetime(2025, 7, 18, 15, 10), trading_date=date(2025, 7, 18),
-            phase="post_close", title="复盘", content="沪深300ETF｜市场风险较高。",
+            phase="post_close", title="复盘", content="沪深300ETF｜市场风险大，先观望。",
             input_summary={"etf_code": "510300"}, template_version="template-v1",
         ))
         session.add(Opinion(

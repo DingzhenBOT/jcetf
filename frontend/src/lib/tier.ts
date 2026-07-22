@@ -20,12 +20,12 @@ export const ACTION_BADGE: Record<PortfolioAction, string> = {
 }
 
 export const TIER_TEXT: Record<SignalType, string> = {
-  NO_PARTICIPATE: '暂不参与',
+  NO_PARTICIPATE: '先别碰',
   OBSERVE: '加入观察',
-  SMALL_POSITION: '允许小仓位试错',
-  OPPORTUNITY_ENHANCE: '机会增强',
-  NO_CHASE_HIGH: '禁止追高',
-  MARKET_RISK_HIGH: '市场风险较高',
+  SMALL_POSITION: '小仓位试一试',
+  OPPORTUNITY_ENHANCE: '可以加仓',
+  NO_CHASE_HIGH: '别追高',
+  MARKET_RISK_HIGH: '市场风险大，先观望',
 }
 
 // 档位积极度（用于排序：越积极越靠前）
