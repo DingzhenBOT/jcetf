@@ -99,6 +99,29 @@ def compute_composite(
     }
 
 
+def _vp_bearish(vp: Optional[Dict[str, Any]]) -> bool:
+    """看空量价形态（方案B+ 降档用，确定性）。
+
+    命中以下任一明确看空形态即返回 True：
+    - divergence：价创 20 日新高但量比<1（价升量缩，反弹无力）；
+    - anomaly 且下跌方向：异动放量（量比>2.5 或单日涨跌>5%）出现在放量/缩量下跌或横盘；
+    - VOL_UP_FALL：放量下跌（出货）。
+    仅识别明确看空形态，避免对中性/上涨异动误降档。
+    """
+    if not vp:
+        return False
+    patterns = set(vp.get("vp_patterns", []) or [])
+    state = vp.get("vp_state")
+    if "divergence" in patterns:
+        return True
+    if "anomaly" in patterns:
+        # 异动放量仅在下跌方向看空（出货/大阴线）；上涨方向偏多，不降档
+        return state in ("VOL_UP_FALL", "VOL_DOWN_FALL", "VOL_LOW_FLAT")
+    if state == "VOL_UP_FALL":
+        return True
+    return False
+
+
 def decide_tier(
     composite: Optional[float],
     market_regime: Optional[str],
@@ -153,15 +176,24 @@ def decide_tier(
     else:
         base = "NO_PARTICIPATE"
 
-    # 方案B：量价形态增强（仅在非降级、量价强势突破 + 相对强弱确认时上调一档）
-    if vp and not risk.get("downgrade"):
-        bullish = set(vp.get("vp_patterns", []))
-        strong_breakout = "breakout_volume" in bullish or "segment_up" in bullish
-        if strong_breakout and etf_rs_strong:
-            if base == "SMALL_POSITION":
-                return "OPPORTUNITY_ENHANCE"
-            if base == "OBSERVE":
-                return "SMALL_POSITION"
+    # 方案B+：量价形态驱动档位（扩展而非覆盖原权重）
+    # 看空形态优先降档（与上调互斥，保护本金）；否则强势突破上调一档
+    if vp:
+        if _vp_bearish(vp) and base != "NO_PARTICIPATE":
+            _down = {
+                "OPPORTUNITY_ENHANCE": "SMALL_POSITION",
+                "SMALL_POSITION": "OBSERVE",
+                "OBSERVE": "NO_PARTICIPATE",
+            }
+            return _down.get(base, base)
+        if not risk.get("downgrade"):
+            bullish = set(vp.get("vp_patterns", []))
+            strong_breakout = "breakout_volume" in bullish or "segment_up" in bullish
+            if strong_breakout and etf_rs_strong:
+                if base == "SMALL_POSITION":
+                    return "OPPORTUNITY_ENHANCE"
+                if base == "OBSERVE":
+                    return "SMALL_POSITION"
     return base
 
 
@@ -359,6 +391,16 @@ class StrategyEngine:
             self.settings.strategy.thresholds,
             vp if vp else None,
         )
+        # 方案B+：量价看空降档标记（供 one_liner / 审计；仅当确实改变档位时记）
+        vp_downgraded = False
+        if vp and _vp_bearish(vp):
+            tier_base = decide_tier(
+                comp["composite"], regime, risk,
+                fund_flow if fund_flow and fund_flow.get("available") else None,
+                {"score": etf_rs_score} if etf_rs_score is not None else None,
+                self.settings.strategy.thresholds, None,
+            )
+            vp_downgraded = tier != tier_base
 
         # 支持指标 / 触发与失败规则
         supporting = {
@@ -405,6 +447,8 @@ class StrategyEngine:
         # 方案B：量价形态作为 additive 触发规则（不改变评分权重）
         for p in vp.get("vp_patterns", []) or []:
             triggered.append("vp_" + p)
+        if vp_downgraded:
+            triggered.append("vp_downgrade")
 
         # 9) 复核时间：下一交易日的盘前 08:50（北京）-> UTC
         next_day = next_trading_day(as_of + timedelta(days=1))

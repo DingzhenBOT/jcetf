@@ -777,3 +777,51 @@ curl -sS -u admin:密码 http://127.0.0.1:8000/api/market/overview | python3 -m 
 ### 未做 / 已知
 - 仅指数快照做多源补齐；ETF/板块走 em（生产优先）不在本范围。
 - 量价背离/异动仍未驱动档位下调（待用户拍板）。
+
+---
+
+## 轮次 — 方案B+：量价看空形态驱动档位下调（2026-07-22）
+
+### 背景
+方案B 已把量价关系技术分析（analyze_volume_price）作为 additive 信号写入 Signal 与 one_liner，
+但**只用于上调档位**（strong_breakout 且 RS 强 → 升一档）。用户确认：量价背离/异动应**驱动下调**，
+作为确定性规则进入引擎（DESIGN §9 引擎此前冻结，本次为显式授权变更）。
+
+### 改动（确定性，扩展而非覆盖原权重）
+1. **`strategy_engine/engine.py`**：
+   - 新增 `_vp_bearish(vp)`：识别明确看空量价形态——`divergence`（量价背离）/
+     `anomaly` 且下跌方向（异动放量出货/大阴线）/`VOL_UP_FALL`（放量下跌）。仅命中明确看空，
+     对中性/上涨异动不误杀。
+   - `decide_tier` 新增降档分支（与上调互斥，看空优先）：base 在 NO_PARTICIPATE 之上时，
+     看空形态下调一档（OPPORTUNITY_ENHANCE→SMALL_POSITION / SMALL_POSITION→OBSERVE / OBSERVE→NO_PARTICIPATE）。
+   - `evaluate_etf`：若看空量价确实改变了档位（对比 vp=None 基准），在 `triggered_rules`
+     追加 `vp_downgrade`（供 one_liner / 审计；与既有 `vp_<pattern>` 并列）。
+2. **`strategy_engine/rules.py`**：`RULES_V1["version"]` 2.0 → 2.1，新增 `volume_price_ta.tier_downgrade`
+   规则描述（hash 随规则内容变化，自动注册新策略版本，旧版本保留不可覆盖）。
+3. **`config/settings.yaml` 与 `config.py` 的 `strategy.version` 保持 `v1.0.0` 基线不变**：
+   因 `_seed_strategy_version` 基线用 `rules_json={}`，hash 只取决于 params；若升版本号前缀会改 PK
+   但 hash 不变，与 `UNIQUE(strategy_hash)` 冲突。版本演进统一由 `RULES_V1["version"]` 表达
+   （与 方案B 一致：方案B 升的是 RULES_V1 到 2.0）。
+
+### 实测结果
+- 新规则版本（评估时 mint）：`v1.0.0-6c3ae7`（hash 6c3ae7…，旧版 12d80968c44a 保留不可覆盖）。
+- 全量测试通过（179，含新增 12：decide_tier 降档 6 + `_vp_bearish` 7 + evaluate_etf 标记 1 +
+  指数快照补齐 2）；`test_strategy_version_seed_idempotent` / `test_health` 在回退 version 基线后恢复。
+
+### THS（同花顺）说明
+用户问"THS 不用了？"——THS 仍在用：接在板块历史（`_bk_to_ths`）与板块资金流
+（`stock_fund_flow_industry/concept`），是腾讯云 em 被 RST 时板块数据的唯一可用源。
+指数快照（`_INDEX_SPOT`）仅挂 em + sina；akshare **无** THS 指数快照函数
+（THS 只有 `stock_board_industry_index_ths` / `stock_board_concept_index_ths` 板块指数），
+故 399001 补齐用 sina 是唯一正确选择，THS 在指数快照链路上无法替代。
+
+### 上线步骤（prod）
+```bash
+cd /workspace && git pull origin main
+cd backend && ./venv/bin/python -m scripts.collect_once   # 顺带刷新指数快照补齐
+# 下一轮盘中/收盘评估即按新规则出 Signal（自动 mint v1.0.0-6c3ae7）
+# 验证某 ETF 出现量价背离时档位被下调且 one_liner 含"量价背离/vp_downgrade"
+```
+
+### 未做 / 已知
+- 量价降档目前作用于最终档位；未改 composite 权重（保持扩展而非覆盖，符合 DESIGN §9 冻结约束的授权范围）。
