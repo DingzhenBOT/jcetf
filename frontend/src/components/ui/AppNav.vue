@@ -7,7 +7,9 @@ import { riskLevelBadge } from '@/lib/tier'
 const links = [
   { to: '/', label: '总览' },
   { to: '/sectors', label: '板块' },
+  { to: '/sectors-movement', label: '板块异动' },
   { to: '/etfs', label: 'ETF 列表' },
+  { to: '/offexchange', label: '场外基金' },
   { to: '/portfolio', label: '持仓' },
   { to: '/system', label: '系统状态' },
 ]

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from app.api.routers.backtest import router as backtest_router
 from app.api.routers.etfs import router as etfs_router
+from app.api.routers.external import router as external_router
 from app.api.routers.market import router as market_router
 from app.api.routers.opinions import router as opinions_router
 from app.api.routers.portfolio import router as portfolio_router
@@ -11,6 +12,7 @@ from app.api.routers.signals import router as signals_router
 __all__ = [
     "signals_router",
     "etfs_router",
+    "external_router",
     "opinions_router",
     "market_router",
     "portfolio_router",

@@ -197,3 +197,34 @@ export interface FetchState<T> {
   error: string | null
   loaded: boolean
 }
+
+// ---- Phase C / P3 板块异动（腾讯自选股） ---- //
+export interface SectorMovement {
+  available: boolean
+  source?: string | null
+  industry: Record<string, any>[]
+  concept: Record<string, any>[]
+  fund_flow: Record<string, any>[]
+}
+
+// ---- Phase C / P5 当日新闻（东财全球资讯） ---- //
+export interface NewsItem {
+  time: string
+  title: string
+  summary: string
+}
+
+// ---- Phase C / P2 场外基金（盈米） ---- //
+export interface OffExchangeFund {
+  code?: string | null
+  name?: string | null
+  type?: string | null
+  change_percent?: number | null
+  nav?: number | null
+}
+export interface OffExchangeResult {
+  available: boolean
+  source?: string | null
+  reason?: string | null
+  items: OffExchangeFund[]
+}

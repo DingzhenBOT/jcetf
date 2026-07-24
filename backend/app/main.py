@@ -177,6 +177,7 @@ def create_app() -> FastAPI:
     from app.api.routers import (
         backtest_router,
         etfs_router,
+        external_router,
         market_router,
         opinions_router,
         portfolio_router,
@@ -189,6 +190,7 @@ def create_app() -> FastAPI:
     app.include_router(market_router)
     app.include_router(portfolio_router)
     app.include_router(backtest_router)
+    app.include_router(external_router)
 
     return app
 

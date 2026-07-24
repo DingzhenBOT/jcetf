@@ -999,14 +999,16 @@ cd /workspace/backend && ./venv/bin/python -m scripts.collect_once --intraday
 
 ### C3. 分阶段执行计划（解冻后）
 
-| 阶段 | 内容 | 依赖 |
-|---|---|---|
-| **P1 算法重写（盘中信号更新）** | 盘中摄入腾讯财经实时报价；参考 monitoring-alert R1/R2 + ashare-short-term 节点时刻重排 intraday 评估到 09:45/10:30/13:30/14:30/14:55；铸造新 strategy_version；重算 Signal 综合分/置信度/仓位 | 设计评审（影响历史 Signal） |
-| **P2 场外 ETF 板块** | 新增 `/api/offexchange/funds`（pa-public-fund-filter rank/special）+ 前端独立板块卡片 | `PINGAN_SKILL_APIKEY` |
-| **P3 板块异动** | 东财板块排名 + 同花顺热点 → 板块轮动/异动端点 + 前端卡片 | 无 |
-| **P4 盘后复盘** | a-share-daily-review 方法论 → 收盘后生成复盘摘要写入 `Opinion(post_close)` | 无 |
-| **P5 横向新闻板块** | news-search + a-share-limitboard-report → 首页横向滚动新闻/涨跌停速览 | `PINGAN_SKILL_APIKEY` |
-| **P6 图表与排序（已完成✅）** | 同花顺锤式 K线（开高低收+缩放+红绿）+ 列表综合分/当日涨幅排序 | 无 |
+> 2026-07-25 更新：用户确认**弃用平安证券（PingAn）全部数据源**（无法直接拿数据）。P2/P3/P5 改用腾讯自选股（westock-data）/ 盈米（yingmi）/ 东财全球资讯（a-stock-data）实现，详见 C7。
+
+| 阶段 | 内容 | 依赖 | 状态 |
+|---|---|---|---|
+| **P1 算法重写（盘中信号更新）** | 盘中摄入腾讯财经实时报价；参考 monitoring-alert R1/R2 + ashare-short-term 节点时刻重排 intraday 评估到 09:45/10:30/13:30/14:30/14:55；铸造新 strategy_version；重算 Signal 综合分/置信度/仓位 | 设计评审（影响历史 Signal） | ⏳ 待办 |
+| **P2 场外 ETF 板块** | 新增 `GET /api/external/offexchange`（盈米 `yingmi-skill-cli` SearchFunds）+ 前端独立页面；未装 CLI 时优雅降级 | 盈米 CLI（CVM 安装+授权） | ✅ 已完成 |
+| **P3 板块异动** | 腾讯自选股 `westock-data sector ranking` → 行业/概念涨幅 + 资金流入端点 + 前端页面 | 无（npx 直跑） | ✅ 已完成 |
+| **P4 盘后复盘** | a-share-daily-review 方法论 → 收盘后生成复盘摘要写入 `Opinion(post_close)` | 无 | ⏳ 待办 |
+| **P5 横向新闻板块** | 东财全球资讯 `np-weblist.eastmoney.com` 7×24 → 首页横向滚动资讯条 | 无（零鉴权） | ✅ 已完成 |
+| **P6 图表与排序（已完成✅）** | 同花顺锤式 K线（开高低收+缩放+红绿）+ 列表综合分/当日涨幅排序 | 无 | ✅ 已完成 |
 
 ### C4. 本次已交付（P6）
 
@@ -1023,7 +1025,8 @@ cd /workspace/backend && ./venv/bin/python -m scripts.collect_once --intraday
 
 ### C5. 待办 / 依赖
 
-- `PINGAN_SKILL_APIKEY` **未设置** → P2/P5 需 key（已规划接入层 + 优雅降级，待 key 后落地）。
+- **平安证券（PingAn）已彻底弃用**：用户确认"如果平安的数据不能直接拿数据，就不用了"。所有原依赖 `PINGAN_SKILL_APIKEY` 的 P2/P5 已改走盈米 / 东财全球资讯，不再需要该 key。
+- **盈米 CLI 是 CVM 部署依赖（P2 场外基金）**：`collect_offexchange_funds` 先 `shutil.which("yingmi-skill-cli")`，缺失即返回 `available:false` + reason（前端显示琥珀色降级卡）。上线 P2 前需在 CVM 安装并授权 `yingmi-skill-cli`，否则场外基金页只显示降级提示、不影响其余功能。
 - P1 铸造新策略版本会重塑历史 Signal，建议在确认新规则与 `strategy_hash` 口径后灰度上线。
 - 富途仅本地人工分析用，不进 CVM 自动管线（CVM 无头、无 OpenD 桌面）。
 
@@ -1038,3 +1041,35 @@ cd /workspace/frontend && pnpm build && sudo systemctl reload nginx
 curl -sS -u admin:密码 "http://127.0.0.1:8000/api/etfs" | python3 -c "import sys,json;d=json.load(sys.stdin);print('支数',len(d),'首支change_percent',d[0].get('change_percent'))"
 curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?days=120" | python3 -c "import sys,json;p=json.load(sys.stdin)['points'][0];print('OHLC',p.get('open'),p.get('high'),p.get('low'),p.get('close'))"
 ```
+
+### C7. 本次交付（Phase C-part-2：P2 场外 / P3 板块异动 / P5 新闻，2026-07-25）
+
+> 用户确认数据源：**弃用平安证券**；改用「腾讯自选股（westock-data）+ 盈米（yingmi）+ 东财全球资讯 + NeoData」。编码完成后全量推送 GitHub（含 DESIGN.md），并产出跨 agent 交接提示词。
+
+**新增后端**
+- `backend/app/services/external_data.py`：外部 skill 数据源接入层。所有采集函数对失败做**可控降级**（返回带 `available` 的 dict，绝不抛未捕获异常导致 500）。
+  - `collect_sector_movement()` → `npx -y westock-data-skillhub@1.0.5 sector ranking`（timeout 150s），解析其 markdown 三段表（行业涨幅/概念涨幅/行业资金流入），`_parse_md_table`/`_coerce` 把数值列转 float。
+  - `collect_news(limit=30)` → `GET np-weblist.eastmoney.com/comm/web/getFastNewsList`（a-stock-data 提供，零鉴权），取 `fastNewsList` 的 `showTime/title/summary(截断200)`；异常即 `available:false`。
+  - `collect_offexchange_funds(keyword="ETF", limit=10)` → 先 `shutil.which("yingmi-skill-cli")`；缺失即 `available:false, reason="盈米 CLI 未安装…"`；否则 `yingmi-skill-cli mcp call SearchFunds --input {...}` 并 `_extract_yingmi_funds`/`_normalize_fund` 兼容 `content/result/data/funds/text` 嵌套结构。
+- `backend/app/api/routers/external.py`：新增 `external_router`（prefix `/api/external`，tags=["external"]），3 个 GET 端点：
+  - `GET /sectors/movement` → `SectorMovementOut`（industry/concept/fund_flow 列表 + available/source）；npx 失败/超时降级为空表、`available:false`。
+  - `GET /news?limit=30` → `NewsOut`（items: NewsItem[]）。
+  - `GET /offexchange?keyword=ETF&limit=10` → `OffExchangeOut`（items: OffExchangeFund[] + reason）；盈米不可用即 `available:false` + reason。
+  - 已加入 `app/api/routers/__init__.py` 导出并在 `main.py` `include_router(external_router)`。
+  - 清理：移除未使用 import（requests/Depends/HTTPException/get_db/Session）。
+
+**新增前端**
+- `frontend/src/views/SectorMovement.vue`：板块异动页（行业涨幅 / 概念涨幅 / 行业资金流入 Top 三表，红涨绿跌着色，`cls()`/`pct()` 复用），`available===false` 时顶部琥珀色降级条。
+- `frontend/src/views/OffExchange.vue`：场外基金页（关键词输入 + 搜索），收益/名称/类型/日涨幅/单位净值表；`!available` 时展示 `data.reason` 琥珀卡（含盈米 CLI 安装提示）。
+- `frontend/src/components/sections/NewsStrip.vue`：首页横向滚动实时资讯条（`getNews(30)`，`hhmm(time)+title`，`no-scrollbar` CSS，hover 看 summary，加载/错误/空态齐备）。
+- `frontend/src/api/types.ts`：新增 `SectorMovement` / `NewsItem` / `OffExchangeFund` / `OffExchangeResult`。
+- `frontend/src/api/endpoints.ts`：新增 `getSectorMovement()` / `getNews(limit)` / `getOffExchange(keyword, limit)`。
+- 路由与导航：`router/index.ts` 新增 `/sectors-movement`(SectorMovement) 与 `/offexchange`(OffExchange)；`AppNav.vue` 新增「板块异动」「场外基金」入口；`MarketOverview.vue` 顶部接入 `NewsStrip`（包在带边框卡片内）。
+
+**测试**
+- 新增 `tests/test_api_external.py`：monkeypatch `external_data.collect_*` 为可控返回值，覆盖 P3/P5/P2 的「正常 / 降级」双路径，断言均不 500 且字段正确（6 例）。
+- 全量回归：**205 passed**（原 199 + 新增 6）；前端 `pnpm build` 通过（646 模块）。
+
+**已知约束**
+- 盈米 CLI（`yingmi-skill-cli`）在本沙箱**未安装** → 场外基金页当前走降级提示；需在 CVM 安装并授权后才有真实数据。
+- 板块异动依赖 `npx westock-data`（每次调用现场拉包，首调较慢；生产建议预装或缓存）。

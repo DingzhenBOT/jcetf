@@ -7,10 +7,13 @@ import type {
   IndexHistory,
   Intraday,
   MarketOverview,
+  NewsItem,
+  OffExchangeResult,
   Opinion,
   OpinionsForEtf,
   PortfolioAnalyzeResponse,
   PortfolioPosition,
+  SectorMovement,
   Signal,
   SignalHistoryPage,
 } from './types'
@@ -68,4 +71,20 @@ export function getOpinions(etf: string, phase?: string): Promise<OpinionsForEtf
 // POST /api/portfolio/analyze —— 提交持仓即时计算（无状态，不落库）
 export function analyzePortfolio(positions: PortfolioPosition[]): Promise<PortfolioAnalyzeResponse> {
   return apiPost<PortfolioAnalyzeResponse>('/portfolio/analyze', { positions })
+}
+
+// ---- Phase C / P3·P5·P2 外部 skill 数据源 ---- //
+// GET /api/external/sectors/movement —— 板块异动（腾讯自选股）
+export function getSectorMovement(): Promise<SectorMovement> {
+  return apiGet<SectorMovement>('/external/sectors/movement')
+}
+
+// GET /api/external/news —— 当日新闻（东财全球资讯）
+export function getNews(limit = 30): Promise<{ available: boolean; source?: string | null; items: NewsItem[] }> {
+  return apiGet(`/external/news${buildQuery({ limit })}`)
+}
+
+// GET /api/external/offexchange —— 场外基金（盈米；未配置时 available=false）
+export function getOffExchange(keyword = 'ETF', limit = 10): Promise<OffExchangeResult> {
+  return apiGet<OffExchangeResult>(`/external/offexchange${buildQuery({ keyword, limit })}`)
 }

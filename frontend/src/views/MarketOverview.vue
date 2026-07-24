@@ -9,6 +9,7 @@ import SignalTable from '@/components/sections/SignalTable.vue'
 import WatchBoard from '@/components/sections/WatchBoard.vue'
 import IndexTicker from '@/components/IndexTicker.vue'
 import IndexDrawer from '@/components/IndexDrawer.vue'
+import NewsStrip from '@/components/sections/NewsStrip.vue'
 import { marketState, refreshNow, secondsToRefresh } from '@/stores/market'
 import { TIER_TEXT, riskLevelBadge } from '@/lib/tier'
 import { fmtInt } from '@/lib/format'
@@ -86,6 +87,11 @@ const openCode = ref<string | null>(null)
           手动刷新
         </button>
       </div>
+    </div>
+
+    <!-- 顶部实时资讯滚动条（P5：东方财富全球资讯 7x24） -->
+    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
+      <NewsStrip />
     </div>
 
     <!-- 顶部指数数字带：上证指数 hero + 其余指数红涨绿跌，点开看详情 -->
