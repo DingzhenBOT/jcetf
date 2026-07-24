@@ -175,6 +175,9 @@ def index_history(code: str, days: int = 60, session: Session = Depends(get_db))
     points = [
         IndexHistoryPoint(
             date=(r.trading_date.isoformat() if r.trading_date is not None else r.timestamp.isoformat()[:10]),
+            open=(float(r.open) if r.open is not None else None),
+            high=(float(r.high) if r.high is not None else None),
+            low=(float(r.low) if r.low is not None else None),
             close=float(r.close),
             volume=float(r.volume or 0),
             amount=float(r.amount or 0),
@@ -209,6 +212,9 @@ def etf_history(code: str, days: int = 60, session: Session = Depends(get_db)):
     points = [
         IndexHistoryPoint(
             date=(r.trading_date.isoformat() if r.trading_date is not None else r.timestamp.isoformat()[:10]),
+            open=(float(r.open) if r.open is not None else None),
+            high=(float(r.high) if r.high is not None else None),
+            low=(float(r.low) if r.low is not None else None),
             close=float(r.close),
             volume=float(r.volume or 0),
             amount=float(r.amount or 0),

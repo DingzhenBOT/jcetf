@@ -55,6 +55,7 @@ class EtfListItem(BaseModel):
     listing: Optional[str] = None  # '场内' / '场外'
     related_sector_codes: Optional[List[str]] = None
     related_index_code: Optional[str] = None
+    change_percent: Optional[float] = None  # 当日涨幅（最新 SNAPSHOT，盘中实时）
     latest_signal: Optional[SignalOut] = None
 
 
@@ -92,6 +93,9 @@ class IndexSnapshotOut(BaseModel):
 
 class IndexHistoryPoint(BaseModel):
     date: str
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
     close: float
     volume: float
     amount: float

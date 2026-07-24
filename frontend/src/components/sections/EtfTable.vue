@@ -20,6 +20,7 @@ const router = useRouter()
           <th class="px-4 py-2 font-medium">场所</th>
           <th class="px-4 py-2 font-medium">最新信号</th>
           <th class="px-4 py-2 font-medium">综合分</th>
+          <th class="px-4 py-2 font-medium text-right">当日涨幅</th>
           <th class="px-4 py-2 font-medium">市场环境</th>
         </tr>
       </thead>
@@ -59,6 +60,13 @@ const router = useRouter()
           </td>
           <td class="px-4 py-2 tnum text-slate-700">
             {{ e.latest_signal ? fmtScore(e.latest_signal.score) : '--' }}
+          </td>
+          <td
+            class="px-4 py-2 tnum text-right font-medium"
+            :class="(e.change_percent ?? 0) >= 0 ? 'text-rose-600' : 'text-emerald-600'"
+          >
+            <span v-if="e.change_percent != null">{{ e.change_percent >= 0 ? '+' : '' }}{{ e.change_percent.toFixed(2) }}%</span>
+            <span v-else class="text-slate-300">--</span>
           </td>
           <td class="px-4 py-2 text-slate-500">
             {{ e.latest_signal ? regimeText(e.latest_signal.market_regime) : '--' }}

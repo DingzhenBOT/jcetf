@@ -24,6 +24,17 @@ def test_etfs_latest_signal_present_or_null(api_client):
     assert by_code["510050"]["latest_signal"] is None
 
 
+def test_etfs_list_includes_change_percent(api_client_intraday):
+    r = api_client_intraday.get("/api/etfs")
+    assert r.status_code == 200
+    by_code = {e["etf_code"]: e for e in r.json()}
+    # 510300 快照 change_percent=0.78 应透出为当日涨幅
+    assert "510300" in by_code
+    assert by_code["510300"]["change_percent"] == 0.78
+    # 无快照的 etf 应为 None（不报错）
+    assert by_code["510050"]["change_percent"] is None
+
+
 def test_etfs_mapping_fields_exposed(api_client):
     r = api_client.get("/api/etfs")
     e = next(x for x in r.json() if x["etf_code"] == "510300")

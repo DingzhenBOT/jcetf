@@ -23,6 +23,22 @@ def test_etf_history_returns_points_with_volume(api_client_etf_history):
     assert body["points"][0]["date"] <= body["points"][-1]["date"]
 
 
+def test_etf_history_points_have_ohlc(api_client_etf_history):
+    r = api_client_etf_history.get("/api/market/etf/510300/history?days=60")
+    assert r.status_code == 200
+    pts = r.json()["points"]
+    assert len(pts) > 10
+    # K线需要开/高/低/收齐全
+    for p in pts[:5]:
+        assert p["open"] is not None and p["high"] is not None
+        assert p["low"] is not None and p["close"] is not None
+        # 高低约束：high >= max(open,close) >= low
+        assert p["high"] >= max(p["open"], p["close"]) - 1e-9
+        assert p["low"] <= min(p["open"], p["close"]) + 1e-9
+    # 末点（最新）涨跌幅可用于红绿着色
+    assert pts[-1]["change_percent"] is not None
+
+
 def test_etf_history_unknown_code_returns_empty_points(api_client_etf_history):
     r = api_client_etf_history.get("/api/market/etf/999999/history")
     assert r.status_code == 200

@@ -13,6 +13,12 @@ const error = ref<string | null>(null)
 const keyword = ref('')
 const categoryFilter = ref<string>('全部')
 const listingFilter = ref<string>('全部')
+const sortKey = ref<'score' | 'change'>('score') // 综合分 / 当日涨幅
+
+function sortValue(e: EtfListItem): number {
+  if (sortKey.value === 'change') return e.change_percent ?? -Infinity
+  return e.latest_signal?.score ?? -Infinity
+}
 
 async function load(): Promise<void> {
   loading.value = true
@@ -55,7 +61,7 @@ const filtered = computed(() => {
         e.etf_code.toLowerCase().includes(kw) ||
         (e.etf_name ?? '').toLowerCase().includes(kw),
     )
-    .sort((a, b) => (b.latest_signal?.score ?? -1) - (a.latest_signal?.score ?? -1))
+    .sort((a, b) => sortValue(b) - sortValue(a))
 })
 </script>
 
@@ -87,6 +93,24 @@ const filtered = computed(() => {
       >
         <option v-for="l in listings" :key="l" :value="l">{{ l === '全部' ? '全部场所' : l }}</option>
       </select>
+      <div class="flex items-center rounded-md border border-slate-200 overflow-hidden text-sm">
+        <button
+          type="button"
+          class="px-3 py-1.5"
+          :class="sortKey === 'score' ? 'bg-sky-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'"
+          @click="sortKey = 'score'"
+        >
+          综合分
+        </button>
+        <button
+          type="button"
+          class="px-3 py-1.5 border-l border-slate-200"
+          :class="sortKey === 'change' ? 'bg-sky-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'"
+          @click="sortKey = 'change'"
+        >
+          当日涨幅
+        </button>
+      </div>
       <span class="text-xs text-slate-400">命中 {{ filtered.length }} 支</span>
     </div>
 

@@ -172,6 +172,43 @@ def get_latest_quote(
     return row[0] if row else None
 
 
+def get_latest_snapshot_change_map(
+    session: Session,
+    symbol_type: str,
+    symbols: List[str],
+) -> Dict[str, Optional[float]]:
+    """每个 symbol 的最新 SNAPSHOT 的 change_percent（盘中实时当日涨幅）。
+
+    单条聚合查询拿到每个 symbol 的最新时间戳，再回查 change_percent。
+    规模小（ETF 映射通常 < 100 支），查询次数 O(1+N) 可接受。
+    """
+    out: Dict[str, Optional[float]] = {s: None for s in symbols}
+    if not symbols:
+        return out
+    latest = session.execute(
+        select(MarketQuote.symbol, func.max(MarketQuote.timestamp).label("mx"))
+        .where(
+            MarketQuote.symbol_type == symbol_type,
+            MarketQuote.symbol.in_(symbols),
+            MarketQuote.data_kind == "SNAPSHOT",
+            MarketQuote.timeframe == "snapshot",
+        )
+        .group_by(MarketQuote.symbol)
+    ).all()
+    for sym, mx in latest:
+        rec = session.execute(
+            select(MarketQuote.change_percent).where(
+                MarketQuote.symbol_type == symbol_type,
+                MarketQuote.symbol == sym,
+                MarketQuote.data_kind == "SNAPSHOT",
+                MarketQuote.timeframe == "snapshot",
+                MarketQuote.timestamp == mx,
+            )
+        ).first()
+        out[sym] = float(rec[0]) if rec and rec[0] is not None else None
+    return out
+
+
 def get_bar_history(
     session: Session,
     symbol_type: str,

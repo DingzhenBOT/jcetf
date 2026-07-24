@@ -37,6 +37,9 @@ export interface IndexSnapshot {
 
 export interface IndexHistoryPoint {
   date: string
+  open?: number | null
+  high?: number | null
+  low?: number | null
   close: number
   volume: number
   amount: number
@@ -127,6 +130,7 @@ export interface EtfListItem {
   listing?: string | null // '场内' / '场外'
   related_sector_codes?: string[] | null
   related_index_code?: string | null
+  change_percent?: number | null // 当日涨幅（最新 SNAPSHOT，盘中实时）
   latest_signal: Signal | null
 }
 

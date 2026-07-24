@@ -958,3 +958,83 @@ cd /workspace/backend && ./venv/bin/python -m scripts.collect_once --intraday
 - **nginx 无需改**：仅前端 `dist/` 更新 + 后端新增 `/api/market/etf/*`、`/api/market/{type}/{code}/intraday` 已被既有 `location /api/` 反代覆盖，`sudo systemctl reload nginx` 非必需。
 - **盘中分时频率**：`intraday_minute_interval_seconds=60`（默认）。若在 CVM 想调快/调慢，改 `config/settings.yaml` 的 `scheduler.intraday_minute_interval_seconds` 后 `sudo systemctl restart etf-worker`。
 - **库体积控制**：分时仅保留近 `intraday_retention_days=5` 个交易日，每日清理由 worker 的 housekeeping 任务执行（`retention.prune_market_quotes`）。
+
+---
+
+## Phase C — 架构重规划（基于 skills，方案解冻，2026-07-24）
+
+> 用户解冻项目方案：算法/设计可基于合适的 ETF/股市 skills 重写。本阶段先摸清用户点名的 skills 能提供什么能力（尤其腾讯云盘中数据替代源），再给出分阶段架构与执行计划，避免盲改。
+
+### C0. 已加载 skills 能力地图（本环境实测）
+
+| Skill | 提供能力 | 腾讯云可用性 |
+|---|---|---|
+| NeoData金融搜索 | 自然语言查 A股/港股/美股实时、指数、板块、基金净值/业绩/持仓/评级、宏观 | ✅ 已加载，鉴权缓存 12h |
+| a-stock-data（意外发现） | 腾讯财经 `qt.gtimg.cn`（ETF/指数**实时**开高低收+涨跌幅+PE/PB，不封IP）；东财 push2 板块排名；同花顺热点 `ths_hot_reason`（当日强势股+题材归因，零鉴权）；百度概念板块；东财资金流 | ✅ 直连 HTTP，最适合补"盘中信号不更新"的窟窿 |
+| 平安证券场外基金榜单 `pa-public-fund-filter` | 场外基金 `rank`/`special`（收益/夏普/回撤/低回撤/高胜率/热销/人气/定投） | ⚠️ 需 `PINGAN_SKILL_APIKEY` |
+| 平安证券资讯查询 `news-search` | 当日新闻/快讯（自然语言召回） | ⚠️ 需 `PINGAN_SKILL_APIKEY` |
+| 富途 `futuapi` | K线/分时/快照/资金流 | ❌ 需本机 OpenD 桌面，CVM 无头不可用 → 仅本地人工分析，不进自动管线 |
+| 股票综合分析器 `stock-analyzer` | 三维（基本面/新闻/资金流）分析法 | ✅ 方法论 |
+| 基金分析 `fund-analysis` | 单基深度评估 + 组合诊断方法论 | ✅ 方法论（依赖的 westock/neodata 中仅 neodata 可用） |
+| 持仓监控告警 `monitoring-alert` | 14 类预警 + R1/R2 技术规则（MA20+主力净流入+连续2天；布林下轨+放量+RSI<20） | ✅ 方法论 |
+| A股短线交易 `ashare-short-term-trading` | 节点式盘中评估 09:45/10:30/13:30/14:30/14:55 | ✅ 方法论 |
+| A股每日复盘 `a-share-daily-review` | 盘后复盘四路径方法论 | ✅ 方法论（依赖 westock 未装，改用 neodata+a-stock-data） |
+| A股涨跌停日报 `a-share-limitboard-report` | 涨跌停/连板/炸板/主线板块生成 | ✅ 方法论（依赖 westock 未装，改用 a-stock-data 东财） |
+
+> 重要：本环境**未安装** `westock-data` / `westock-tool` / `wb-finance-skill`，故上述"基金分析/盘后复盘/涨跌停"等 skill 实际可用后端 = **neodata + a-stock-data(腾讯/东财/同花顺/百度) + pa 两技能**。已加载的 akshare-sina 仍作为基础源。
+
+### C1. 根因：盘中/复盘意见与综合分"不变"
+
+- **根因**：`strategy_engine/engine.py:evaluate_etf` 只读每日收盘 BAR 历史（`get_bar_history`），**从不读实时 SNAPSHOT** → 综合分/置信度/建议仓位盘中恒定。
+- 盘中评估任务 `job_intraday_evaluate` 仅在 10/11/13/14:00 重写 opinion 文本，**不重算 Signal**。
+- `em` 被 RST 封 → 板块/资金流缺失 → 长期低置信"观察"。
+- 这是设计属性，非前端 bug。修复需让策略盘中摄入实时报价（将铸造新 `strategy_version`，影响历史 Signal，建议灰度）。
+
+### C2. 数据源决策（腾讯云盘中数据替代）
+
+- 主源：**腾讯财经 `qt.gtimg.cn`**（a-stock-data）→ ETF/指数实时 开高低收 + 涨跌幅 + PE/PB，**不封IP**，CVM（国内IP）直接可用。
+- 板块异动：**东财 push2 板块排名**（`m:90+t:2` 行业 / `t:3` 概念）+ **同花顺热点** `ths_hot_reason`（零鉴权 73ms，含题材归因）。
+- 场外/新闻：**平安证券 pa 两技能**（需 `PINGAN_SKILL_APIKEY`）。
+- 富途仅本地人工用，不进 CVM 自动管线。
+
+### C3. 分阶段执行计划（解冻后）
+
+| 阶段 | 内容 | 依赖 |
+|---|---|---|
+| **P1 算法重写（盘中信号更新）** | 盘中摄入腾讯财经实时报价；参考 monitoring-alert R1/R2 + ashare-short-term 节点时刻重排 intraday 评估到 09:45/10:30/13:30/14:30/14:55；铸造新 strategy_version；重算 Signal 综合分/置信度/仓位 | 设计评审（影响历史 Signal） |
+| **P2 场外 ETF 板块** | 新增 `/api/offexchange/funds`（pa-public-fund-filter rank/special）+ 前端独立板块卡片 | `PINGAN_SKILL_APIKEY` |
+| **P3 板块异动** | 东财板块排名 + 同花顺热点 → 板块轮动/异动端点 + 前端卡片 | 无 |
+| **P4 盘后复盘** | a-share-daily-review 方法论 → 收盘后生成复盘摘要写入 `Opinion(post_close)` | 无 |
+| **P5 横向新闻板块** | news-search + a-share-limitboard-report → 首页横向滚动新闻/涨跌停速览 | `PINGAN_SKILL_APIKEY` |
+| **P6 图表与排序（已完成✅）** | 同花顺锤式 K线（开高低收+缩放+红绿）+ 列表综合分/当日涨幅排序 | 无 |
+
+### C4. 本次已交付（P6）
+
+**后端**
+- `IndexHistoryPoint` 增加 `open/high/low`；`EtfListItem` 增加 `change_percent`（取最新 SNAPSHOT 当日涨幅，批量查询 `get_latest_snapshot_change_map` 避免 N+1）。
+- `market.py` 的 `etf_history` / `index_history` 端点回填 OHLC（原 `PriceTrendChart` 仅用收盘，现供 K 线）。
+- 新增测试：`test_etf_history_points_have_ohlc`、`test_etfs_list_includes_change_percent`。
+
+**前端**
+- 新增 `CandlestickChart.vue`：ECharts 蜡烛（开高低收）+ 成交量双 grid，共享 `dataZoom` 可横向缩放，红涨(`#dc2626`)/绿跌(`#16a34a`) A股惯例，十字光标 tooltip。
+- `EtfDetail.vue` 原"收盘价走势"卡片改为"日 K 线"（同花顺锤式）。
+- `EtfList.vue` 增加「综合分 / 当日涨幅」排序切换；`EtfTable.vue` 增加"当日涨幅"列（红绿着色）。
+- 验证：后端 199 测试通过；前端 `pnpm build` 通过。
+
+### C5. 待办 / 依赖
+
+- `PINGAN_SKILL_APIKEY` **未设置** → P2/P5 需 key（已规划接入层 + 优雅降级，待 key 后落地）。
+- P1 铸造新策略版本会重塑历史 Signal，建议在确认新规则与 `strategy_hash` 口径后灰度上线。
+- 富途仅本地人工分析用，不进 CVM 自动管线（CVM 无头、无 OpenD 桌面）。
+
+### C6. 部署（如需上 CVM，沿用 P11 runbook）
+```bash
+# 后端
+cd /workspace/backend && git pull && ./venv/bin/python -m pytest -q
+sudo systemctl restart etf-api etf-worker
+# 前端
+cd /workspace/frontend && pnpm build && sudo systemctl reload nginx
+# 验证
+curl -sS -u admin:密码 "http://127.0.0.1:8000/api/etfs" | python3 -c "import sys,json;d=json.load(sys.stdin);print('支数',len(d),'首支change_percent',d[0].get('change_percent'))"
+curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?days=120" | python3 -c "import sys,json;p=json.load(sys.stdin)['points'][0];print('OHLC',p.get('open'),p.get('high'),p.get('low'),p.get('close'))"
+```

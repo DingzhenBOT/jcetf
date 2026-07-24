@@ -62,7 +62,7 @@ def opinion_to_dict(o: Opinion) -> Dict[str, Any]:
     }
 
 
-def etf_to_dict(m: EtfMapping, latest: Optional[Signal]) -> Dict[str, Any]:
+def etf_to_dict(m: EtfMapping, latest: Optional[Signal], change_percent: Optional[float] = None) -> Dict[str, Any]:
     return {
         "etf_code": m.etf_code,
         "etf_name": m.etf_name,
@@ -70,5 +70,6 @@ def etf_to_dict(m: EtfMapping, latest: Optional[Signal]) -> Dict[str, Any]:
         "listing": m.listing,  # '场内' / '场外'：前端区分交易场所
         "related_sector_codes": m.related_sector_codes,
         "related_index_code": m.related_index_code,
+        "change_percent": change_percent,  # 当日涨幅（最新 SNAPSHOT）
         "latest_signal": signal_to_dict(latest) if latest is not None else None,
     }

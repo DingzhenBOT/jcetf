@@ -6,7 +6,7 @@ import StatePanel from '@/components/ui/StatePanel.vue'
 import Badge from '@/components/ui/Badge.vue'
 import SignalTable from '@/components/sections/SignalTable.vue'
 import OpinionList from '@/components/sections/OpinionList.vue'
-import PriceTrendChart from '@/components/charts/PriceTrendChart.vue'
+import CandlestickChart from '@/components/charts/CandlestickChart.vue'
 import IntradayChart from '@/components/charts/IntradayChart.vue'
 import { getEtfs, getOpinions, getSignalsHistory, getEtfHistory, getIntraday } from '@/api/endpoints'
 import type { EtfHistory, EtfListItem, Intraday, Opinion, Signal } from '@/api/types'
@@ -148,10 +148,10 @@ const heroSentence = computed(() => {
 
         <!-- 走势 + 分时图 -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
-          <!-- 收盘价走势 -->
+          <!-- 日 K 线（开/高/低/收，可横向缩放，红涨绿跌） -->
           <Card
-            :title="`收盘价走势`"
-            :subtitle="etfHistory ? `近 ${etfHistory.points.length} 个交易日` : ''"
+            :title="`日 K 线`"
+            :subtitle="etfHistory ? `近 ${etfHistory.points.length} 个交易日 · 可拖动下方滑块缩放` : ''"
           >
             <div v-if="chartLoading" class="py-10 flex flex-col items-center gap-2 text-slate-400">
               <span class="w-5 h-5 border-2 border-slate-300 border-t-slate-500 rounded-full animate-spin" />
@@ -164,7 +164,7 @@ const heroSentence = computed(() => {
               {{ chartError }}
             </div>
             <template v-else-if="etfHistory && etfHistory.points.length">
-              <PriceTrendChart :points="etfHistory.points" height="180px" />
+              <CandlestickChart :points="etfHistory.points" height="320px" />
               <p
                 v-if="etfHistory.read"
                 class="mt-2 text-xs leading-relaxed text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2.5"
