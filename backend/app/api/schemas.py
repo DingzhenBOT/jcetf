@@ -102,6 +102,23 @@ class IndexHistoryOut(BaseModel):
     code: str
     name: str
     points: List[IndexHistoryPoint]
+    read: str = ""  # 人话自解读（无数据时为观察期提示）
+    signals: List[str] = []
+
+
+class IntradayPoint(BaseModel):
+    time: str  # ISO(UTC)，前端转北京时间显示 HH:MM
+    price: float
+    avg: float  # 均价（累计成交额/累计成交量）
+    volume: float
+
+
+class IntradayOut(BaseModel):
+    code: str
+    name: str
+    date: str
+    prev_close: Optional[float] = None
+    points: List[IntradayPoint]
     read: str
     signals: List[str] = []
 

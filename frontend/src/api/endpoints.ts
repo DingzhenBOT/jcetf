@@ -2,8 +2,10 @@
 import { apiGet, apiPost, buildQuery } from './client'
 import type {
   Breadth,
+  EtfHistory,
   EtfListItem,
   IndexHistory,
+  Intraday,
   MarketOverview,
   Opinion,
   OpinionsForEtf,
@@ -46,6 +48,16 @@ export function getEtfs(): Promise<EtfListItem[]> {
 // GET /api/market/index/{code}/history —— 指数日线历史 + 人话自解读
 export function getIndexHistory(code: string, days?: number): Promise<IndexHistory> {
   return apiGet<IndexHistory>(`/market/index/${encodeURIComponent(code)}/history${buildQuery({ days })}`)
+}
+
+// GET /api/market/etf/{code}/history —— ETF 日线历史 + 人话自解读（与指数端点对称）
+export function getEtfHistory(code: string, days?: number): Promise<EtfHistory> {
+  return apiGet<EtfHistory>(`/market/etf/${encodeURIComponent(code)}/history${buildQuery({ days })}`)
+}
+
+// GET /api/market/{type}/{code}/intraday —— 盘中 1m 分时（type=etf|index，day=YYYY-MM-DD）
+export function getIntraday(type: 'etf' | 'index', code: string, day?: string): Promise<Intraday> {
+  return apiGet<Intraday>(`/market/${encodeURIComponent(type)}/${encodeURIComponent(code)}/intraday${buildQuery({ day })}`)
 }
 
 // GET /api/opinions/{etf} —— 某 ETF 全部意见（可选 phase 过滤）

@@ -27,16 +27,18 @@ logger = get_logger(__name__)
 UTC = timezone.utc
 
 
-def prune_market_quotes(engine: Engine, snapshot_days: int, bar_days: int) -> Dict[str, int]:
-    """清理 market_quote 中过期的 SNAPSHOT / BAR。表不存在则跳过。
+def prune_market_quotes(
+    engine: Engine, snapshot_days: int, bar_days: int, intraday_days: int = 5
+) -> Dict[str, int]:
+    """清理 market_quote 中过期的 SNAPSHOT / BAR / 1m 分时。表不存在则跳过。
 
     返回各类型删除行数。timestamp 须为 naive UTC ISO，方可被 SQLite datetime() 解析。
     """
     inspector = inspect(engine)
     if "market_quote" not in inspector.get_table_names():
-        return {"deleted_snapshot": 0, "deleted_bar": 0, "skipped": 1}
+        return {"deleted_snapshot": 0, "deleted_bar": 0, "deleted_intraday": 0, "skipped": 1}
 
-    deleted: Dict[str, int] = {"deleted_snapshot": 0, "deleted_bar": 0}
+    deleted: Dict[str, int] = {"deleted_snapshot": 0, "deleted_bar": 0, "deleted_intraday": 0}
     with engine.begin() as conn:
         r = conn.execute(
             text("DELETE FROM market_quote WHERE data_kind='SNAPSHOT' AND timestamp < datetime('now', :cut)"),
@@ -44,10 +46,15 @@ def prune_market_quotes(engine: Engine, snapshot_days: int, bar_days: int) -> Di
         )
         deleted["deleted_snapshot"] = r.rowcount
         r = conn.execute(
-            text("DELETE FROM market_quote WHERE data_kind='BAR' AND timestamp < datetime('now', :cut)"),
+            text("DELETE FROM market_quote WHERE data_kind='BAR' AND timeframe<>'1m' AND timestamp < datetime('now', :cut)"),
             {"cut": f"-{bar_days} day"},
         )
         deleted["deleted_bar"] = r.rowcount
+        r = conn.execute(
+            text("DELETE FROM market_quote WHERE data_kind='BAR' AND timeframe='1m' AND timestamp < datetime('now', :cut)"),
+            {"cut": f"-{intraday_days} day"},
+        )
+        deleted["deleted_intraday"] = r.rowcount
     logger.info("pruned market_quote", extra=deleted)
     return deleted
 
@@ -73,7 +80,7 @@ def run_retention(settings: Settings) -> Dict[str, object]:
     engine = make_engine(settings)
     try:
         result: Dict[str, object] = dict(
-            prune_market_quotes(engine, h.snapshot_retention_days, h.bar_retention_days)
+            prune_market_quotes(engine, h.snapshot_retention_days, h.bar_retention_days, h.intraday_retention_days)
         )
         if h.vacuum_after_prune:
             vacuum(engine)

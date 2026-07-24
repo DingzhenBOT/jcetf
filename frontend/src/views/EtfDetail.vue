@@ -6,8 +6,10 @@ import StatePanel from '@/components/ui/StatePanel.vue'
 import Badge from '@/components/ui/Badge.vue'
 import SignalTable from '@/components/sections/SignalTable.vue'
 import OpinionList from '@/components/sections/OpinionList.vue'
-import { getEtfs, getOpinions, getSignalsHistory } from '@/api/endpoints'
-import type { EtfListItem, Opinion, Signal } from '@/api/types'
+import PriceTrendChart from '@/components/charts/PriceTrendChart.vue'
+import IntradayChart from '@/components/charts/IntradayChart.vue'
+import { getEtfs, getOpinions, getSignalsHistory, getEtfHistory, getIntraday } from '@/api/endpoints'
+import type { EtfHistory, EtfListItem, Intraday, Opinion, Signal } from '@/api/types'
 import { TIER_BADGE, TIER_BORDER, regimeText } from '@/lib/tier'
 import { fmtScore, fmtConfidence, confidenceLevel } from '@/lib/format'
 import { toBeijing } from '@/lib/time'
@@ -20,6 +22,12 @@ const opinions = ref<Opinion[]>([])
 const history = ref<Signal[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
+
+// 图表数据（独立加载，失败不阻断信号/意见展示）
+const etfHistory = ref<EtfHistory | null>(null)
+const intraday = ref<Intraday | null>(null)
+const chartLoading = ref(false)
+const chartError = ref<string | null>(null)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -37,6 +45,27 @@ async function load(): Promise<void> {
     error.value = e instanceof Error ? e.message : '未知错误'
   } finally {
     loading.value = false
+  }
+  void loadCharts()
+}
+
+// 走势图（日线历史）+ 盘中分时（独立、非致命）
+async function loadCharts(): Promise<void> {
+  chartLoading.value = true
+  chartError.value = null
+  try {
+    const [hist, intra] = await Promise.all([
+      getEtfHistory(code.value, 120),
+      getIntraday('etf', code.value),
+    ])
+    etfHistory.value = hist
+    intraday.value = intra
+  } catch (e) {
+    chartError.value = e instanceof Error ? e.message : '图表加载失败'
+    etfHistory.value = null
+    intraday.value = null
+  } finally {
+    chartLoading.value = false
   }
 }
 
@@ -116,6 +145,61 @@ const heroSentence = computed(() => {
             </div>
           </div>
         </Card>
+
+        <!-- 走势 + 分时图 -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+          <!-- 收盘价走势 -->
+          <Card
+            :title="`收盘价走势`"
+            :subtitle="etfHistory ? `近 ${etfHistory.points.length} 个交易日` : ''"
+          >
+            <div v-if="chartLoading" class="py-10 flex flex-col items-center gap-2 text-slate-400">
+              <span class="w-5 h-5 border-2 border-slate-300 border-t-slate-500 rounded-full animate-spin" />
+              <span class="text-xs">加载走势…</span>
+            </div>
+            <div
+              v-else-if="chartError"
+              class="py-8 text-center text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg"
+            >
+              {{ chartError }}
+            </div>
+            <template v-else-if="etfHistory && etfHistory.points.length">
+              <PriceTrendChart :points="etfHistory.points" height="180px" />
+              <p
+                v-if="etfHistory.read"
+                class="mt-2 text-xs leading-relaxed text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2.5"
+              >
+                {{ etfHistory.read }}
+              </p>
+            </template>
+            <div v-else class="py-10 text-center text-sm text-slate-400">
+              该 ETF 暂无历史行情，暂时无法形成判断。
+            </div>
+          </Card>
+
+          <!-- 盘中分时 -->
+          <Card
+            :title="`盘中分时`"
+            :subtitle="intraday ? `${intraday.date} · 昨收 ${intraday.prev_close != null ? intraday.prev_close.toFixed(3) : '—'}` : ''"
+          >
+            <div v-if="chartLoading" class="py-10 flex flex-col items-center gap-2 text-slate-400">
+              <span class="w-5 h-5 border-2 border-slate-300 border-t-slate-500 rounded-full animate-spin" />
+              <span class="text-xs">加载分时…</span>
+            </div>
+            <template v-else-if="intraday && intraday.points.length">
+              <IntradayChart :data="intraday" height="280px" />
+              <p
+                v-if="intraday.read"
+                class="mt-2 text-xs leading-relaxed text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2.5"
+              >
+                {{ intraday.read }}
+              </p>
+            </template>
+            <div v-else class="py-10 text-center text-sm text-slate-400">
+              盘前或当日分时尚未采集，开盘后每 60 秒自动更新。
+            </div>
+          </Card>
+        </div>
 
         <!-- 最新信号 -->
         <Card

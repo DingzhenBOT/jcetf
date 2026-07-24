@@ -308,6 +308,37 @@ class Collector:
             source_hint=self.settings.data_source.preferred,
         )
 
+    def collect_intraday_minute(self, session: Session) -> Dict[str, Any]:
+        """盘中 1 分钟分时采集：遍历 ETF(生效映射) + 宽基指数，sina 拉当日分时。
+
+        - 单次批量；每个标的失败记 FAILED 不抛出（sina 偶发超时属非致命）。
+        - 幂等：同一分钟 timestamp 覆盖更新（upsert）。
+        """
+        now = self._now()
+        tdate = trading_date_for()
+        etf_codes = [m.etf_code for m in mapping_repo.get_active_mappings(session)]
+        targets = [("ETF", c) for c in etf_codes] + [
+            ("INDEX", c) for c in self.settings.strategy.broad_index_codes
+        ]
+        bucket: Dict[str, int] = {"ok": 0, "failed": 0}
+        for symbol_type, code in targets:
+            try:
+                df = self.provider.get_intraday_minute(symbol_type, code)
+                source = df.attrs.get("__source") or "sina"
+                rows = normalize.normalize_intraday_minute(df, source, symbol_type, code, tdate, now)
+                if not rows:
+                    raise ValueError("no parseable intraday rows")
+            except Exception as e:  # noqa: BLE001
+                self.log.error("collect intraday failed", extra={"symbol_type": symbol_type, "symbol": code, "err": str(e)})
+                self._record_failure(session, source="sina", symbol_type=symbol_type, now=now, err=str(e))
+                bucket["failed"] += 1
+                continue
+            quote_repo.upsert_market_quotes(session, rows)
+            self._record_success(session, source=source, symbol_type=symbol_type, now=now, note=f"rows={len(rows)}")
+            bucket["ok"] += 1
+        session.commit()
+        return {"status": "done", **bucket}
+
     # ---- 增量回填编排（bounded：符号列表 + lookback_days；增量按 max(timestamp)+1） ----
     def _backfill_start(self, session: Session, symbol_type: str, symbol: str, as_of: date, lookback_days: int) -> Optional[str]:
         """返回该标的本次应拉取的 start（YYYYMMDD）；已齐或无需拉取返回 None。"""

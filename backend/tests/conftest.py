@@ -219,6 +219,92 @@ def api_client_index_history(tmp_path):
     eng.dispose()
 
 
+@pytest.fixture()
+def api_client_etf_history(tmp_path):
+    """带 510300 ETF 多日 BAR 的客户端（供 ETF 历史端点测试）。"""
+    s, eng = _seed(tmp_path, with_breadth=True)
+    from app.db.session import session_scope
+
+    days = _weekdays(date.today() - timedelta(days=45), 25)
+    rows = []
+    prev = 3.800
+    for i, d in enumerate(days):
+        close = round(prev * (1 + 0.005 * (1 if i % 2 == 0 else -1)), 4)
+        rows.append({
+            "data_source": "sina", "symbol_type": "ETF", "symbol": "510300",
+            "data_kind": "BAR", "timeframe": "1d", "trading_date": d,
+            "timestamp": datetime(d.year, d.month, d.day, 15, 0),
+            "open": prev, "high": max(prev, close), "low": min(prev, close),
+            "close": close, "previous_close": prev,
+            "volume": 5_000_000 + i * 20_000, "amount": 2.0e10,
+            "change_percent": round((close / prev - 1) * 100, 3),
+            "turnover_rate": None, "main_net_inflow": None, "large_order_inflow": None,
+            "rise_count": None, "fall_count": None, "limit_up_count": None, "limit_down_count": None,
+            "collected_at": datetime(d.year, d.month, d.day, 15, 5), "source_timestamp": None,
+            "metric_source": "sina", "metric_definition_version": "v1",
+            "source_switched": 0, "data_quality_status": "OK",
+        })
+        prev = close
+    with session_scope(eng) as session:
+        quote_repo.upsert_market_quotes(session, rows)
+    client = _make_client(eng)
+    with client:
+        yield client
+    app.dependency_overrides.clear()
+    eng.dispose()
+
+
+@pytest.fixture()
+def api_client_intraday(tmp_path):
+    """带 510300 当日 1m 分时 + SNAPSHOT(含昨收) 的客户端（供分时端点测试）。"""
+    from app.market_calendar import beijing_to_utc
+    from app.db.session import session_scope
+
+    s, eng = _seed(tmp_path, with_breadth=True)
+    td = date(2025, 7, 18)
+    intraday_rows = []
+    base_price = 4.000
+    for i in range(12):
+        bj = datetime(td.year, td.month, td.day, 9, 30) + timedelta(minutes=i)
+        intraday_rows.append({
+            "data_source": "sina", "symbol_type": "ETF", "symbol": "510300",
+            "data_kind": "BAR", "timeframe": "1m", "trading_date": td,
+            "timestamp": beijing_to_utc(bj),
+            "open": base_price, "high": base_price + 0.002,
+            "low": base_price - 0.002, "close": round(base_price + 0.001 * i, 4),
+            "previous_close": 3.980, "volume": 100_000 + i * 1_000, "amount": None,
+            "change_percent": None, "turnover_rate": None, "main_net_inflow": None,
+            "large_order_inflow": None, "rise_count": None, "fall_count": None,
+            "limit_up_count": None, "limit_down_count": None,
+            "collected_at": beijing_to_utc(bj), "source_timestamp": None,
+            "metric_source": "sina", "metric_definition_version": "v1",
+            "source_switched": 0, "data_quality_status": "OK",
+        })
+        base_price += 0.001
+    with session_scope(eng) as session:
+        quote_repo.upsert_market_quotes(session, intraday_rows)
+        # SNAPSHOT（含昨收，供 prev_close 返回）
+        quote_repo.upsert_market_quotes(session, [{
+            "data_source": "sina", "symbol_type": "ETF", "symbol": "510300",
+            "data_kind": "SNAPSHOT", "timeframe": "snapshot", "trading_date": td,
+            "timestamp": beijing_to_utc(datetime(td.year, td.month, td.day, 11, 0)),
+            "open": 3.980, "high": 4.020, "low": 3.970, "close": 4.011,
+            "previous_close": 3.980, "volume": 8_000_000, "amount": 3.2e10,
+            "change_percent": 0.78, "turnover_rate": None, "main_net_inflow": None,
+            "large_order_inflow": None, "rise_count": None, "fall_count": None,
+            "limit_up_count": None, "limit_down_count": None,
+            "collected_at": beijing_to_utc(datetime(td.year, td.month, td.day, 11, 5)),
+            "source_timestamp": None, "metric_source": "sina",
+            "metric_definition_version": "v1", "source_switched": 0,
+            "data_quality_status": "OK",
+        }])
+    client = _make_client(eng)
+    with client:
+        yield client
+    app.dependency_overrides.clear()
+    eng.dispose()
+
+
 # --------------------------------------------------------------------------- #
 # P7 回测测试数据（合成 ETF/指数/宽度 BAR，250+ 交易日；含样本内/外各一段行情）
 # --------------------------------------------------------------------------- #

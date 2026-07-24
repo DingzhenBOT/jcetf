@@ -18,12 +18,15 @@ from app.api.schemas import (
     IndexHistoryOut,
     IndexHistoryPoint,
     IndexSnapshotOut,
+    IntradayOut,
+    IntradayPoint,
     MarketOverviewOut,
 )
 from datetime import date, timedelta
 
 from app.config import get_settings
 from app.db.session import Session
+from app.market_calendar import beijing_now
 from app.opinion_engine.index_read import humanize_index_read
 from app.repository import quote_repo, signal_repo
 from app.repository import mapping_repo
@@ -186,4 +189,107 @@ def index_history(code: str, days: int = 60, session: Session = Depends(get_db))
         points=points,
         read=read_result["read"],
         signals=read_result["signals"],
+    )
+
+
+@router.get("/etf/{code}/history", response_model=IndexHistoryOut)
+def etf_history(code: str, days: int = 60, session: Session = Depends(get_db)):
+    """ETF 日线历史 + 人话自解读（与指数端点对称，复用 humanize_index_read）。
+
+    days：回溯交易日数（默认 60）。无数据返回空 points + 观察期提示（不 404）。
+    """
+    end = date.today()
+    start = end - timedelta(days=int(days) * 2 + 30)  # 自然日窗口，容忍非交易日
+    rows = quote_repo.get_bar_history(
+        session, "ETF", code, start, end, timeframe="1d", data_kind="BAR"
+    )
+    name_map = {m.etf_code: m.etf_name for m in mapping_repo.get_active_mappings(session)}
+    name = name_map.get(code, code)
+    rows = [r for r in rows if r.close is not None]
+    points = [
+        IndexHistoryPoint(
+            date=(r.trading_date.isoformat() if r.trading_date is not None else r.timestamp.isoformat()[:10]),
+            close=float(r.close),
+            volume=float(r.volume or 0),
+            amount=float(r.amount or 0),
+            change_percent=(float(r.change_percent) if r.change_percent is not None else None),
+        )
+        for r in rows
+    ]
+    read_result = humanize_index_read(code, name, rows)
+    return IndexHistoryOut(
+        code=code,
+        name=name,
+        points=points,
+        read=read_result["read"],
+        signals=read_result["signals"],
+    )
+
+
+@router.get("/{type}/{code}/intraday", response_model=IntradayOut)
+def intraday(
+    type: str,
+    code: str,
+    day: Optional[str] = None,
+    session: Session = Depends(get_db),
+):
+    """盘中 1 分钟分时（类似同花顺分时图）。
+
+    type：etf | index；day：交易日 YYYY-MM-DD（默认今天）。
+    返回当日 1m 序列（价格/均价/成交量）+ 昨收（用于着色与涨跌幅）。
+    """
+    symbol_type = "ETF" if type.lower() == "etf" else "INDEX"
+    trading_date = date.fromisoformat(day) if day else date.today()
+    rows = quote_repo.get_bar_history(
+        session, symbol_type, code, trading_date, trading_date, timeframe="1m", data_kind="BAR"
+    )
+
+    name_map = {m.etf_code: m.etf_name for m in mapping_repo.get_active_mappings(session)}
+    if symbol_type == "INDEX":
+        name = INDEX_LABELS.get(code, code)
+    else:
+        name = name_map.get(code, code)
+
+    snap = quote_repo.get_latest_quote(
+        session, symbol_type, code, data_kind="SNAPSHOT", timeframe="snapshot"
+    )
+    prev_close = float(snap.previous_close) if snap and snap.previous_close is not None else None
+
+    points: List[IntradayPoint] = []
+    cum_vol = 0.0
+    cum_pv = 0.0
+    for r in rows:
+        vol = float(r.volume or 0)
+        cum_vol += vol
+        cum_pv += (float(r.close or 0)) * vol
+        avg = (cum_pv / cum_vol) if cum_vol else float(r.close or 0)
+        # 存储的是 UTC，转回北京时间用于分时图展示（HH:MM 形式）
+        ts_bj = beijing_now(r.timestamp) if r.timestamp is not None else None
+        points.append(
+            IntradayPoint(
+                time=(ts_bj.isoformat() if ts_bj is not None else ""),
+                price=float(r.close or 0),
+                avg=float(avg),
+                volume=vol,
+            )
+        )
+    # 轻量人话：基于末点价 vs 昨收
+    read = ""
+    if points and prev_close:
+        last = points[-1].price
+        cp = (last / prev_close - 1) * 100 if prev_close else 0.0
+        read = (
+            f"{name} 当日分时：昨收 {prev_close:.3f}，最新 {last:.3f}"
+            f"（{cp:+.2f}%），共 {len(points)} 个分钟点。"
+        )
+    elif points:
+        read = f"{name} 当日分时：共 {len(points)} 个分钟点（昨收缺失）。"
+    return IntradayOut(
+        code=code,
+        name=name,
+        date=trading_date.isoformat(),
+        prev_close=prev_close,
+        points=points,
+        read=read,
+        signals=[],
     )

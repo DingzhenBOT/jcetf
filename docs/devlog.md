@@ -885,3 +885,76 @@ cd /workspace/backend && ./venv/bin/python -m scripts.collect_once
 - **前端哈希路由**：`IndexTicker`/`IndexDrawer` 为客户端组件，nginx 托管 `dist/` 即可；路由为 hash 模式，无需改 nginx rewrite。
 - **删除 `IndexBars.vue`**：旧"主要指数"卡片已移除并由数字带替代，CVM 上 `npm run build` 已不含该组件，无残留引用。
 - 若 nginx 配置未变，`sudo systemctl reload nginx` 非必需；本次未改 `deploy/*.conf`。
+
+---
+
+## P11 — ETF 走势图 + 盘中分时图（2026-07-24）
+
+> 用户诉求：ETF 也要像上证指数那样有「实际数 + 走势」，并且要**盘中实时数据**（除收盘价外还要盘中波动图，类似同花顺分时图）。
+> 诊断结论：DB 里 ETF 日线 BAR 已齐（50590 行），缺的是「前端 ETF 历史端点 + 图表」，以及「盘中 1 分钟分时采集/展示」。两部分都补齐。
+> 代码已 push 到 `main`。沙箱验证：`pytest backend` **197 全过**（新增 6 个）、`pnpm build` 过（vue-tsc + vite 无错）、`/api/market/etf/{code}/history` 与 `/api/market/{type}/{code}/intraday` 端点逻辑经测试覆盖。
+
+### 本轮交付清单
+| 层 | 文件 / 端点 | 职责 |
+|---|---|---|
+| 后端 | `GET /api/market/etf/{code}/history` | ETF 日线历史 + 人话自解读（与指数端点对称，复用 `humanize_index_read`） |
+| 后端 | `GET /api/market/{type}/{code}/intraday` | 盘中 1m 分时（price/avg/volume + 昨收 + 北京时间），无数据优雅返回空 points（非 404） |
+| 后端 | `data_provider/akshare_adapter.get_intraday_minute` | sina `stock_zh_a_minute(symbol, period="1", adjust="")`，ETF/指数通用 |
+| 后端 | `collector.normalize_intraday_minute` | 1m 分时归一化（timeframe=1m，day→UTC 时间戳，幂等键覆盖更新） |
+| 后端 | `collector.collect_intraday_minute` | 遍历生效 ETF + 宽基指数逐标采集，单标失败记 FAILED 不中断 |
+| 后端 | `worker.job_collect_intraday_minute` | 盘中每 60s 触发（`is_trading_now()` 守卫，非交易时段跳过） |
+| 后端 | `config.SchedulerConfig.intraday_minute_interval_seconds=60` / `HousekeepingConfig.intraday_retention_days=5` | 采集频率 + 分时仅保留近 5 个交易日（防库膨胀） |
+| 后端 | `retention.prune_market_quotes` | 1m 分时独立清理（`timeframe='1m'` 单独按 `intraday_days` 截断，BAR 清理排除 1m） |
+| 后端 | `api/schemas.IntradayOut/IntradayPoint` | 分时响应模型（含 `prev_close`、`read` 轻量自读） |
+| 前端 | `components/charts/PriceTrendChart.vue` | 收盘价走势 + 成交量（红涨绿跌），ETF/指数复用 |
+| 前端 | `components/charts/IntradayChart.vue` | 分时图：价格线 + 均价线 + 昨收基准线 + 底部成交量（双 grid 联动） |
+| 前端 | `views/EtfDetail.vue` | 新增「收盘价走势」+「盘中分时」两个卡片（走势 120 交易日，分时默认当日） |
+| 前端 | `components/IndexDrawer.vue` | 改用 `PriceTrendChart`；新增「盘中分时」（指数分时端点复用） |
+| 测试 | `tests/conftest.py` 两个 fixture + `test_api_intraday_history.py` + `test_normalize` 新增用例 | ETF 历史 / 分时端点 / 分时归一化 |
+
+### 关键设计取舍
+- **分时无需 schema 迁移**：`market_quote` 已有 `timeframe` 列支持 `1m/3m/5m/1d`，分时直接复用，零 DDL 风险。
+- **时区**：采集时 `day`(北京) → 存 UTC；API 返回时 `beijing_now(timestamp)` 转回北京时间显示（HH:MM），与同花顺一致。
+- **均价**：`avg = 累计成交额 / 累计成交量`（逐分钟累计），前端渲染为黄色均价线；昨收来自最新 SNAPSHOT，用于着色与涨跌幅基准。
+- **实时性**：worker 盘中每 60s 拉一次 sina 分时（覆盖更新），开盘后约 1 分钟即在 ETF 详情页可见波动；非交易时段无分时（展示盘前提示）。
+- **数据源**：sina `stock_zh_a_minute` 在腾讯云可达（em 被 RST），ETF/指数通用；分时只含当日，故不做历史回填（retention 仅留 5 日）。
+
+### 在 CVM 上执行
+```bash
+cd /workspace
+# 1) 走 ghproxy 拉取
+git config --global url."https://ghproxy.com/https://github.com/".insteadOf "https://github.com/"
+git pull origin main
+
+# 2) 后端依赖（P11 未新增 pip 依赖；保险起见重装一次，无变更可省略）
+cd /workspace/backend && ./venv/bin/python -m pip install -r requirements.txt && cd ..
+
+# 3) 前端构建（echarts 已在依赖内，无新增 npm 包）
+cd /workspace/frontend && npm install && npm run build && cd ..
+
+# 4) 重启服务（worker 会按新调度自动开始盘中分时采集）
+sudo systemctl restart etf-api etf-worker
+
+# 5) 验证 ETF 历史端点
+curl -sS -u admin:密码 http://127.0.0.1:8000/api/market/etf/510300/history?days=120 | python3 -m json.tool
+#   预期：code=510300、name=沪深300ETF；points 非空、每条含 date/close/volume/amount；
+#         read 为人话段落、signals 为列表。
+
+# 6) 验证分时端点（交易时段才有数据；非交易时段 points=[] 属正常）
+curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/intraday?day=$(date +%F)" | python3 -m json.tool
+#   预期：date=今天、prev_close 来自 SNAPSHOT（盘中）、points 为当日 1m 序列（time 为北京时间）；
+#         read 为轻量自读（"昨日收 X，最新 Y（±z%），共 N 个分钟点"）。
+
+# 7) 前端验证：浏览器打开 http://118.89.116.114/ → 点开某 ETF → 应见「收盘价走势」+「盘中分时」两张图；
+#    点开指数抽屉同理可见分时。
+
+# 8)（可选）盘中手动立即采集一次分时（无需等 60s 轮询）
+cd /workspace/backend && ./venv/bin/python -m scripts.collect_once --intraday
+```
+
+### 重要说明（非回归）
+- **策略哈希不受影响**：本次仅新增采集/展示，未改 `params`/`rules` → 不铸造新策略版本、不触发重评估。
+- **前端构建无新增 npm 依赖**：`PriceTrendChart`/`IntradayChart` 复用既有 ECharts 与 `BaseChart` 封装，未引入新包。
+- **nginx 无需改**：仅前端 `dist/` 更新 + 后端新增 `/api/market/etf/*`、`/api/market/{type}/{code}/intraday` 已被既有 `location /api/` 反代覆盖，`sudo systemctl reload nginx` 非必需。
+- **盘中分时频率**：`intraday_minute_interval_seconds=60`（默认）。若在 CVM 想调快/调慢，改 `config/settings.yaml` 的 `scheduler.intraday_minute_interval_seconds` 后 `sudo systemctl restart etf-worker`。
+- **库体积控制**：分时仅保留近 `intraday_retention_days=5` 个交易日，每日清理由 worker 的 housekeeping 任务执行（`retention.prune_market_quotes`）。

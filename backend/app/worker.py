@@ -119,6 +119,16 @@ def job_collect_market() -> None:
         run_job("collect_market", _collector().collect_market, session)
 
 
+def job_collect_intraday_minute() -> None:
+    """盘中 1 分钟分时采集（sina stock_zh_a_minute）。非交易时段跳过。"""
+    from app.market_calendar import is_trading_now
+
+    if not is_trading_now():
+        return
+    with session_scope(_engine()) as session:
+        run_job("collect_intraday_minute", _collector().collect_intraday_minute, session)
+
+
 def job_collect_breadth() -> None:
     """全市场宽度累计（每日数次：午间 + 收盘）。非交易日跳过。"""
     from app.market_calendar import is_trading_day, trading_date_for
@@ -237,6 +247,11 @@ def build_scheduler(settings) -> BlockingScheduler:
     scheduler.add_job(
         job_collect_market, "interval", seconds=settings.scheduler.intraday_interval_seconds,
         id="intraday_collect", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    # 盘中分时采集（每 intraday_minute_interval_seconds；is_trading_now 守卫）
+    scheduler.add_job(
+        job_collect_intraday_minute, "interval", seconds=settings.scheduler.intraday_minute_interval_seconds,
+        id="intraday_minute_collect", replace_existing=True, max_instances=1, coalesce=True,
     )
     # 午间宽度累计 11:35
     scheduler.add_job(

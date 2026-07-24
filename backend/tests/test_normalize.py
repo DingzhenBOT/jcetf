@@ -1,5 +1,5 @@
 """P2 normalize 测试：中文列 -> market_quote / market_breadth 字典映射。"""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pandas as pd
 
@@ -187,3 +187,29 @@ def test_normalize_index_bar_derives_change_percent_from_prev_close():
     assert abs(rows[1]["change_percent"] - (3215 - 3200) / 3200 * 100) < 1e-3
     # 第三天：(3190-3215)/3215*100
     assert abs(rows[2]["change_percent"] - (3190 - 3215) / 3215 * 100) < 1e-3
+
+
+def test_normalize_intraday_minute_maps_and_tags_1m():
+    # 新浪 stock_zh_a_minute 返回：day, open, high, low, close, volume, amount
+    df = pd.DataFrame([
+        {"day": "2024-01-02 09:30:00", "open": 4.000, "high": 4.010, "low": 3.998,
+         "close": 4.005, "volume": 120000, "amount": 4.8e8},
+        {"day": "2024-01-02 09:31:00", "open": 4.005, "high": 4.012, "low": 4.004,
+         "close": 4.008, "volume": 90000, "amount": 3.6e8},
+    ])
+    df.attrs["__source"] = "sina"
+    td = date(2024, 1, 2)
+    rows = normalize.normalize_intraday_minute(df, "sina", "ETF", "510300", td, _now())
+    assert len(rows) == 2
+    r0 = rows[0]
+    # timeframe=1m, data_kind=BAR
+    assert r0["timeframe"] == "1m" and r0["data_kind"] == "BAR"
+    assert r0["symbol_type"] == "ETF" and r0["symbol"] == "510300"
+    assert r0["trading_date"] == td
+    assert r0["close"] == 4.005 and r0["open"] == 4.000 and r0["high"] == 4.010
+    assert r0["volume"] == 120000
+    # 时间：北京 09:30 -> 存储 UTC 01:30
+    assert r0["timestamp"].hour == 1 and r0["timestamp"].minute == 30
+    # 幂等键字段齐全
+    assert r0["data_source"] == "sina"
+

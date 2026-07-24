@@ -91,6 +91,7 @@ class SchedulerConfig(BaseModel):
     timezone: str = "Asia/Shanghai"
     enabled: bool = True
     intraday_interval_seconds: int = 180
+    intraday_minute_interval_seconds: int = 60  # 盘中分时(1分钟)采集间隔
     pre_close_interval_seconds: int = 60
 
 
@@ -168,6 +169,7 @@ class HousekeepingConfig(BaseModel):
     log_retention_days: int = 14
     snapshot_retention_days: int = 90
     bar_retention_days: int = 730
+    intraday_retention_days: int = 5  # 分时(1m)序列仅保留近 N 个交易日，防库膨胀
     opinion_retention_days: int = 730
     backup_retention_days: int = 7
     backup_remote_enabled: bool = False

@@ -6,6 +6,7 @@
 用法：
   python3.11 -m scripts.collect_once            # 完整采集（含 breadth）
   python3.11 -m scripts.collect_once --market   # 仅盘中四类快照（不含 breadth）
+  python3.11 -m scripts.collect_once --intraday # 仅盘中 1 分钟分时（ETF + 宽基指数）
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="一次性采集（P2 自测）")
     ap.add_argument("--market", action="store_true", help="仅盘中四类快照，不含 breadth")
     ap.add_argument("--backfill", action="store_true", help="仅回填历史 BAR（P3，需联网）")
+    ap.add_argument("--intraday", action="store_true", help="仅盘中 1 分钟分时（ETF + 宽基指数）")
     args = ap.parse_args()
 
     settings = get_settings()
@@ -38,6 +40,13 @@ def main() -> int:
         with session_scope(eng) as session:
             res = collector.backfill_history(session)
         print("backfill:", res)
+        print("done. 数据已写入", settings.paths.sqlite_path_abs)
+        return 0
+
+    if args.intraday:
+        with session_scope(eng) as session:
+            res = collector.collect_intraday_minute(session)
+        print("intraday:", res)
         print("done. 数据已写入", settings.paths.sqlite_path_abs)
         return 0
 

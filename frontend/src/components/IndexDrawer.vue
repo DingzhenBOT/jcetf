@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import BaseChart from '@/components/charts/BaseChart.vue'
-import { getEtfs, getIndexHistory } from '@/api/endpoints'
-import { changeColor, fmtPct, fmtAmountYi, fmtInt } from '@/lib/format'
-import type { EChartsOption } from 'echarts'
-import type { EtfListItem, IndexHistory } from '@/api/types'
+import PriceTrendChart from '@/components/charts/PriceTrendChart.vue'
+import IntradayChart from '@/components/charts/IntradayChart.vue'
+import { getEtfs, getIndexHistory, getIntraday } from '@/api/endpoints'
+import { changeColor, fmtPct } from '@/lib/format'
+import type { EtfListItem, IndexHistory, Intraday } from '@/api/types'
 
 const props = defineProps<{ code: string | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -13,6 +13,7 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const data = ref<IndexHistory | null>(null)
 const etfs = ref<EtfListItem[]>([])
+const intraday = ref<Intraday | null>(null)
 const closeBtn = ref<HTMLButtonElement | null>(null)
 
 const isOpen = computed(() => props.code !== null)
@@ -26,111 +27,25 @@ const latest = computed(() => {
   return pts.length ? pts[pts.length - 1] : null
 })
 
-const trendUp = computed(() => {
-  const pts = data.value?.points ?? []
-  if (pts.length < 2) return true
-  return pts[pts.length - 1].close >= pts[0].close
-})
-
-const lineOption = computed<EChartsOption>(() => {
-  const pts = data.value?.points ?? []
-  const dates = pts.map((p) => p.date.slice(5)) // MM-DD
-  const closes = pts.map((p) => p.close)
-  const color = trendUp.value ? '#dc2626' : '#16a34a'
-  return {
-    grid: { left: 8, right: 16, top: 16, bottom: 8, containLabel: true },
-    tooltip: {
-      trigger: 'axis',
-      formatter: (p: any) => {
-        const it = Array.isArray(p) ? p[0] : p
-        return `${it.name}<br/>收盘：<b>${it.value.toFixed(2)}</b>`
-      },
-    },
-    xAxis: {
-      type: 'category',
-      data: dates,
-      boundaryGap: false,
-      axisLabel: { color: '#94a3b8', fontSize: 10, hideOverlap: true },
-      axisLine: { lineStyle: { color: '#e2e8f0' } },
-      axisTick: { show: false },
-    },
-    yAxis: {
-      type: 'value',
-      scale: true,
-      axisLabel: { color: '#94a3b8', fontSize: 10 },
-      splitLine: { lineStyle: { color: '#f1f5f9' } },
-    },
-    series: [
-      {
-        type: 'line',
-        data: closes,
-        smooth: true,
-        showSymbol: false,
-        lineStyle: { color, width: 2 },
-        areaStyle: {
-          color: {
-            type: 'linear',
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: color + '33' },
-              { offset: 1, color: color + '00' },
-            ],
-          },
-        },
-      },
-    ],
-  }
-})
-
-const volumeOption = computed<EChartsOption>(() => {
-  const pts = data.value?.points ?? []
-  const dates = pts.map((p) => p.date.slice(5))
-  return {
-    grid: { left: 8, right: 16, top: 8, bottom: 8, containLabel: true },
-    tooltip: {
-      trigger: 'axis',
-      formatter: (p: any) => {
-        const it = Array.isArray(p) ? p[0] : p
-        return `${it.name}<br/>成交量：${fmtInt(it.value)} 手`
-      },
-    },
-    xAxis: {
-      type: 'category',
-      data: dates,
-      axisLabel: { show: false },
-      axisLine: { lineStyle: { color: '#e2e8f0' } },
-      axisTick: { show: false },
-    },
-    yAxis: { type: 'value', axisLabel: { show: false }, splitLine: { show: false } },
-    series: [
-      {
-        type: 'bar',
-        barWidth: '60%',
-        data: pts.map((p) => ({
-          value: p.volume,
-          itemStyle: { color: (p.change_percent ?? 0) >= 0 ? '#dc2626' : '#16a34a' },
-        })),
-      },
-    ],
-  }
-})
-
 async function load(): Promise<void> {
   if (!props.code) {
     data.value = null
     etfs.value = []
+    intraday.value = null
     error.value = null
     return
   }
   loading.value = true
   error.value = null
   try {
-    const [hist, list] = await Promise.all([getIndexHistory(props.code), getEtfs()])
+    const [hist, list, intra] = await Promise.all([
+      getIndexHistory(props.code),
+      getEtfs(),
+      getIntraday('index', props.code).catch(() => null),
+    ])
     data.value = hist
     etfs.value = list
+    intraday.value = intra
   } catch (e) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -260,18 +175,18 @@ function fmtClose(v: number | null | undefined): string {
                 <h3 class="text-xs font-medium text-slate-500">收盘价走势</h3>
                 <span class="text-xs text-slate-400">近 {{ data.points.length }} 个交易日</span>
               </div>
-              <BaseChart :option="lineOption" height="200px" />
+              <PriceTrendChart :points="data.points" height="180px" />
             </section>
 
-            <!-- 买卖量 -->
-            <section>
+            <!-- 盘中分时 -->
+            <section v-if="intraday && intraday.points.length">
               <div class="flex items-center justify-between mb-1">
-                <h3 class="text-xs font-medium text-slate-500">成交量（买卖量）</h3>
-                <span v-if="latest" class="text-xs text-slate-400 tnum">
-                  最新成交额 {{ fmtAmountYi(latest.amount) }}
+                <h3 class="text-xs font-medium text-slate-500">盘中分时</h3>
+                <span class="text-xs text-slate-400 tnum">
+                  {{ intraday.date }} · 昨收 {{ intraday.prev_close != null ? intraday.prev_close.toFixed(3) : '—' }}
                 </span>
               </div>
-              <BaseChart :option="volumeOption" height="120px" />
+              <IntradayChart :data="intraday" height="280px" />
             </section>
 
             <!-- 推荐理由（人话） -->

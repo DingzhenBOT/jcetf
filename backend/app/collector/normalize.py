@@ -373,6 +373,34 @@ def normalize_index_bar(
     return rows
 
 
+def normalize_intraday_minute(
+    df: pd.DataFrame, source: str, symbol_type: str, symbol: str,
+    trading_date: date, collected_at: datetime,
+) -> List[Dict[str, Any]]:
+    """盘中 1 分钟分时 BAR：day(naive 本地时间) -> timestamp(UTC)；timeframe=1m, data_kind=BAR。
+
+    幂等键同 market_quote 唯一约束（data_source+symbol_type+symbol+data_kind+timeframe+timestamp），
+    重复采集同一分钟会覆盖更新。
+    """
+    rows: List[Dict[str, Any]] = []
+    for _, r in df.iterrows():
+        dt = _parse_bj_time(_col(r, "day", "时间", "datetime", "date"))
+        if dt is None:
+            continue
+        row = _bar_row(source, symbol_type, symbol, trading_date, collected_at)
+        row["timeframe"] = "1m"
+        row["timestamp"] = dt
+        row.update(
+            open=_f(_col(r, "open", "开盘")),
+            high=_f(_col(r, "high", "最高")),
+            low=_f(_col(r, "low", "最低")),
+            close=_f(_col(r, "close", "收盘")),
+            volume=_f(_col(r, "volume", "成交量")),
+        )
+        rows.append(row)
+    return rows
+
+
 def normalize_sector_bar(
     df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
 ) -> List[Dict[str, Any]]:

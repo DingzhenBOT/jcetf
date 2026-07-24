@@ -51,6 +51,27 @@ export interface IndexHistory {
   signals: string[]
 }
 
+// ETF 日线历史与指数历史同形，直接复用 IndexHistory
+export type EtfHistory = IndexHistory
+
+// 盘中 1 分钟分时（类似同花顺分时图）
+export interface IntradayPoint {
+  time: string // 北京时间 ISO（后端已转回北京时间）
+  price: number // 该分钟收盘价
+  avg: number // 均价（累计成交额 / 累计成交量）
+  volume: number // 该分钟成交量
+}
+
+export interface Intraday {
+  code: string
+  name: string
+  date: string // 交易日 YYYY-MM-DD
+  prev_close: number | null // 昨收（用于着色与涨跌幅）
+  points: IntradayPoint[]
+  read: string
+  signals: string[]
+}
+
 export interface Breadth {
   trading_date?: string | null
   total_rise?: number | null

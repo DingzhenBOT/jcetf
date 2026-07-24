@@ -260,6 +260,22 @@ class AkShareAdapter(BaseDataProvider):
         df.attrs["__source"] = src
         return df
 
+    def get_intraday_minute(self, symbol_type: str, code: str) -> pd.DataFrame:
+        """盘中 1 分钟分时（sina stock_zh_a_minute）。
+
+        - 腾讯云 em 被墙，分时固定走 sina（ETF/指数均支持 sh/sz 前缀代码）。
+        - 返回列：day, open, high, low, close, volume（day 为 naive 本地时间）。
+        """
+        symbol = self._to_sina_symbol(code, symbol_type)
+        try:
+            df = ak.stock_zh_a_minute(symbol=symbol, period="1", adjust="")
+        except Exception as e:  # noqa: BLE001
+            raise DataSourceError(f"intraday_minute sina {symbol}: {type(e).__name__}: {e}")
+        if df is None or (hasattr(df, "empty") and df.empty):
+            raise DataSourceError(f"intraday_minute sina {symbol} returned empty")
+        df.attrs["__source"] = "sina"
+        return df
+
     def get_sector_history(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         """板块历史 BAR。symbol 为 BK 代码（如 BK1036）。
 
