@@ -93,6 +93,11 @@ export function phaseText(p: string | null | undefined): string {
   return PHASE_TEXT[p] ?? p
 }
 
+/** 是否为盘中阶段（盘前/午间/收盘前）建议；post_close 视为盘后复盘。 */
+export function isIntradayPhase(p: string | null | undefined): boolean {
+  return p != null && p !== 'post_close'
+}
+
 // 市场风险等级配色
 const RISK_LEVEL_BADGE: Record<string, string> = {
   偏低: 'bg-emerald-100 text-emerald-700 border-emerald-200',

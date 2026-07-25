@@ -85,6 +85,9 @@ class DataQualityConfig(BaseModel):
     stale_seconds_threshold: int = 1800
     max_abs_change_percent: float = 11.0
     min_price: float = 0.01
+    # OHLC 合理性护栏（#67）：单根 BAR/分时内 最高/最低/开/收 的相对跨度上限。
+    # A股单日涨跌幅限制 ±10%，正常 K 线 high/low 跨度约 ≤1.1；>4.0 视为脏数据（如 512000 单位错乱 开346/收0.535/高0.525/低0.526）。
+    max_price_span_ratio: float = 4.0
 
 
 class SchedulerConfig(BaseModel):

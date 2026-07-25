@@ -164,6 +164,7 @@ def get_latest_quote(
                 MarketQuote.symbol == symbol,
                 MarketQuote.data_kind == data_kind,
                 MarketQuote.timeframe == timeframe,
+                MarketQuote.data_quality_status != "ANOMALY",
             )
             .order_by(MarketQuote.timestamp.desc())
             .limit(1)
@@ -218,7 +219,10 @@ def get_bar_history(
     timeframe: str = "1d",
     data_kind: str = "BAR",
 ) -> List[MarketQuote]:
-    """[start_date, end_date] 区间内的 BAR（升序，idx_quote_symbol_time + trading_date）。"""
+    """[start_date, end_date] 区间内的 BAR（升序，idx_quote_symbol_time + trading_date）。
+
+    过滤 data_quality_status == "ANOMALY" 的脏数据（#67），避免坏行进入策略/回测/图表。
+    """
     rows = session.execute(
         select(MarketQuote)
         .where(
@@ -228,6 +232,7 @@ def get_bar_history(
             MarketQuote.timeframe == timeframe,
             MarketQuote.trading_date >= start_date,
             MarketQuote.trading_date <= end_date,
+            MarketQuote.data_quality_status != "ANOMALY",
         )
         .order_by(MarketQuote.timestamp.asc())
     ).scalars().all()
@@ -241,7 +246,10 @@ def get_max_bar_timestamp(
     timeframe: str = "1d",
     data_kind: str = "BAR",
 ) -> Optional[datetime]:
-    """该 (symbol_type, symbol) 的 BAR 最大时间戳（增量回填起点判断）。"""
+    """该 (symbol_type, symbol) 的 BAR 最大时间戳（增量回填起点判断）。
+
+    仅取非 ANOMALY 行（#67）：坏数据若带最新时间戳会阻断增量回填，过滤后正常续拉覆盖。
+    """
     row = (
         session.execute(
             select(func.max(MarketQuote.timestamp)).where(
@@ -249,6 +257,7 @@ def get_max_bar_timestamp(
                 MarketQuote.symbol == symbol,
                 MarketQuote.data_kind == data_kind,
                 MarketQuote.timeframe == timeframe,
+                MarketQuote.data_quality_status != "ANOMALY",
             )
         ).first()
     )

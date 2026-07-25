@@ -23,6 +23,7 @@ class Signal(Base):
     trading_date: Mapped[date] = mapped_column(Date, nullable=False)
     target_etf: Mapped[str] = mapped_column(String(32), nullable=False)
     signal_type: Mapped[str] = mapped_column(String(32), nullable=False)  # 9.4 档位
+    phase: Mapped[str | None] = mapped_column(String(32))  # 该信号最后由哪个阶段评估生成：pre_market/midday/pre_close/post_close
     score: Mapped[float | None] = mapped_column(Float)
     confidence: Mapped[float | None] = mapped_column(Float)
     market_regime: Mapped[str | None] = mapped_column(String(16))

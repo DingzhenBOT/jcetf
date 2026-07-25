@@ -11,7 +11,7 @@ import IntradayChart from '@/components/charts/IntradayChart.vue'
 import GaugeChart from '@/components/charts/GaugeChart.vue'
 import { getEtfs, getOpinions, getSignalsHistory, getEtfHistory, getIntraday } from '@/api/endpoints'
 import type { EtfHistory, EtfListItem, Intraday, Opinion, Signal } from '@/api/types'
-import { TIER_BADGE, TIER_BORDER, regimeText } from '@/lib/tier'
+import { TIER_BADGE, TIER_BORDER, regimeText, phaseText, isIntradayPhase } from '@/lib/tier'
 import { fmtConfidence, confidenceLevel } from '@/lib/format'
 import { toBeijing } from '@/lib/time'
 
@@ -77,12 +77,33 @@ const missingRules = computed(() =>
   etf.value?.latest_signal?.failed_rules?.filter((r) => r.includes('missing')) ?? [],
 )
 
-// 人话结论（置顶 Hero 用）：优先取最新意见的完整句子，回退 one_liner / suggested_action。
+// 人话结论（置顶 Hero 用）：盘中建议为主（盘前/午间/收盘前优先），收盘后复盘单独成区。
+const intradayOpinions = computed<Opinion[]>(() =>
+  opinions.value.filter((o) => isIntradayPhase(o.phase)),
+)
+const postCloseOpinions = computed<Opinion[]>(() =>
+  opinions.value.filter((o) => o.phase === 'post_close'),
+)
+// 主建议：优先最新盘中意见；若无盘中意见则回退到任意最新意见（可能已是收盘后）。
+const primaryOpinion = computed<Opinion | null>(() => {
+  if (intradayOpinions.value.length) return intradayOpinions.value[0]
+  return opinions.value[0] ?? null
+})
+
 const heroSentence = computed(() => {
-  const first = opinions.value[0]?.content
+  const first = primaryOpinion.value?.content
   if (first) return first
   const s = etf.value?.latest_signal
   return s?.one_liner ?? s?.suggested_action ?? ''
+})
+
+// 主建议阶段标注：盘中（含时间）/ 收盘后（次日建议）。
+const primaryPhaseText = computed(() => {
+  const o = primaryOpinion.value
+  if (!o) return ''
+  const t = toBeijing(o.generated_at)
+  if (o.phase === 'post_close') return `收盘后复盘 · ${t}（供次日参考）`
+  return `盘中建议 · ${t}`
 })
 </script>
 
@@ -123,7 +144,7 @@ const heroSentence = computed(() => {
           </div>
         </div>
 
-        <!-- 结论 Hero（人话置顶） -->
+        <!-- 结论 Hero（人话置顶，盘中建议为主 + 阶段/时间标注） -->
         <Card
           v-if="etf.latest_signal"
           class="border-l-4"
@@ -131,10 +152,18 @@ const heroSentence = computed(() => {
         >
           <div class="flex items-start justify-between gap-3 flex-wrap">
             <div class="min-w-0">
-              <Badge
-                :text="etf.latest_signal.signal_type_text"
-                :class="TIER_BADGE[etf.latest_signal.signal_type]"
-              />
+              <div class="flex items-center gap-2 flex-wrap">
+                <Badge
+                  :text="etf.latest_signal.signal_type_text"
+                  :class="TIER_BADGE[etf.latest_signal.signal_type]"
+                />
+                <span
+                  v-if="primaryPhaseText"
+                  class="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 tnum"
+                >
+                  {{ primaryPhaseText }}
+                </span>
+              </div>
               <p class="mt-2 text-base leading-relaxed text-slate-700">{{ heroSentence }}</p>
             </div>
             <div class="text-right shrink-0">
@@ -145,6 +174,12 @@ const heroSentence = computed(() => {
               </div>
             </div>
           </div>
+          <p
+            v-if="primaryOpinion && primaryOpinion.phase === 'post_close'"
+            class="mt-2 text-xs text-slate-400 bg-slate-50 border border-slate-100 rounded-md px-2.5 py-1.5"
+          >
+            当前主建议为收盘后复盘（针对次日），盘中实时建议见下方「盘中意见」或当日更早记录。
+          </p>
         </Card>
 
         <!-- 走势 + 分时图 -->
@@ -206,7 +241,7 @@ const heroSentence = computed(() => {
         <Card
           v-if="etf.latest_signal"
           title="最新信号"
-          :subtitle="`生成于 ${toBeijing(etf.latest_signal.generated_at)}`"
+          :subtitle="`${etf.latest_signal.phase ? phaseText(etf.latest_signal.phase) : '未标注阶段'} · 生成于 ${toBeijing(etf.latest_signal.generated_at)}`"
         >
           <div class="flex flex-col sm:flex-row gap-4 items-center">
             <GaugeChart
@@ -243,10 +278,27 @@ const heroSentence = computed(() => {
         </Card>
         <div v-else class="text-sm text-slate-400 py-4">该 ETF 暂无信号。</div>
 
-        <!-- 意见 -->
-        <Card class="mt-4" :title="`盘中 / 复盘意见（${opinions.length}）`">
-          <StatePanel :loading="false" :error="null" :empty="opinions.length === 0" empty-text="暂无意见">
-            <OpinionList :opinions="opinions" />
+        <!-- 盘中意见（主） -->
+        <Card class="mt-4" :title="`盘中意见（${intradayOpinions.length}）`">
+          <StatePanel
+            :loading="false"
+            :error="null"
+            :empty="intradayOpinions.length === 0"
+            empty-text="暂无盘中意见"
+          >
+            <OpinionList :opinions="intradayOpinions" />
+          </StatePanel>
+        </Card>
+
+        <!-- 收盘后复盘（次日建议，独立成区） -->
+        <Card class="mt-4" :title="`收盘后复盘（${postCloseOpinions.length}）`">
+          <StatePanel
+            :loading="false"
+            :error="null"
+            :empty="postCloseOpinions.length === 0"
+            empty-text="暂无收盘后复盘"
+          >
+            <OpinionList :opinions="postCloseOpinions" />
           </StatePanel>
         </Card>
 

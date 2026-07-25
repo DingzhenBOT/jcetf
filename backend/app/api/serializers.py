@@ -32,6 +32,7 @@ def signal_to_dict(sig: Signal) -> Dict[str, Any]:
         "target_etf": sig.target_etf,
         "signal_type": tier,
         "signal_type_text": TIER_TEXT.get(tier, tier),
+        "phase": sig.phase,
         "score": sig.score,
         "confidence": sig.confidence,
         "market_regime": sig.market_regime,

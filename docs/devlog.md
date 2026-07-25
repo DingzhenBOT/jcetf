@@ -1203,3 +1203,41 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 **后续**
 - P4 盘后复盘（a-share-daily-review → post_close 意见）仍待办。
 - 盈米 CLI 在 CVM 安装授权（解锁 P2 真实数据）、westock-data 预装/缓存（板块异动首调慢）仍待办。
+
+### C12. 512000 坏数据根因修复 + 建议时间/阶段标注 + 首页分时切换（2026-07-25）
+
+> 用户反馈三件事：① 盈米 CLI 未安装/授权要搞；② 首页大盘点开最好能选当日分时涨跌；③ 点开券商ETF(512000) 显示「减仓观望」但当天明明下跌——要求建议写上时间、标明盘中/收盘后、以盘中建议为主、收盘建议放复盘。
+
+**#67 根因：512000 日线脏数据污染信号（已修）**
+- 现象：512000 某行 `open=346.000 / close=0.535 / high=0.525 / low=0.526`（高<低、跨度>600 倍），属 sina `fund_etf_hist_sina` 对该特殊代码返回的单位/拆细错乱脏数据。
+- 根因：① `normalize_*` 只做列映射不校验 OHLC 合理性；② `checker._assess_row` 仅查 `close 非正` + `涨跌幅阈值`，不校验高低关系/跨度；③ 历史 BAR 采集链路 `_collect_bar` / `collect_intraday_minute` **从不调用 `assess`**；④ 查询端 `get_bar_history` 等**不过滤 ANOMALY** → 坏行进入 `strategy_engine.evaluate_etf` 造成「放量上涨」等失真、建议错判。
+- 修复（4 处）：
+  1. `config.DataQualityConfig` 新增 `max_price_span_ratio=4.0`（A股单日涨跌幅限 ±10%，正常 K 线跨度 ≤1.1，4.0 留足缓冲）。
+  2. `data_quality/checker.py` 新增 `_check_ohlc_consistency`：非正 / `high<low` / 跨度(max/min)>阈值 → `ANOMALY`；**不查「开收越界」**（复权行情 open/close 与 high/low 可能按不同系数调整，硬判定会误伤真实数据）。接入 `_assess_row`。
+  3. `collector/collector.py`：`_collect_bar` 与 `collect_intraday_minute` 采集后调 `assess(rows, is_trading_now=False)`（历史/分时不做时间新鲜度惩罚）。
+  4. `repository/quote_repo.py`：`get_bar_history` / `get_max_bar_timestamp` / `get_latest_quote` 增加 `data_quality_status != 'ANOMALY'` 过滤——读路径安全网，坏数据永不再进引擎/图表。
+- 已入库坏数据清理：`scripts/flag_ohlc_anomalies.py`（默认 dry-run 预览；`--apply` 真正改标，支持 `--symbol`）。重跑 `backfill` 可覆盖最新交易日坏数据。
+- 测试：`test_data_quality.py` 加 6 例（含 512000 翻版 high<low）；`test_repository_read.py` 加 `test_bar_history_filters_anomaly`（512000 翻版验证读路径过滤 + 回退上一交易日）；`_ensure_columns` 迁移用临时旧库(缺 phase 列)验证加列+回填。
+
+**需求③：建议时间 + 阶段标注 + 盘中优先（已修）**
+- 数据模型：`Signal` 新增 `phase` 列（标注该信号最后由哪个阶段评估生成 pre_market/midday/pre_close/post_close）。`pipeline.post_collection_evaluate` 创建/更新 Signal 时写 `phase`；`serializers.signal_to_dict` 透出 `phase`；`db/session._ensure_columns` 幂等 `ALTER TABLE signal ADD COLUMN phase` 并从同 `signal_id` 最新意见回填存量数据。
+  - 注：`Signal` 自然键 `(trading_date, target_etf, version)` 被各 phase 复用并互相覆盖，「盘中/收盘后」语义真正落在 `Opinion.phase`（每阶段一条意见）。因此前端以 `Opinion.phase` 为真相来源区分盘中/收盘后。
+- 前端 `EtfDetail.vue`：
+  - 结论 Hero 优先取**盘中意见**（pre_market/midday/pre_close，按时间倒序取最新），其次任意最新意见；主建议旁显示 `phaseText + 生成时间`，post_close 额外标注「（供次日参考）」。
+  - 「最新信号」卡副标题显示 `阶段 · 生成于 <时间>`。
+  - 意见区拆分为「盘中意见」与「收盘后复盘」两个独立卡片（post_close 单独成区），落实用户「收盘建议放复盘板块」。
+  - `lib/tier.ts` 新增 `isIntradayPhase`；`api/types.ts` 的 `Signal` 加 `phase?`。
+- 测试：`test_pipeline_idempotency.py` 加 `test_signal_phase_persisted_and_serialized`（midday→post_close 后 phase 反映 post_close 且序列化透出）。
+
+**需求②：首页大盘抽屉当日分时切换（已修）**
+- `components/IndexDrawer.vue`：原「折线图 + 盘中分时」两段改为「当日分时 / 日K线」Tab 切换，**默认选中当日分时**（用户需求：点开大盘先看当日分时涨跌）。
+
+**需求①：盈米 CLI 初始化（文档化，待用户在 CVM 交互完成）**
+- 场外基金真实数据依赖 `yingmi-skill-cli` 本地授权 `apiKey`；交互式手机号+短信验证码只能用户本人操作，agent 无法代填。
+- `README.md` 新增 §3.5「盈米 CLI 初始化」：完整 `init status` / `init setup --phone` / `init setup --verify-code` / `init doctor` 流程（命令摘自 yingmi-skill `references/CLI前置检查.md`）。`external.py` 已对未授权优雅降级（`available:false`）。
+
+**验证**
+- 后端：224 测试全过（`pytest -q`）；`_ensure_columns` 迁移（旧库缺 phase 列→加列+回填）已用临时库验证通过。
+- 前端：`pnpm build` 通过（vue-tsc + vite，654 模块）；echarts 分包 >800kB 仅为优化提示。
+- 本轮编辑前均先 Read 当前文件，避免网络波动导致的重复执行/重复编辑（与 C11 纪律一致）。
+- 根因 bug 修复后，512000 类脏数据不再污染信号；用户看到的「下跌却建议减仓」将随下一次采集/评估自然纠正，且建议卡片已明示阶段与时间。

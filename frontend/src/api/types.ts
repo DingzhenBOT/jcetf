@@ -108,6 +108,7 @@ export interface Signal {
   target_etf: string
   signal_type: SignalType
   signal_type_text: string
+  phase?: OpinionPhase
   score?: number | null
   confidence?: number | null
   market_regime?: MarketRegime | null

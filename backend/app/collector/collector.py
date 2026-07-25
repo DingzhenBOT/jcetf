@@ -320,6 +320,10 @@ class Collector:
             session.commit()
             return {"symbol_type": symbol_type, "symbol": symbol, "status": "FAILED", "error": str(e)}
 
+        # 历史 BAR 质量评估（#67）：OHLC 关系/跨度异常标记 ANOMALY。
+        # 历史数据不校验时间新鲜度 -> is_trading_now=False（避免把旧 BAR 误标 STALE）。
+        assess(rows, is_trading_now=False, now=now, cfg=self.settings.data_quality)
+
         n = quote_repo.upsert_market_quotes(session, rows)
         self._record_success(
             session, source=source, symbol_type=symbol_type, now=now, note=f"rows={n}"
@@ -390,6 +394,8 @@ class Collector:
                 self._record_failure(session, source="sina", symbol_type=symbol_type, now=now, err=str(e))
                 bucket["failed"] += 1
                 continue
+            # 盘中分时质量评估（#67）：OHLC 关系/跨度异常标记 ANOMALY；不校验时间新鲜度。
+            assess(rows, is_trading_now=False, now=now, cfg=self.settings.data_quality)
             quote_repo.upsert_market_quotes(session, rows)
             self._record_success(session, source=source, symbol_type=symbol_type, now=now, note=f"rows={len(rows)}")
             bucket["ok"] += 1

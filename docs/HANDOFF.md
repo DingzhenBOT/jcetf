@@ -34,13 +34,14 @@
 - P2：场外基金页（/offexchange）+ GET /api/external/offexchange（盈米，未装 CLI 降级）。
 - P3：板块异动页（/sectors-movement）+ GET /api/external/sectors/movement（腾讯自选股）。
 - P5：首页横向滚动实时资讯条（NewsStrip）+ GET /api/external/news（东财）。
-- 测试：backend 215 passed（含 tests/test_api_external.py、tests/test_collector_gtimg.py）；前端 pnpm build 通过。
+- 测试：backend 224 passed（含 tests/test_api_external.py、tests/test_collector_gtimg.py、tests/test_data_quality.py、tests/test_pipeline_idempotency.py）；前端 pnpm build 通过。
 
 【待办 / 续作（按优先级）】
 1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。~~**Task A（SNAPSHOT 切腾讯财经 qt.gtimg.cn，已落地 2026-07-25）**~~：gtimg 已注入 `collect_market` 作盘中实时快照附加源，`get_latest_snapshot_change_map` 跨源取 max(timestamp) 命中 gtimg → P1 现在 CVM 真正随实时行情更新。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。
 2. P4 盘后复盘：用 a-share-daily-review 方法论，收盘后生成复盘摘要写入 Opinion(post_close)。
-3. 盈米 CLI 在 CVM 安装+授权：解锁 P2 真实场外基金数据（目前沙箱未装，走降级提示）。
+3. 盈米 CLI 在 CVM 安装+授权：README §3.5 已文档化完整流程（init status/setup --phone/--verify-code/doctor）；交互式手机号+短信验证码需用户本人在 CVM 执行，agent 无法代填。完成后解锁 P2 真实场外基金数据。
 4. 板块异动生产化：westock-data 每次 npx 现场拉包首调慢，建议 CVM 预装或加缓存。
+5. #67 已修 512000 类 OHLC 脏数据：checker._check_ohlc_consistency + 读路径过滤 ANOMALY + 清理脚本 scripts/flag_ohlc_anomalies.py。已入库坏数据需在 CVM 跑一次 `python -m scripts.flag_ohlc_anomalies --apply` 改标（幂等）。
 5. 网络波动防御：历史教训——网络抖动曾导致重复命令把代码改坏。改动外部调用务必保留 external_data.py 的 `available:` 降级契约，新增端点沿用 /api/external 的优雅降级风格。
 
 【工作纪律】
@@ -57,7 +58,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 后端 | FastAPI + SQLite(WAL)，215 测试通过 |
+| 后端 | FastAPI + SQLite(WAL)，224 测试通过 |
 | 前端 | Vue3 + ECharts，pnpm build 通过 |
 | 数据源 | 平安已弃用；腾讯自选股 + 盈米 + 东财 + NeoData + a-stock-data |
 | 远程仓库 | github.com/DingzhenBOT/jcetf.git，main 已推送至 `ece4005` |
@@ -76,13 +77,22 @@
 - `frontend/src/components/ui/Modal.vue` —— 通用模态框（资讯弹窗复用）
 - `frontend/src/lib/newsImpact.ts` —— 规则模板式资讯影响分析（离线，关键词→板块/情绪）
 - `backend/app/api/routers/market.py` / `backend/app/repository/signal_repo.py` —— bug②/bug⑥ 后端修复
-- `docs/devlog.md` —— 全量开发日志（C0–C11 章节）
+- `backend/app/data_quality/checker.py` —— `_check_ohlc_consistency`（#67 OHLC 异常检测：非正/high<low/跨度>阈值→ANOMALY）
+- `backend/app/collector/collector.py` —— `_collect_bar` / `collect_intraday_minute` 采集后调 `assess`；`collect_realtime_gtimg`（盘中附加源）
+- `backend/app/repository/quote_repo.py` —— `get_bar_history` / `get_max_bar_timestamp` / `get_latest_quote` 过滤 ANOMALY
+- `backend/app/db/session.py` —— `_ensure_columns` 幂等 ALTER（etf_mapping.listing、signal.phase 存量回填）
+- `backend/app/evaluation/pipeline.py` —— `post_collection_evaluate` 写 Signal.phase
+- `backend/scripts/flag_ohlc_anomalies.py` —— 已入库 OHLC 脏数据改标 ANOMALY（dry-run / --apply / --symbol）
+- `frontend/src/components/IndexDrawer.vue` —— 大盘抽屉「当日分时 / 日K线」Tab（默认分时）
+- `frontend/src/views/EtfDetail.vue` —— 结论 Hero 盘中优先 + 阶段/时间标注；意见拆「盘中意见」/「收盘后复盘」
+- `frontend/src/lib/tier.ts` —— `phaseText` / `isIntradayPhase`
+- `docs/devlog.md` —— 全量开发日志（C0–C12 章节）
 - `DESIGN.md` —— 设计系统规范（9 章节）
 
 ## 四、关键约束提醒（踩坑经验）
 
 1. **网络波动曾导致重复命令改坏代码**：外部调用一律降级，不 500。
-2. **盈米 CLI 沙箱未装** → 场外基金页当前降级提示，上线前需在 CVM 安装授权。
+2. **盈米 CLI 沙箱未装** → 场外基金页当前降级提示；README §3.5 已文档化安装授权流程，需在 CVM 由用户本人完成手机号+短信交互授权。
 3. **westock-data 首调慢**（npx 现场拉包）→ 生产建议预装/缓存。
 4. **P1 铸造新 strategy_version 会重塑历史 Signal** → 先定口径再灰度，别直接覆盖。
 5. **Edit 前必须先 Read**（本 agent 环境硬性要求）。

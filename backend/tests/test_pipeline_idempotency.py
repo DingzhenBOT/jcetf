@@ -81,3 +81,21 @@ def test_pre_close_and_post_close_distinct_opinions(tmp_path):
         # 每个 ETF 各有 pre_close + post_close 两条意见（按 signal_id+phase 区分）
         assert phases == {"pre_close", "post_close"}
         assert len(opin) == 4
+
+
+def test_signal_phase_persisted_and_serialized(tmp_path):
+    """#67 续：Signal.phase 随评估阶段落库，并暴露给序列化器（前端标注盘中/收盘后）。"""
+    from app.api.serializers import signal_to_dict
+
+    s, eng = _setup(tmp_path)
+    as_of = date(2024, 1, 3)
+    with session_scope(eng) as session:
+        _seed_mappings(session)
+        post_collection_evaluate(session, s, phase="midday", as_of=as_of)
+        post_collection_evaluate(session, s, phase="post_close", as_of=as_of)
+        sigs = session.execute(select(Signal)).scalars().all()
+        # 信号被 post_close 阶段最后更新 -> phase 反映最新评估阶段
+        assert len(sigs) == 2
+        assert all(x.phase == "post_close" for x in sigs)
+        # 序列化器透出 phase
+        assert signal_to_dict(sigs[0])["phase"] == "post_close"

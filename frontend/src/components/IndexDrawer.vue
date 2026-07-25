@@ -18,6 +18,9 @@ const closeBtn = ref<HTMLButtonElement | null>(null)
 
 const isOpen = computed(() => props.code !== null)
 
+// 图表面板：日线 / 分时 切换；默认展示当日分时（用户需求：点开大盘先看当日分时涨跌）
+const chartTab = ref<'intraday' | 'daily'>('intraday')
+
 const relatedEtfs = computed<EtfListItem[]>(() =>
   props.code ? etfs.value.filter((e) => e.related_index_code === props.code) : [],
 )
@@ -169,24 +172,62 @@ function fmtClose(v: number | null | undefined): string {
               >{{ s }}</span>
             </div>
 
-            <!-- 折线图 -->
+            <!-- 图表面板：日线 / 分时 切换（默认当日分时） -->
             <section>
-              <div class="flex items-center justify-between mb-1">
-                <h3 class="text-xs font-medium text-slate-500">收盘价走势</h3>
-                <span class="text-xs text-slate-400">近 {{ data.points.length }} 个交易日</span>
+              <div class="flex items-center gap-1 mb-2">
+                <button
+                  type="button"
+                  class="px-3 py-1 text-xs rounded-md border transition"
+                  :class="chartTab === 'intraday'
+                    ? 'bg-slate-800 text-white border-slate-800'
+                    : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'"
+                  @click="chartTab = 'intraday'"
+                >
+                  当日分时
+                </button>
+                <button
+                  type="button"
+                  class="px-3 py-1 text-xs rounded-md border transition"
+                  :class="chartTab === 'daily'
+                    ? 'bg-slate-800 text-white border-slate-800'
+                    : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'"
+                  @click="chartTab = 'daily'"
+                >
+                  日 K 线
+                </button>
               </div>
-              <PriceTrendChart :points="data.points" height="180px" />
-            </section>
 
-            <!-- 盘中分时 -->
-            <section v-if="intraday && intraday.points.length">
-              <div class="flex items-center justify-between mb-1">
-                <h3 class="text-xs font-medium text-slate-500">盘中分时</h3>
-                <span class="text-xs text-slate-400 tnum">
-                  {{ intraday.date }} · 昨收 {{ intraday.prev_close != null ? intraday.prev_close.toFixed(3) : '—' }}
-                </span>
+              <!-- 分时 -->
+              <div v-if="chartTab === 'intraday'">
+                <div
+                  v-if="intraday && intraday.points.length"
+                  class="flex items-center justify-between mb-1"
+                >
+                  <h3 class="text-xs font-medium text-slate-500">盘中分时</h3>
+                  <span class="text-xs text-slate-400 tnum">
+                    {{ intraday.date }} · 昨收 {{ intraday.prev_close != null ? intraday.prev_close.toFixed(3) : '—' }}
+                  </span>
+                </div>
+                <IntradayChart v-if="intraday && intraday.points.length" :data="intraday" height="280px" />
+                <div v-else class="py-10 text-center text-sm text-slate-400">
+                  盘前或当日分时尚未采集，开盘后每 60 秒自动更新。
+                </div>
               </div>
-              <IntradayChart :data="intraday" height="280px" />
+
+              <!-- 日线 -->
+              <div v-else>
+                <div
+                  v-if="data && data.points.length"
+                  class="flex items-center justify-between mb-1"
+                >
+                  <h3 class="text-xs font-medium text-slate-500">收盘价走势</h3>
+                  <span class="text-xs text-slate-400">近 {{ data.points.length }} 个交易日</span>
+                </div>
+                <PriceTrendChart v-if="data && data.points.length" :points="data.points" height="220px" />
+                <div v-else class="py-10 text-center text-sm text-slate-400">
+                  该指数暂无历史行情。
+                </div>
+              </div>
             </section>
 
             <!-- 推荐理由（人话） -->

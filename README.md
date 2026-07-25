@@ -109,6 +109,43 @@ cd /workspace/backend
 
 之后由 `etf-worker` 在交易时段自动采集 + 评估，无需手动。
 
+### 3.5 盈米 CLI 初始化（场外基金真实数据）
+
+「场外基金（盈米）」实时数据依赖 `yingmi-skill-cli` 的本地授权 `apiKey`。**该 CLI 未在 CVM 安装/授权时会报
+`yingmi-skill-cli 未安装或未授权`**，场外数据接口返回 `available:false` 降级（不影响场内 ETF 主流程）。
+
+首次部署需在 CVM 上完成以下步骤（交互式手机号 + 短信验证码只能由你本人操作，agent 无法代填）：
+
+```bash
+# ① 检查 CLI 是否已装且为最新（未装则进入安装）
+yingmi-skill-cli --version
+yingmi-skill-cli upgrade --check-only
+#   → 若命令不存在 / 非最新，安装（权限不足加 sudo）：
+sudo npm install -g yingmi-skill-cli@latest --registry=https://registry.npmmirror.com --prefer-online
+
+# ② 检查初始化状态
+yingmi-skill-cli init status
+#   → hasApiKey: true 即已完成，可直接跳过后续；否则继续。
+
+# ③ 查看初始化引导（仅未初始化时需要）
+yingmi-skill-cli init setup
+
+# ④ 用你的手机号发送验证码（把 <手机号> 换成真实号码）
+yingmi-skill-cli init setup --phone <手机号>
+
+# ⑤ 查收短信，用验证码完成初始化（自动写入 apiKey）
+yingmi-skill-cli init setup --verify-code <验证码>
+
+# ⑥ 复核：hasApiKey 应为 true
+yingmi-skill-cli init status
+#   排查：yingmi-skill-cli init doctor   # 返回 status:"ok" 且 api-key:ok 即链路正常
+```
+
+完成授权后，`/api/external/off-exchange` 才会返回 `available:true` 的真实场外基金数据。
+
+> 这是**一次性**初始化；`apiKey` 写入 `~/.yingmi-skill-cli/config.json`，重启/升级代码不受影响。
+> 重新部署后若场外数据变 `available:false`，先重跑 ② 复核，必要时重跑 ④⑤。
+
 ### 4. 进程托管：systemd
 
 ```bash

@@ -70,6 +70,31 @@ def test_get_bar_history_date_filter(tmp_path):
         assert bars[0].trading_date == date(2024, 1, 2)
 
 
+def test_bar_history_filters_anomaly(tmp_path):
+    """#67：get_bar_history / get_max_bar_timestamp / get_latest_quote 应过滤 ANOMALY 脏数据。
+
+    复现 512000：最新一行 high<low 被标 ANOMALY，读路径不可见，回退到上一交易日有效数据。
+    """
+    s, eng = _setup(tmp_path)
+    rows = [
+        dict(_bar_dict("ETF", "512000", date(2024, 1, 2), 0.535), open=0.5, high=0.55, low=0.50),
+        # 最新交易日：开 346 / 收 0.535 / 高 0.525 / 低 0.526（高低颠倒）-> ANOMALY
+        dict(_bar_dict("ETF", "512000", date(2024, 1, 3), 0.535),
+             open=346.0, high=0.525, low=0.526, data_quality_status="ANOMALY"),
+    ]
+    with session_scope(eng) as session:
+        quote_repo.upsert_market_quotes(session, rows)
+        bars = quote_repo.get_bar_history(session, "ETF", "512000", date(2024, 1, 1), date(2024, 1, 31))
+        assert len(bars) == 1, "ANOMALY 行应被过滤"
+        assert bars[0].trading_date == date(2024, 1, 2)
+        # 最新有效 BAR 回退到 01-02
+        latest = quote_repo.get_latest_quote(session, "ETF", "512000", data_kind="BAR", timeframe="1d")
+        assert latest is not None and latest.trading_date == date(2024, 1, 2)
+        # 最大有效时间戳也排除 ANOMALY
+        mx = quote_repo.get_max_bar_timestamp(session, "ETF", "512000")
+        assert mx.date() == date(2024, 1, 2)
+
+
 def test_get_breadth_on_date(tmp_path):
     s, eng = _setup(tmp_path)
     with session_scope(eng) as session:

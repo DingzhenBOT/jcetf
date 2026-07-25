@@ -78,6 +78,7 @@ def post_collection_evaluate(
                         continue
                     setattr(s, k, v)
                 s.generated_at = utcnow()
+                s.phase = phase  # 该信号最后由哪个阶段评估生成（盘中/收盘后）
                 result["signals_updated"] += 1
                 signal_id = s.signal_id
             else:
@@ -88,6 +89,7 @@ def post_collection_evaluate(
                     generated_at=utcnow(),
                     trading_date=as_of,
                     target_etf=m.etf_code,
+                    phase=phase,
                     **{k: v for k, v in sig.items() if not k.startswith("_")},
                 )
                 session.add(s)

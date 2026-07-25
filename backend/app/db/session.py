@@ -86,14 +86,32 @@ def _ensure_columns(engine: Engine) -> None:
     from sqlalchemy import inspect, text
 
     inspector = inspect(engine)
-    existing = {c["name"] for c in inspector.get_columns("etf_mapping")}
-    needed = {
+
+    # etf_mapping.listing（P4 场内/场外区分）
+    existing_map = {c["name"] for c in inspector.get_columns("etf_mapping")}
+    needed_map = {
         "listing": "VARCHAR(8)",  # '场内' / '场外'
     }
     with engine.begin() as conn:
-        for col, sqltype in needed.items():
-            if col not in existing:
+        for col, sqltype in needed_map.items():
+            if col not in existing_map:
                 conn.execute(text(f"ALTER TABLE etf_mapping ADD COLUMN {col} {sqltype}"))
+
+    # signal.phase（#67 续：标注信号由哪个阶段评估生成 pre_market/midday/pre_close/post_close）
+    existing_sig = {c["name"] for c in inspector.get_columns("signal")}
+    if "phase" not in existing_sig:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE signal ADD COLUMN phase VARCHAR(32)"))
+            # 存量信号：从同 signal_id 的最新意见回填 phase（盘中/收盘后区分落地前的数据）
+            conn.execute(
+                text(
+                    "UPDATE signal SET phase = ("
+                    "SELECT o.phase FROM opinion o "
+                    "WHERE o.signal_id = signal.signal_id "
+                    "ORDER BY o.generated_at DESC LIMIT 1"
+                    ") WHERE phase IS NULL"
+                )
+            )
 
 
 def _seed_strategy_version(engine: Engine, settings: Settings) -> None:
