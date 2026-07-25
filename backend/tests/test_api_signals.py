@@ -27,6 +27,15 @@ def test_signals_latest_empty_library_no_500(api_client):
     assert isinstance(r.json(), list)
 
 
+def test_signals_latest_sorted_by_score_desc(api_client):
+    # 修复 bug⑥：最新信号列表须按综合分降序（NULL 排末，SQLite DESC 行为）。
+    r = api_client.get("/api/signals/latest")
+    scores = [s["score"] for s in r.json()]
+    non_null = [x for x in scores if x is not None]
+    assert non_null == sorted(non_null, reverse=True)
+    assert scores == [x for x in scores if x is not None] + [x for x in scores if x is None]
+
+
 def test_signals_history_pagination_and_filter(api_client):
     # 510300 有 2 条（不同 trading? 同 trading_date 不同 generated_at）
     r = api_client.get("/api/signals/history?etf_code=510300&limit=10&offset=0")

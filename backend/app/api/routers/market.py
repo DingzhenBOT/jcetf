@@ -3,8 +3,8 @@
 GET /api/market/breadth/latest -> 最新市场宽度（涨跌家数/涨跌停/上涨占比/成交额）
 GET /api/market/overview      -> 主要指数实时 SNAPSHOT（回退 BAR）+ 宽度 + 成交额 + 信号风险汇总（P5 每 60s 轮询）
 
-注：指数优先取实时 SNAPSHOT（盘中每 3 分钟更新，含真实涨跌）；SNAPSHOT 与 BAR 均缺失（如数据源不可达）
-    时该指数项仅含名称、无涨跌数据，前端标「观察期数据不足」。接口本身不抛 500。
+注：指数取「最新 SNAPSHOT」与「最新日线 BAR」中时间戳更新者（修复 bug②：旧 SNAPSHOT 不应压住更晚的 BAR 收盘）；
+    SNAPSHOT 与 BAR 均缺失（如数据源不可达）时该指数项仅含名称、无涨跌数据，前端标「观察期数据不足」。接口本身不抛 500。
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from app.api.schemas import (
     IntradayPoint,
     MarketOverviewOut,
 )
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from app.config import get_settings
 from app.db.session import Session
@@ -88,14 +88,20 @@ def market_overview(session: Session = Depends(get_db)):
     indices: List[IndexSnapshotOut] = []
     index_dates: List[str] = []
     for code in codes:
-        # 优先最新实时 SNAPSHOT（盘中每 3 分钟更新，含实时涨跌）；缺失（如数据源不可达）回退日线 BAR（收盘/历史）
-        q = quote_repo.get_latest_quote(
+        # 取「最新实时 SNAPSHOT」与「最新日线 BAR」中时间戳更新者（修复 bug②：
+        # 旧 SNAPSHOT 不应压住更晚的 BAR 收盘，导致首页显示旧数据；抽屉用 BAR 故表现为新旧不一致）。
+        snap = quote_repo.get_latest_quote(
             session, "INDEX", code, data_kind="SNAPSHOT", timeframe="snapshot"
         )
-        if q is None:
-            q = quote_repo.get_latest_quote(
-                session, "INDEX", code, data_kind="BAR", timeframe="1d"
-            )
+        bar = quote_repo.get_latest_quote(
+            session, "INDEX", code, data_kind="BAR", timeframe="1d"
+        )
+        if snap and bar:
+            snap_ts = snap.timestamp or datetime.min
+            bar_ts = bar.timestamp or datetime.min
+            q = snap if snap_ts >= bar_ts else bar
+        else:
+            q = snap or bar
         if q is not None:
             indices.append(
                 IndexSnapshotOut(

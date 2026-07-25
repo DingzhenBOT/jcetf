@@ -35,6 +35,9 @@ def get_latest_signals(session: Session, etf_codes: Optional[List[str]] = None) 
     )
     if etf_codes:
         stmt = stmt.where(Signal.target_etf.in_(etf_codes))
+    # 按综合分降序：所有信号列表（首页最新信号表、复盘清单）统一以分排序。
+    # SQLite 下 NULL 视为最小，DESC 时自动排末，无需 nullslast。
+    stmt = stmt.order_by(Signal.score.desc())
     return list(session.execute(stmt).scalars().all())
 
 
