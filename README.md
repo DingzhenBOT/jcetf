@@ -82,6 +82,10 @@ pnpm build                 # 产出 frontend/dist，由 nginx 托管
 > ⚠️ 前端依赖用 **pnpm 9.x**。仓库已标准化 `pnpm-lock.yaml`（lockfileVersion 9.0），
 > 移除过 npm 的 `package-lock.json`。`pnpm@latest`（v10）要求 Node ≥22.13 + `node:sqlite`，
 > 在 Node 20 上会直接崩（`ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite`），务必 `npm i -g pnpm@9`。
+>
+> 安装后若仍报 `/usr/local/bin/pnpm: No such file or directory`：先 `sudo corepack disable` 清掉
+> 旧的 corepack 软链，再 `sudo npm install -g pnpm@9`，然后 **`hash -r`** 刷新 shell 命令缓存。
+> 仍不行可用 corepack 直接钉版本：`sudo corepack prepare pnpm@9.15.9 --activate && hash -r`。
 
 ### 2. 运行配置
 
