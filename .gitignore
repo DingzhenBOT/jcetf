@@ -14,3 +14,8 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+
+# Python 虚拟环境（不入库；用 backend/venv，Python 3.11）
+backend/venv/
+venv/
+.venv/
