@@ -61,7 +61,7 @@
 | 后端 | FastAPI + SQLite(WAL)，227 测试通过 |
 | 前端 | Vue3 + ECharts，pnpm build 通过 |
 | 数据源 | 平安已弃用；腾讯自选股 + 盈米 + 东财 + NeoData + a-stock-data |
-| 远程仓库 | github.com/DingzhenBOT/jcetf.git；本地最新 `45ebfb1`（C13，待推送）；远程已推送至 `5cbb15e` |
+| 远程仓库 | github.com/DingzhenBOT/jcetf.git，main 已推送至 `a34d91a`（C13 代码落地） |
 | DESIGN.md | 已入库，随本次推送同步 |
 
 ## 三、目录导航
