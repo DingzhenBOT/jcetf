@@ -7,7 +7,7 @@ import { computed, onMounted } from 'vue'
 import type { Signal, SignalType } from '@/api/types'
 import Badge from '@/components/ui/Badge.vue'
 import { TIER_BADGE, TIER_ORDER, listingBadge } from '@/lib/tier'
-import { ensureEtfNames, etfName, etfListing } from '@/composables/etfNames'
+import { ensureEtfNames, etfName, etfListing, etfCategory } from '@/composables/etfNames'
 
 const props = defineProps<{ signals: Signal[] }>()
 
@@ -47,6 +47,11 @@ onMounted(() => void ensureEtfNames())
           <div class="min-w-0">
             <div class="flex items-center gap-1.5">
               <span class="font-medium text-slate-800 truncate">{{ etfName(s.target_etf) }}</span>
+              <span
+                v-if="etfCategory(s.target_etf)"
+                class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] leading-none text-slate-500"
+                >{{ etfCategory(s.target_etf) }}</span
+              >
               <Badge
                 v-if="etfListing(s.target_etf)"
                 :text="etfListing(s.target_etf) ?? ''"

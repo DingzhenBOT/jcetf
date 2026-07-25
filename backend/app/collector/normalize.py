@@ -122,8 +122,11 @@ def _base_row(source: str, symbol_type: str, symbol: str, collected_at: datetime
     }
 
 
-def normalize_index_snapshot(df: pd.DataFrame, source: str, collected_at: datetime) -> List[Dict[str, Any]]:
-    """宽基/主要指数快照：代码/名称/最新价/涨跌额/涨跌幅/昨收/今开/最高/最低/成交量/成交额。"""
+def normalize_index_snapshot(df: pd.DataFrame, source: str, collected_at: datetime, symbol_type: str = "INDEX") -> List[Dict[str, Any]]:
+    """宽基/主要指数快照：代码/名称/最新价/涨跌额/涨跌幅/昨收/今开/最高/最低/成交量/成交额。
+
+    symbol_type 默认 "INDEX"（A股宽基）；美股指数传 "US_INDEX" 以与 A股 regime 计算隔离。
+    """
     rows: List[Dict[str, Any]] = []
     for _, r in df.iterrows():
         code = _code(r.get("代码"))
@@ -132,7 +135,7 @@ def normalize_index_snapshot(df: pd.DataFrame, source: str, collected_at: dateti
             code = code[2:]
         if not code:
             continue
-        row = _base_row(source, "INDEX", code, collected_at)
+        row = _base_row(source, symbol_type, code, collected_at)
         row.update(
             open=_f(r.get("今开")),
             high=_f(r.get("最高")),
@@ -145,6 +148,14 @@ def normalize_index_snapshot(df: pd.DataFrame, source: str, collected_at: dateti
         )
         rows.append(row)
     return rows
+
+
+def normalize_us_index_snapshot(df: pd.DataFrame, source: str, collected_at: datetime) -> List[Dict[str, Any]]:
+    """美股指数快照（腾讯财经 usDJI/usIXIC/usINX）：与 A股指数同列名，存为独立 symbol_type=US_INDEX。
+
+    仅用于首页「美股大盘」展示；不参与 A股 market_regime（engine 只读 "INDEX" 类型）。
+    """
+    return normalize_index_snapshot(df, source, collected_at, symbol_type="US_INDEX")
 
 
 def normalize_etf_snapshot(df: pd.DataFrame, source: str, collected_at: datetime) -> List[Dict[str, Any]]:

@@ -19,13 +19,16 @@
 - 前端：Vue 3.4 + Vite + TS + Tailwind v3.4 + ECharts 5，hash 路由。`BaseChart.vue` 封装 ECharts；A股红涨 #dc2626 / 绿跌 #16a34a。
 - 部署：Nginx（Basic Auth + HTTPS，鉴权在 Nginx，后端无鉴权层）反代 FastAPI；worker 进程跑采集与信号评估；systemd 管理 etf-api / etf-worker。
 
-【数据源矩阵（重要：平安证券已彻底弃用）】
+【数据源矩阵（重要：平安证券已彻底弃用；东财 em 已于 C14 弃用）】
 - ❌ 平安证券（pa-public-fund-filter / news-search）：用户确认"不能直接拿数据就不用了"，已删除全部依赖。
+- ❌ 东财(em)：腾讯云直连被 RST 拦截 + 新版 akshare 签名漂移（C13）。**C14 起退出采集轮转**（`DataSourceConfig.preferred="sina"`、`fallback=["ths","tx"]`），适配器内 em source map 保留但 dormant；ETF/指数历史改走新浪(sina)。板块趋势/资金流在腾讯云仍 D4 降级（em 不可达、ths 无历史）。
 - ✅ 腾讯自选股 westock-data：`npx -y westock-data-skillhub@1.0.5`，无 key，CVM 可用 → 板块异动（`sector ranking`）。
 - ✅ 东财全球资讯 7×24：`np-weblist.eastmoney.com/comm/web/getFastNewsList`，零鉴权 → 实时新闻。
 - ✅ 盈米 yingmi：`yingmi-skill-cli mcp call SearchFunds`，需在 CVM 安装并授权 → 场外基金（未装时优雅降级）。
-- ✅ a-stock-data 腾讯财经 `qt.gtimg.cn` 实时行情：已接入 `collect_market` 作盘中 ETF/指数 SNAPSHOT 的**附加可靠源**（不封 IP，CVM 首选），让 P1 盘中动量修正真正生效；`backend/app/data_provider/gtimg_client.py` + `collector.collect_realtime_gtimg`。
-- ✅ NeoData金融搜索：自然语言查基金/股票，鉴权缓存 12h。
+- ✅ a-stock-data 腾讯财经 `qt.gtimg.cn` 实时行情（CVM 不封 IP，最稳）：
+  - A股 ETF/指数盘中 SNAPSHOT 附加可靠源 → `gtimg_client.fetch_realtime` + `collector.collect_realtime_gtimg`（C2）。
+  - **美股三大指数** 道琼斯/纳斯达克/标普500（`usDJI`/`usIXIC`/`usINX`，`us` 前缀）→ `gtimg_client.fetch_us_indices` + `collector.collect_us_indices`（C14，首页美股面板）。
+- ✅ NeoData金融搜索 / 腾讯自选股-金融数据查询 / US Stock Analysis：**agent 侧查询工具**（方法论研判、临时查证），**不进入后端定时采集管线**；后端自动管线维持 gtimg + akshare(sina) + westock-data + 盈米 + 东财新闻。
 - ❌ 富途 futuapi：需本机 OpenD 桌面，CVM 无头不可用，仅本地人工分析，不进自动管线。
 接入层集中在 backend/app/services/external_data.py（所有函数对失败返回 available:false 字典，绝不抛 500）。
 
@@ -34,7 +37,8 @@
 - P2：场外基金页（/offexchange）+ GET /api/external/offexchange（盈米，未装 CLI 降级）。
 - P3：板块异动页（/sectors-movement）+ GET /api/external/sectors/movement（腾讯自选股）。
 - P5：首页横向滚动实时资讯条（NewsStrip）+ GET /api/external/news（东财）。
-- 测试：backend 224 passed（含 tests/test_api_external.py、tests/test_collector_gtimg.py、tests/test_data_quality.py、tests/test_pipeline_idempotency.py）；前端 pnpm build 通过。
+- C14：首页美股大盘面板（道琼斯/纳斯达克/标普500，gtimg us 通道，`UsIndexTicker.vue`）+ ETF 扩至 48 支（16+29 场内 + 3 场外）并加板块简写（`category` 标签，EtfTable/WatchBoard 名称后显示）。
+- 测试：backend 231 passed（含 tests/test_us_index.py 等）；前端 pnpm build 通过。
 
 【待办 / 续作（按优先级）】
 1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。~~**Task A（SNAPSHOT 切腾讯财经 qt.gtimg.cn，已落地 2026-07-25）**~~：gtimg 已注入 `collect_market` 作盘中实时快照附加源，`get_latest_snapshot_change_map` 跨源取 max(timestamp) 命中 gtimg → P1 现在 CVM 真正随实时行情更新。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。
@@ -58,21 +62,24 @@
 
 | 项 | 状态 |
 |---|---|
-| 后端 | FastAPI + SQLite(WAL)，227 测试通过 |
+| 后端 | FastAPI + SQLite(WAL)，231 测试通过 |
 | 前端 | Vue3 + ECharts，pnpm build 通过 |
-| 数据源 | 平安已弃用；腾讯自选股 + 盈米 + 东财 + NeoData + a-stock-data |
-| 远程仓库 | github.com/DingzhenBOT/jcetf.git，main 已推送至 `a34d91a`（C13 代码落地） |
+| 数据源 | 平安已弃用；**东财 em 已于 C14 弃用（preferred=sina）**；腾讯自选股 + 盈米 + 东财新闻 + gtimg(A股+美股) + NeoData(agent侧) |
+| 远程仓库 | github.com/DingzhenBOT/jcetf.git，main（C14 代码待推送） |
 | DESIGN.md | 已入库，随本次推送同步 |
 
 ## 三、目录导航
 
 - `backend/app/services/external_data.py` —— 外部 skill 接入层（P2/P3/P5 数据源，**降级契约**所在地）
 - `backend/app/api/routers/external.py` —— `/api/external/*` 三个端点
-- `backend/app/data_provider/gtimg_client.py` —— 腾讯财经 qt.gtimg.cn 实时行情客户端（盘中 SNAPSHOT 附加源）
-- `backend/app/collector/collector.py` —— `collect_realtime_gtimg`（collect_market 末尾触发，优雅降级）
+- `backend/app/data_provider/gtimg_client.py` —— 腾讯财经 qt.gtimg.cn 实时行情客户端（盘中 SNAPSHOT 附加源 + C14 美股指数 `fetch_us_indices`）
+- `backend/app/collector/collector.py` —— `collect_realtime_gtimg`（collect_market 末尾触发，优雅降级）；`collect_us_indices`（C14，US_INDEX 写入）
+- `backend/app/api/routers/market.py` —— `US_INDEX_LABELS` + `market_overview` 填充 `us_indices`（C14 首页美股面板）
 - `frontend/src/views/SectorMovement.vue` / `OffExchange.vue` —— 新页面
 - `frontend/src/components/sections/NewsStrip.vue` —— 首页资讯条（跑马灯 + 点击弹窗 + 规则影响分析）
-- `frontend/src/components/charts/PendulumChart.vue` —— 指数当日涨跌幅摆锤图（首页指数卡）
+- `frontend/src/components/charts/PendulumChart.vue` —— 指数当日涨跌幅摆锤图（首页指数卡/美股条复用）
+- `frontend/src/components/UsIndexTicker.vue` —— 首页美股大盘条（C14，展示型不打开 A股抽屉）
+- `frontend/src/components/sections/EtfTable.vue` / `WatchBoard.vue` —— ETF 名称后显示板块简写标签（C14，`etfCategory`）
 - `frontend/src/components/charts/GaugeChart.vue` —— 信号综合分 0–100 半圆仪表（ETF 详情页）
 - `frontend/src/components/ui/Modal.vue` —— 通用模态框（资讯弹窗复用）
 - `frontend/src/lib/newsImpact.ts` —— 规则模板式资讯影响分析（离线，关键词→板块/情绪）

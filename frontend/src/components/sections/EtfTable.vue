@@ -40,7 +40,14 @@ const router = useRouter()
               {{ e.etf_code }}
             </router-link>
           </td>
-          <td class="px-4 py-2 text-slate-600">{{ e.etf_name ?? '--' }}</td>
+          <td class="px-4 py-2 text-slate-600">
+            <span>{{ e.etf_name ?? '--' }}</span>
+            <span
+              v-if="e.category"
+              class="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] leading-none text-slate-500"
+              >{{ e.category }}</span
+            >
+          </td>
           <td class="px-4 py-2 text-slate-500">{{ e.category ?? '--' }}</td>
           <td class="px-4 py-2">
             <Badge

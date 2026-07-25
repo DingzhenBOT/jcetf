@@ -8,6 +8,7 @@ import BreadthChart from '@/components/charts/BreadthChart.vue'
 import SignalTable from '@/components/sections/SignalTable.vue'
 import WatchBoard from '@/components/sections/WatchBoard.vue'
 import IndexTicker from '@/components/IndexTicker.vue'
+import UsIndexTicker from '@/components/UsIndexTicker.vue'
 import IndexDrawer from '@/components/IndexDrawer.vue'
 import NewsStrip from '@/components/sections/NewsStrip.vue'
 import { marketState, refreshNow, secondsToRefresh } from '@/stores/market'
@@ -96,6 +97,9 @@ const openCode = ref<string | null>(null)
 
     <!-- 顶部指数数字带：上证指数 hero + 其余指数红涨绿跌，点开看详情 -->
     <IndexTicker @open="openCode = $event" />
+
+    <!-- 美股大盘条（道琼斯/纳斯达克/标普500，腾讯财经实时源） -->
+    <UsIndexTicker />
 
     <!-- 今日关注榜（结论前置，两种模式都显示） -->
     <Card title="今日关注榜" subtitle="按可操作度排序的 TOP 机会">

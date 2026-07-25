@@ -96,6 +96,7 @@ export interface SignalRisk {
 export interface MarketOverview {
   as_of?: string | null
   indices: IndexSnapshot[]
+  us_indices: IndexSnapshot[]
   breadth: Breadth | null
   signal_risk: SignalRisk
 }

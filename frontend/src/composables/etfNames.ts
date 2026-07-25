@@ -6,6 +6,7 @@ import { getEtfs } from '@/api/endpoints'
 interface CodeInfo {
   name: string
   listing: string | null
+  category: string | null
 }
 
 // 共享单例：首次 ensureEtfNames() 拉取后填充，之后各组件直接读。
@@ -22,6 +23,7 @@ export function ensureEtfNames(): Promise<void> {
         _map[e.etf_code] = {
           name: e.etf_name ?? e.etf_code,
           listing: e.listing ?? null,
+          category: e.category ?? null,
         }
       }
       _loaded = true
@@ -39,4 +41,8 @@ export function etfName(code: string): string {
 
 export function etfListing(code: string): string | null {
   return _map[code]?.listing ?? null
+}
+
+export function etfCategory(code: string): string | null {
+  return _map[code]?.category ?? null
 }

@@ -94,3 +94,65 @@ def fetch_realtime(codes_with_kind: List[Tuple[str, str]], timeout: int = 10) ->
             }
         )
     return pd.DataFrame(rows)
+
+
+# 美股指数代码前缀（腾讯财经 qt.gtimg.cn）：us + 代码，如 usDJI/usIXIC/usINX。
+# 注意：与 A股不同，美股用 `us` 前缀（非 `s_us_`）；道琼斯=.DJI 纳斯达克=.IXIC 标普500=.INX。
+# 字段位置（实测 2026-07-24）：[1]名称 [2]代码(.DJI) [3]最新价 [4]昨收 [5]今开
+#   [31]时间戳 [32]涨跌额 [33]涨跌幅% [34]最高 [35]最低
+_US_NAME = 1
+_US_CODE = 2
+_US_CLOSE = 3
+_US_PREV = 4
+_US_OPEN = 5
+_US_TS = 31
+_US_CHG = 32
+_US_PCT = 33
+_US_HIGH = 34
+_US_LOW = 35
+
+
+def fetch_us_indices(codes: List[str], timeout: int = 10) -> pd.DataFrame:
+    """批量拉取美股指数实时行情（道琼斯/纳斯达克/标普500）。
+
+    codes: 腾讯财经代码列表，如 ['usDJI', 'usIXIC', 'usINX']。
+    返回 DataFrame（中文列：代码/名称/今开/最高/最低/最新价/昨收/涨跌幅），与 A股快照同列名，
+    可直接喂 normalize_us_index_snapshot；空输入/全失败返回空 DataFrame。
+    任何网络/解析异常直接抛出，由 Collector.collect_us_indices 捕获并优雅降级。
+    """
+    if not codes:
+        return pd.DataFrame()
+    url = _QT_URL + ",".join(codes)
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.qq.com/"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("gbk", errors="replace")
+
+    rows: List[dict] = []
+    for line in raw.strip().splitlines():
+        line = line.strip()
+        if not line.startswith("v_") or "=" not in line:
+            continue
+        sym, _, val = line.partition("=")
+        sym = sym[2:]  # 去掉 "v_" 前缀得到代码（如 usDJI）
+        val = val.strip().strip('"').rstrip(";")
+        if not val or "none_match" in val:
+            continue
+        p = val.split("~")
+        if len(p) <= _US_LOW:
+            continue
+        rows.append(
+            {
+                "代码": sym,
+                "名称": p[_US_NAME],
+                "今开": _to_float(p[_US_OPEN]),
+                "最高": _to_float(p[_US_HIGH]),
+                "最低": _to_float(p[_US_LOW]),
+                "最新价": _to_float(p[_US_CLOSE]),
+                "昨收": _to_float(p[_US_PREV]),
+                "涨跌幅": _to_float(p[_US_PCT]),
+            }
+        )
+    return pd.DataFrame(rows)

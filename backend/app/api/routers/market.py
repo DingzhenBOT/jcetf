@@ -40,6 +40,13 @@ INDEX_LABELS = {
     "399001": "深证成指",
 }
 
+# 美股指数代码 -> 中文名（腾讯财经 usDJI/usIXIC/usINX；首页「美股大盘」面板）
+US_INDEX_LABELS = {
+    "usDJI": "道琼斯",
+    "usIXIC": "纳斯达克",
+    "usINX": "标普500",
+}
+
 
 def _compute_market_risk_level(counts: dict, total: int) -> str:
     """按 MARKET_RISK_HIGH + NO_PARTICIPATE 占比推导风险等级（只读汇总，非规则重算）。"""
@@ -152,6 +159,25 @@ def market_overview(session: Session = Depends(get_db)):
         "market_risk_level": _compute_market_risk_level(counts, len(latest)),
     }
 
+    # 美股指数（独立于 A股 regime，symbol_type=US_INDEX；腾讯财经实时源）
+    us_indices: List[IndexSnapshotOut] = []
+    for code in settings.strategy.us_index_codes:
+        q = quote_repo.get_latest_quote(
+            session, "US_INDEX", code, data_kind="SNAPSHOT", timeframe="snapshot"
+        )
+        if q is not None:
+            us_indices.append(
+                IndexSnapshotOut(
+                    code=code,
+                    name=US_INDEX_LABELS.get(code, code),
+                    close=q.close,
+                    change_percent=q.change_percent,
+                    source=q.data_source,
+                )
+            )
+        else:
+            us_indices.append(IndexSnapshotOut(code=code, name=US_INDEX_LABELS.get(code, code)))
+
     # as_of：indices / breadth 中的最大交易日
     candidates = [d for d in index_dates + ([breadth_date] if breadth_date else [])]
     as_of = max(candidates) if candidates else None
@@ -159,6 +185,7 @@ def market_overview(session: Session = Depends(get_db)):
     return MarketOverviewOut(
         as_of=as_of,
         indices=indices,
+        us_indices=us_indices,
         breadth=breadth,
         signal_risk=signal_risk,
     )

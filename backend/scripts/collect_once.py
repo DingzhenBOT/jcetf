@@ -34,7 +34,11 @@ def main() -> int:
 
     eng = make_engine(settings)
     init_db(eng, settings)
-    collector = Collector(build_provider(settings), settings, gtimg_fetcher=gtimg_client.fetch_realtime)
+    collector = Collector(
+        build_provider(settings), settings,
+        gtimg_fetcher=gtimg_client.fetch_realtime,
+        us_index_fetcher=gtimg_client.fetch_us_indices,
+    )
 
     if args.backfill:
         with session_scope(eng) as session:

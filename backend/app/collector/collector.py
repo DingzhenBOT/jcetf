@@ -21,10 +21,11 @@ from app.repository import mapping_repo, quote_repo
 
 
 class Collector:
-    def __init__(self, provider: BaseDataProvider, settings: Settings, gtimg_fetcher=None):
+    def __init__(self, provider: BaseDataProvider, settings: Settings, gtimg_fetcher=None, us_index_fetcher=None):
         self.provider = provider
         self.settings = settings
         self.gtimg_fetcher = gtimg_fetcher  # 腾讯财经实时行情拉取器（可注入；None=跳过）
+        self.us_index_fetcher = us_index_fetcher  # 美股指数拉取器（gtimg_client.fetch_us_indices；None=跳过）
         self.log = get_logger("etf-collector")
 
     # ---- 内部工具 ----
@@ -240,6 +241,38 @@ class Collector:
         self.log.info("gtimg realtime ok", extra={"rows": n})
         return {"status": "OK", "source": "gtimg", "count": n}
 
+    def collect_us_indices(self, session: Session) -> Dict[str, Any]:
+        """美股三大指数实时快照（道琼斯/纳斯达克/标普500，腾讯财经 usDJI/usIXIC/usINX）。
+
+        作为首页「美股大盘」面板数据源，CVM 不封 IP 的可靠盘中/盘后源。
+        存为独立 symbol_type=US_INDEX，与 A股 regime 计算隔离（engine 只读 INDEX 类型）。
+        us_index_fetcher=None（测试/未注入）-> 直接跳过，零网络；任何异常记 FAILED 不抛出。
+        """
+        if self.us_index_fetcher is None:
+            return {"status": "skipped", "reason": "us_index_fetcher not injected"}
+        now = self._now()
+        codes = list(self.settings.strategy.us_index_codes)
+        if not codes:
+            return {"status": "skipped", "reason": "no us_index_codes configured"}
+        try:
+            df = self.us_index_fetcher(codes)
+            if df is None or (hasattr(df, "empty") and df.empty):
+                raise ValueError("us index returned empty")
+            rows = normalize.normalize_us_index_snapshot(df, "gtimg_us", now)
+            if not rows:
+                raise ValueError("no parseable us index rows after normalize")
+        except Exception as e:  # noqa: BLE001 - 美股源失败：记状态，不抛出
+            self.log.error("collect us indices failed", extra={"err": str(e)})
+            self._record_failure(session, source="gtimg_us", symbol_type="US_INDEX", now=now, err=str(e))
+            session.commit()
+            return {"status": "FAILED", "error": str(e)}
+
+        n = quote_repo.upsert_market_quotes(session, rows)
+        self._record_success(session, source="gtimg_us", symbol_type="US_INDEX", now=now, note=f"rows={n}")
+        session.commit()
+        self.log.info("us indices ok", extra={"rows": n})
+        return {"status": "OK", "source": "gtimg_us", "count": n}
+
     # ---- 全市场宽度（每日累计） ----
     def collect_breadth(self, session: Session) -> Dict[str, Any]:
         now = self._now()
@@ -273,10 +306,11 @@ class Collector:
 
     # ---- 组合 ----
     def collect_market(self, session: Session) -> Dict[str, Any]:
-        """盘中轻量采集：指数 + ETF + 行业 + 概念 + 腾讯财经实时快照（gtimg，CVM 可靠源）。
+        """盘中轻量采集：指数 + ETF + 行业 + 概念 + 腾讯财经实时快照（gtimg，CVM 可靠源）+ 美股指数。
 
         gtimg 在末尾运行，写入时间戳最新 -> P1 盘中综合分优先采用其涨跌幅；
         gtimg_fetcher 未注入时 collect_realtime_gtimg 直接跳过（零网络，不影响其余采集）。
+        美股指数（usDJI/usIXIC/usINX）同样走腾讯财经，与 A股 regime 隔离（US_INDEX）。
         """
         return {
             "index": self.collect_index_snapshot(session),
@@ -284,6 +318,7 @@ class Collector:
             "industry": self.collect_sector_ranking(session, "INDUSTRY"),
             "concept": self.collect_sector_ranking(session, "CONCEPT"),
             "gtimg": self.collect_realtime_gtimg(session),
+            "us_index": self.collect_us_indices(session),
         }
 
     def collect_all(self, session: Session) -> Dict[str, Any]:

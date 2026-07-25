@@ -1278,3 +1278,63 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
   - 此即设计文档的 D4 降级：腾讯云东财被墙、ths 无历史，板块趋势/资金流在该环境本就取不到，引擎按 sector_trend/fund_flow=None 重归一化、降置信，不崩溃。
 - 小提示：医药(BK0465)/消费(BK0438) 本无 THS 聚合板（`_bk_to_ths` 应为 None），却也报 `ths returned empty`，疑似 CVM 适配器略旧（`_BK_TO_THS` 仍映射了 THS 名）。建议 CVM `git pull` 后重跑确认；不影响板块在该环境最终结果（仍 D4 降级）。
 - 结论：C13 代码修复目标达成（消除 akshare 版本不兼容参数异常 + 场外排除）；板块数据能否在腾讯云落地取决于 em 是否可达（需代理/换源），属基础设施决策，非本修复范围。
+
+---
+
+## C14 · 数据源收敛 + 首页美股大盘 + ETF 扩至 50 支内（2026-07-26）
+
+**需求（用户）**
+1. 东财 em 数据不可达就弃用 em 作为数据源。
+2. 盘中数据源：参考之前讨论 + 已装 skills（NeoData / 腾讯自选股 / US Stock Analysis / 盈米 / westock-data / gtimg），能用的都用上。
+3. ETF 扩大到 50 支以内，加入真实热门的（如易方达 xx、东方阿尔法 xx），最好名称后简写所属板块。
+4. 首页大盘旁边加美股大盘。
+
+**决策与实测**
+
+1. **弃用 em（config 层轮转收敛）**
+   - `DataSourceConfig.preferred` 由 `"em"` → `"sina"`；`fallback` 由 `["sina","ths","tx"]` → `["ths","tx"]`。
+   - 效果：`AkShareAdapter._ordered_sources()` = `[sina, ths, tx]`，em 不再被任何 `_call` 选中（等效停用）。适配器内 em 的 source map 条目保留但 dormant（不触发），避免在 C13 已稳定的降级链上再做侵入式改动。
+   - 理由：腾讯云东财(eastmoney)直连被 RST 拦截（D4），且新版 akshare 签名漂移（C13 已修参数异常）；新浪(sina) 在 CVM 可达，ETF/指数历史走 `fund_etf_hist_sina` / `stock_zh_index_daily`。盘中实时仍由 **gtimg(qt.gtimg.cn)** 兜底（独立于 akshare 轮转，C2 已定），故弃 em 不影响盘中动量修正。
+
+2. **盘中/数据获取渠道（skills 定位）**
+   - 用户 @ 的三个 skill（NeoData金融搜索 / 腾讯自选股-金融数据查询 / US Stock Analysis）是 **agent 侧查询工具**，无法在后端采集管线自动运行。后端自动管线维持既有可靠源：
+     - 盘中实时快照：gtimg `qt.gtimg.cn`（CVM 不封 IP，最稳）。
+     - 板块异动：westock-data `sector ranking`（C3，已落地）。
+     - 场外基金：盈米 yingmi（P2，待 CVM 授权）。
+     - 新闻：东财 7×24（P5）。
+   - agent 用 skill（NeoData / 腾讯自选股 / US Stock Analysis）做**方法论研判与临时查证**（如美股深度分析），不进入定时采集。
+
+3. **东方阿尔法无上市 ETF（重要澄清）**
+   - 东方阿尔法基金以**场外主动权益基金**为主（如东方阿尔法优势产业混合 011246），**不发行场内 ETF**。故「东方阿尔法 xx」无法作为 ETF 纳入。
+   - 已改用同热门赛道真实场内 ETF 替代（创新药/医疗/智能汽车/半导体/有色/煤炭等），并保留多支**易方达**系（159915 创业板、588080 科创50、159901 深100、513050 中概互联、512010 医药）。如需把其场外主动基金纳入，走盈米场外基金页（P2）。
+
+4. **首页美股大盘（实测确定数据源）**
+   - 实测腾讯 `qt.gtimg.cn`：
+     - `s_us_dji` / `s_us_aapl` → `none_match`（美股**不用** `s_us_` 前缀）；
+     - `usDJI` / `usIXIC` / `usINX` → 成功返回道琼斯(.DJI)/纳斯达克(.IXIC)/标普500(.INX) 实时。
+     - 字段位（实测）：`[1]`名称 `[3]`最新价 `[4]`昨收 `[5]`今开 `[31]`时间戳 `[32]`涨跌额 `[33]`涨跌幅% `[34]`最高 `[35]`最低。
+   - 新浪 `hq.sinajs.cn/list=gb_$dji` → `Forbidden`（CVM 不可用）。
+   - 结论：**美股三大指数用 gtimg `us` 通道**（CVM 可靠），存为独立 `symbol_type=US_INDEX`，与 A股 `market_regime` 计算隔离（engine 只读 `INDEX`）。
+
+**代码改动清单**
+- `backend/app/config.py`：`DataSourceConfig.preferred="sina"`、`fallback=["ths","tx"]`（em 注释说明弃用）；`StrategyConfig.us_index_codes=["usDJI","usIXIC","usINX"]`。
+- `backend/app/data_provider/gtimg_client.py`：新增 `fetch_us_indices(codes)`，解析 `us` 前缀美股指数。
+- `backend/app/collector/normalize.py`：`normalize_index_snapshot` 增加 `symbol_type` 参数（默认 `INDEX`）；新增 `normalize_us_index_snapshot`（→ `US_INDEX`）。
+- `backend/app/collector/collector.py`：`__init__` 增加 `us_index_fetcher`；新增 `collect_us_indices`（写入 `US_INDEX`，失败记 FAILED 不抛）；`collect_market` 结果加 `us_index`。
+- `backend/app/worker.py` / `backend/scripts/collect_once.py`：注入 `us_index_fetcher=gtimg_client.fetch_us_indices`。
+- `backend/app/api/schemas.py`：`MarketOverviewOut.us_indices: List[IndexSnapshotOut]`。
+- `backend/app/api/routers/market.py`：`US_INDEX_LABELS`；`market_overview` 读取 `US_INDEX` 最新 SNAPSHOT 填充 `us_indices`。
+- `backend/scripts/seed_mapping.py`：新增 29 支真实热门场内 ETF（含易方达系 + 跨境），`category` 即所属板块简写，部分映射 BK 板块代码；总规模 16+29=45 场内 + 3 场外 = 48 支（≤50）。
+- 前端：`api/types.ts` 增 `usIndices`；新增 `components/UsIndexTicker.vue`（美股条，展示型不打开 A股抽屉）；`MarketOverview.vue` 嵌入 `UsIndexTicker`；`composables/etfNames.ts` 缓存 `category` + `etfCategory()`；`WatchBoard.vue` / `EtfTable.vue` 名称后显示板块简写标签。
+
+**验证**
+- 后端：231 测试全过（原 227 + 新增 4：`test_us_index.py` 覆盖 `normalize_us_index_snapshot` 标记 `US_INDEX`、`collect_us_indices` 入库与隔离、`us_index_fetcher=None` 跳过）。
+- 前端：`pnpm build` 通过（vue-tsc 类型检查 + vite 构建）。
+- ETF 代码真实性：用 akshare `fund_etf_category_sina` 全量列表（1608 支）反查，29 支新增代码**全部真实存在**、名称与标签一致。
+- 美股符号：curl `qt.gtimg.cn` 实测 `usDJI/usIXIC/usINX` 均返回有效实时数据。
+
+**注意 / 待办**
+- 美股指数交易时段（北京夜间）采集：A股盘中采集窗口（09:30–15:00）美股休市，gtimg 返回最近一次美股收盘值——首页面板显示的是「最新美股收盘」，符合预期。
+- 板块趋势/资金流在腾讯云仍 D4 降级（em 不可达）；ETF/指数/美股实时均正常。
+- 后续：P4 盘后复盘（a-share-daily-review）仍 pending；盈米 CLI 仍待 CVM 授权。
+- CVM 部署：拉取本提交后重跑 `python -m scripts.seed_mapping` 注入新增 ETF，再 `collect_once --backfill` 增量回填（sina 源）。

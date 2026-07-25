@@ -65,8 +65,13 @@ class DatabaseConfig(BaseModel):
 
 class DataSourceConfig(BaseModel):
     mode: str = "real"  # real / mock
-    preferred: str = "em"
-    fallback: _t.List[str] = Field(default_factory=lambda: ["sina", "ths", "tx"])
+    # 东财(em)数据源已弃用：腾讯云 CVM 网络层对 eastmoney 直连被 RST 拦截，
+    # 且新版 akshare 签名漂移导致板块历史/资金流参数易错（C13）。
+    # 主源改为新浪(sina)，回退 同花顺(ths)/腾讯(tx)；em 不再进入采集轮转（仍保留在
+    # akshare_adapter 的 source map 中但不会被 _ordered_sources 选中，等效停用）。
+    # 盘中实时快照由腾讯财经 qt.gtimg.cn（collect_realtime_gtimg）兜底，与 ak_adapter 轮转解耦。
+    preferred: str = "sina"
+    fallback: _t.List[str] = Field(default_factory=lambda: ["ths", "tx"])
     switch_reset_window: bool = True
     request_timeout_seconds: int = 20
     retry_attempts: int = 2
@@ -116,6 +121,11 @@ class StrategyConfig(BaseModel):
     # 用于 market_regime 计算的宽基指数代码（北向不可达时也可用于 ETF 相对强弱基准）
     broad_index_codes: _t.List[str] = Field(
         default_factory=lambda: ["000300", "000001", "399001"]
+    )
+    # 美股三大指数（腾讯财经 qt.gtimg.cn 代码，CVM 不封 IP 的可靠源）。
+    # 仅用于首页「美股大盘」展示，不参与 A股 market_regime 计算（存为独立 symbol_type=US_INDEX）。
+    us_index_codes: _t.List[str] = Field(
+        default_factory=lambda: ["usDJI", "usIXIC", "usINX"]
     )
     composite_weights: _t.Dict[str, float] = Field(
         default_factory=lambda: {

@@ -130,6 +130,7 @@ class IntradayOut(BaseModel):
 class MarketOverviewOut(BaseModel):
     as_of: Optional[str] = None
     indices: List[IndexSnapshotOut]
+    us_indices: List[IndexSnapshotOut] = []
     breadth: Optional[BreadthOut] = None
     signal_risk: Dict[str, Any]
 

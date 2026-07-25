@@ -49,7 +49,11 @@ def _collector() -> Collector:
         s = get_settings()
         # gtimg 为 CVM 不封 IP 的可靠实时源（C2），注入为附加实时快照采集器；
         # 仅在 collect_market 末尾触发，失败静默降级，不影响 em/sina 主采集。
-        _COLLECTOR = Collector(build_provider(s), s, gtimg_fetcher=gtimg_client.fetch_realtime)
+        _COLLECTOR = Collector(
+            build_provider(s), s,
+            gtimg_fetcher=gtimg_client.fetch_realtime,
+            us_index_fetcher=gtimg_client.fetch_us_indices,
+        )
     return _COLLECTOR
 
 
