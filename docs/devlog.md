@@ -1163,5 +1163,7 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - CVM 原 `npm 8.5.1`（通常跟 Node16）→ Vite5 / vue-tsc2 要求 Node≥18，`vite build` 会直接报错。必须先升级 Node（推荐 20 LTS）。
 - 仓库原只有 npm 的 `package-lock.json`，已标准化：移除 `package-lock.json`、纳入 `pnpm-lock.yaml`（与 HANDOFF/sandbox 一致）。
 - `package.json` 加 `pnpm.onlyBuiltDependencies=["esbuild"]`：pnpm v10 默认拦截 esbuild 构建脚本，全新 `pnpm install` 不批准会导致 vite 因 esbuild 二进制缺失而失败；加白名单后自动构建。
-- sandbox 已验证：`pnpm build` 646 模块通过，产出 `dist/`（唯一警告：echarts 分包 >800kB，纯优化提示，不影响）。
-- CVM 标准流程：`升级Node20 → sudo corepack enable / npm i -g pnpm → git pull → pnpm install → pnpm build → sudo systemctl reload nginx`。
+- **pnpm 版本坑（已踩）**：`pnpm@latest`（v10.28）要求 Node ≥22.13 且内部用 `node:sqlite`，在 Node 20 上直接崩（`ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite`）。CVM 用 Node 20 → **必须用 pnpm 9.x**（`npm i -g pnpm@9` 或 `corepack prepare pnpm@9 --activate`）。仓库 `pnpm-lock.yaml` 已用 pnpm 9.15.9 重新生成（lockfileVersion 9.0）。
+- sandbox 已验证：`pnpm@9 build` 646 模块通过，产出 `dist/`（唯一警告：echarts 分包 >800kB，纯优化提示，不影响）。
+- CVM 标准流程：`升级Node20 → sudo corepack disable; sudo npm i -g pnpm@9 → git pull → pnpm install → pnpm build → sudo systemctl reload nginx`。
+  - 若 `pnpm install` 报 lockfile 版本不兼容，删掉 `pnpm-lock.yaml` 让 pnpm 9 重新生成即可。

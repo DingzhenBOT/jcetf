@@ -46,7 +46,7 @@
 【工作纪律】
 - 改动前先 Read 文件再 Edit（本环境 Edit 要求先 Read）。
 - 任何外部依赖失败都必须降级而非 500（参考 external_data.py 模式）。
-- 每次编码后跑：cd /workspace/backend && ./venv/bin/python -m pytest -q （venv 在 backend/venv，Python 3.11）；cd /workspace/frontend && pnpm build 。
+- 每次编码后跑：cd /workspace/backend && ./venv/bin/python -m pytest -q （venv 在 backend/venv，Python 3.11）；cd /workspace/frontend && pnpm build （前端需 Node ≥18，pnpm 务必用 9.x；pnpm@latest 要求 Node 22.13，Node 20 跑不了）。
 - 完成任务写到 devlog.md（追加小节，标注日期）后提交；如需同步远程：git push https://<TOKEN>@github.com/DingzhenBOT/jcetf.git HEAD:main （token 见部署环境，勿硬编码进代码）。
 - 设计相关改动遵循 /workspace/DESIGN.md。
 ```
