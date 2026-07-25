@@ -1145,3 +1145,23 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - P1 现已具备 CVM 可靠实时源（gtimg 不封 IP），盘中综合分随实时行情更新在 CVM 真正生效。
 - gtimg 快照不含换手率（normalize 置 None），不影响盘中动量修正（只用 change_percent）。
 - 仍待办：P4 盘后复盘（a-share-daily-review → post_close Opinion）、盈米 CLI 在 CVM 安装授权（P2 真实数据）、westock-data 预装/缓存（板块异动首调慢）。
+
+### C10. 环境 / 部署配置要点（2026-07-25，CVM 实测踩坑）
+
+> 用户在 CVM（ubuntu 用户）跑测试与前端构建时暴露的环境要求，沉淀给后续 agent。
+
+**后端测试：用 backend/venv（Python 3.11）**
+- 本 sandbox 早期缺 venv（依赖装在 pyenv python3.11），已在 `backend/` 建 `venv` 并 `uv pip install -r requirements.txt`。
+- 规范命令：`cd /workspace/backend && ./venv/bin/python -m pytest -q`（HANDOFF 工作纪律已更新）。
+- `.gitignore` 已忽略 `backend/venv/ venv/ .venv/`（venv 不入库）。
+
+**测试写权限：test_health 路径隔离到临时目录**
+- 原 `test_health.py` 用真实 `data/` 路径，CVM 上 `ubuntu` 用户无 `data/logs/app.log` 写权限 → 4 个 PermissionError。
+- 修复：`_init_real_db` 用 `tmp_path_factory` 把 sqlite/backup/log 重定向临时目录（与其余测试一致）。全量 215 passed（0 error）。
+
+**前端：需 Node ≥18 + pnpm（非 Node16/npm）**
+- CVM 原 `npm 8.5.1`（通常跟 Node16）→ Vite5 / vue-tsc2 要求 Node≥18，`vite build` 会直接报错。必须先升级 Node（推荐 20 LTS）。
+- 仓库原只有 npm 的 `package-lock.json`，已标准化：移除 `package-lock.json`、纳入 `pnpm-lock.yaml`（与 HANDOFF/sandbox 一致）。
+- `package.json` 加 `pnpm.onlyBuiltDependencies=["esbuild"]`：pnpm v10 默认拦截 esbuild 构建脚本，全新 `pnpm install` 不批准会导致 vite 因 esbuild 二进制缺失而失败；加白名单后自动构建。
+- sandbox 已验证：`pnpm build` 646 模块通过，产出 `dist/`（唯一警告：echarts 分包 >800kB，纯优化提示，不影响）。
+- CVM 标准流程：`升级Node20 → sudo corepack enable / npm i -g pnpm → git pull → pnpm install → pnpm build → sudo systemctl reload nginx`。
