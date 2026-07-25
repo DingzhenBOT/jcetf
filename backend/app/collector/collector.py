@@ -315,7 +315,10 @@ class Collector:
             if not rows:
                 raise ValueError("no parseable rows after normalize")
         except Exception as e:  # noqa: BLE001 - 历史采集失败：记状态，不抛出，继续回填其他标的
-            self.log.error("collect bar failed", extra={"symbol_type": symbol_type, "symbol": symbol, "err": str(e)})
+            self.log.error(
+                f"collect bar failed: {symbol_type}/{symbol}: {e}",
+                extra={"symbol_type": symbol_type, "symbol": symbol, "err": str(e)},
+            )
             self._record_failure(session, source=source, symbol_type=symbol_type, now=now, err=str(e))
             session.commit()
             return {"symbol_type": symbol_type, "symbol": symbol, "status": "FAILED", "error": str(e)}
@@ -390,7 +393,10 @@ class Collector:
                 if not rows:
                     raise ValueError("no parseable intraday rows")
             except Exception as e:  # noqa: BLE001
-                self.log.error("collect intraday failed", extra={"symbol_type": symbol_type, "symbol": code, "err": str(e)})
+                self.log.error(
+                    f"collect intraday failed: {symbol_type}/{code}: {e}",
+                    extra={"symbol_type": symbol_type, "symbol": code, "err": str(e)},
+                )
                 self._record_failure(session, source="sina", symbol_type=symbol_type, now=now, err=str(e))
                 bucket["failed"] += 1
                 continue
