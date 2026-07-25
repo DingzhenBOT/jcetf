@@ -6,6 +6,7 @@
 """
 from app.config import get_settings
 from app.data_provider.akshare_adapter import AkShareAdapter
+import pandas as pd
 
 
 def _adapter() -> AkShareAdapter:
@@ -163,4 +164,47 @@ def test_get_sector_history_em_source_uses_bk_code(monkeypatch):
     a.get_sector_history("BK1036", "20240101", "20240131")
     assert seen["map"]["em"][0] == "stock_board_industry_hist_em"
     assert seen["map"]["em"][1]["symbol"] == "BK1036"
-    assert seen["map"]["em"][1]["period"] == "daily"
+    # 新版 akshare 的 period 取值为 '日k'（旧版 'daily'）
+    assert seen["map"]["em"][1]["period"] == "日k"
+
+
+def test_bk_to_em_fund_flow_name_resolves_industry_and_concept(monkeypatch):
+    """_bk_to_em_fund_flow_name 按 BK 在行业/概念名单中解析东财板块名，返回正确函数。"""
+    a = _adapter()
+    ind = pd.DataFrame([{"板块代码": "BK1036", "板块名称": "半导体"},
+                        {"板块代码": "BK0473", "板块名称": "证券"}])
+    con = pd.DataFrame([{"板块代码": "BK0481", "板块名称": "军工"},
+                        {"板块代码": "BK0999", "板块名称": "5G"}])
+    monkeypatch.setattr(a, "_em_board_name_maps", staticmethod(lambda: (ind, con)))
+    assert a._bk_to_em_fund_flow_name("BK1036") == ("stock_sector_fund_flow_hist", "半导体")
+    assert a._bk_to_em_fund_flow_name("BK0473") == ("stock_sector_fund_flow_hist", "证券")
+    assert a._bk_to_em_fund_flow_name("BK0481") == ("stock_concept_fund_flow_hist", "军工")
+    assert a._bk_to_em_fund_flow_name("BK0999") == ("stock_concept_fund_flow_hist", "5G")
+    # 未在任一名单中的 BK -> None（调用方应跳过 em 源优雅降级）
+    assert a._bk_to_em_fund_flow_name("BK9999") is None
+
+
+def test_get_sector_fund_flow_history_builds_name_source_and_filters_date(monkeypatch):
+    """get_sector_fund_flow_history 用板块名调用、仅传 symbol，并按下区间裁剪日期。"""
+    a = _adapter()
+    captured = {}
+
+    def _fake_call(capability, source_map):
+        captured["map"] = dict(source_map)
+        # 返回全量历史（含区间外日期），验证适配器侧裁剪
+        return pd.DataFrame([
+            {"日期": "2023-12-29", "主力净流入-净额": 1},
+            {"日期": "2024-01-02", "主力净流入-净额": 2},
+            {"日期": "2024-02-01", "主力净流入-净额": 3},
+        ]), "em"
+
+    monkeypatch.setattr(a, "_call", _fake_call)
+    monkeypatch.setattr(a, "_ordered_sources", lambda: ["em"])
+    monkeypatch.setattr(a, "_bk_to_em_fund_flow_name",
+                        lambda bk: ("stock_sector_fund_flow_hist", "半导体"))
+    df = a.get_sector_fund_flow_history("BK1036", "20240101", "20240131")
+    # 仅传 symbol（不传 period/start/end），避免旧版 akshare 的 TypeError
+    assert captured["map"]["em"][0] == "stock_sector_fund_flow_hist"
+    assert captured["map"]["em"][1] == {"symbol": "半导体"}
+    # 日期裁剪到 [20240101, 20240131]
+    assert list(df["日期"].astype(str)) == ["2024-01-02"]

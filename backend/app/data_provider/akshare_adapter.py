@@ -11,10 +11,14 @@
   ths 行业/概念历史经 _BK_TO_THS 把 BK 代码解析为同花顺板块名（行业板覆盖半导体/证券/银行/
   白酒/光伏设备，概念板覆盖军工/新能源汽车/5G）。医药/消费在 THS 无单一聚合板 -> 映射 None，
   本地/生产网回退 em，腾讯云降级（D4）。
-- 板块历史资金流仅 em 提供（ths 仅当日快照无历史），腾讯云降级（D4）。
+- 板块历史资金流仅 em 提供（ths 仅当日快照无历史），腾讯云降级（D4）；
+  新版 akshare（≥1.18）的 stock_sector_fund_flow_hist 仅接受板块名称（非 BK 代码）且返回全量历史，
+  故 get_sector_fund_flow_history 先按 BK 解析东财板块名再调用，并按 [start,end] 裁剪。
 """
 from __future__ import annotations
 
+import inspect
+from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 
 import akshare as ak
@@ -69,6 +73,48 @@ def install_em_headers_patch() -> None:
     _patched = True
 
 
+def _filter_kwargs(func, kwargs: dict) -> dict:
+    """按目标 akshare 函数的真实签名过滤 kwargs，忽略版本升级后不再接受的参数。
+
+    akshare 多版本间函数签名漂移（如 stock_sector_fund_flow_hist 旧版接受
+    period/start/end，新版仅接受 symbol），硬性传参会抛 TypeError。此过滤器让适配器对版本
+    漂移容错：仅透传函数真实接受的参数；若函数签名含 **kwargs 则全部透传。
+    """
+    try:
+        sig = inspect.signature(func)
+    except (ValueError, TypeError):
+        return dict(kwargs)
+    params = sig.parameters
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(kwargs)
+    accepted = {
+        name
+        for name, p in params.items()
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    return {k: v for k, v in kwargs.items() if k in accepted}
+
+
+def _filter_df_by_date_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    """按 [start, end]（YYYYMMDD）裁剪含「日期」/「date」列的 DataFrame。
+
+    部分历史接口（如 stock_sector_fund_flow_hist）返回全量历史、不接受日期参数，
+    需在获取后按区间裁剪。无日期列或解析失败则原样返回。
+    """
+    if df is None or getattr(df, "empty", True):
+        return df
+    col = "日期" if "日期" in df.columns else ("date" if "date" in df.columns else None)
+    if col is None:
+        return df
+    s = pd.to_datetime(start, errors="coerce")
+    e = pd.to_datetime(end, errors="coerce")
+    if s is None or e is None:
+        return df
+    dts = pd.to_datetime(df[col], errors="coerce")
+    mask = (dts >= s) & (dts <= e)
+    return df[mask].reset_index(drop=True)
+
+
 class AkShareAdapter(BaseDataProvider):
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -96,7 +142,7 @@ class AkShareAdapter(BaseDataProvider):
             for attempt in range(self.retry + 1):
                 try:
                     func = getattr(ak, func_name)
-                    df = func(**kwargs)
+                    df = func(**_filter_kwargs(func, kwargs))
                     if df is None or (hasattr(df, "empty") and df.empty):
                         last_err = f"{src} returned empty"
                         break  # 空结果多试无益，换源
@@ -184,9 +230,9 @@ class AkShareAdapter(BaseDataProvider):
         "sina": ("stock_zh_index_daily", {}),
         "tx": ("stock_zh_index_daily_tx", {}),
     }
-    # 板块历史：em（BK 代码，生产/本地网可用）；ths 由 _bk_to_ths 动态解析板块名（腾讯云可用）。
-    _SECTOR_HIST = {"em": ("stock_board_industry_hist_em", {"period": "daily", "adjust": "qfq"})}
-    _SECTOR_FLOW_HIST = {"em": ("stock_sector_fund_flow_hist", {"period": "daily"})}
+    # 板块历史/资金流不再用静态 source map：
+    # - get_sector_history 内联构造（em 用 BK 代码；ths 经 _bk_to_ths 解析板块名）。
+    # - get_sector_fund_flow_history 需按 BK 解析东财板块名称后调用（新版 akshare 仅接受名称，见该方法）。
 
     # BK 板块代码 -> 同花顺对应板（type: industry/concept, name: THS 板块名）。
     # 腾讯云东财被 RST 拦截，行业/概念历史唯一可用源为同花顺。
@@ -288,7 +334,8 @@ class AkShareAdapter(BaseDataProvider):
             if src == "em":
                 src_map[src] = (
                     "stock_board_industry_hist_em",
-                    {"symbol": symbol, "period": "daily", "adjust": "qfq", "start_date": start, "end_date": end},
+                    # 新版 akshare 的 period 取值为 '日k'（旧版 'daily'）；_filter_kwargs 已对版本漂移容错
+                    {"symbol": symbol, "period": "日k", "adjust": "qfq", "start_date": start, "end_date": end},
                 )
             elif src == "ths":
                 ths = self._bk_to_ths(symbol)
@@ -303,8 +350,62 @@ class AkShareAdapter(BaseDataProvider):
         return df
 
     def get_sector_fund_flow_history(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        df, _ = self._call("sector_fund_flow_history", {k: (f, {**kw, "symbol": symbol, "start_date": start, "end_date": end}) for k, (f, kw) in self._SECTOR_FLOW_HIST.items()})
+        """板块历史资金流（主力/超大单净流入）。
+
+        - 新版 akshare（≥1.18）的 stock_sector_fund_flow_hist / stock_concept_fund_flow_hist
+          仅接受「板块名称」（非 BK 代码），且无日期参数（返回全量历史）。
+        - 故先按 BK 代码解析东财板块名称（行业/概念分别查），再调用对应函数，仅传 symbol；
+          返回后按 [start, end] 裁剪日期。
+        - 东财不可达（如腾讯云 RST 拦截）时解析失败 -> 跳过 em 源 -> DataSourceError 优雅降级。
+        """
+        src_map: Dict[str, Tuple[str, dict]] = {}
+        for src in self._ordered_sources():
+            if src != "em":
+                continue
+            resolved = self._bk_to_em_fund_flow_name(symbol)
+            if resolved is None:
+                continue
+            func_name, name = resolved
+            src_map[src] = (func_name, {"symbol": name})
+        if not src_map:
+            raise DataSourceError(f"sector_fund_flow_history: no applicable source for BK {symbol}")
+        df, src = self._call("sector_fund_flow_history", src_map)
+        df = _filter_df_by_date_range(df, start, end)
+        df.attrs["__source"] = src
         return df
+
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _em_board_name_maps() -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """东财行业/概念板块 代码->名称 映射（公开 API，缓存一次；不可达则抛异常由调用方降级）。"""
+        ind = ak.stock_board_industry_name_em()
+        con = ak.stock_board_concept_name_em()
+        return ind, con
+
+    def _bk_to_em_fund_flow_name(self, bk: str) -> Optional[Tuple[str, str]]:
+        """BK 代码 -> (资金流函数名, 东财板块名称)；行业/概念分别查，无则返回 None。"""
+        try:
+            ind, con = self._em_board_name_maps()
+        except Exception:  # noqa: BLE001
+            return None
+
+        def lookup(df: pd.DataFrame) -> Optional[str]:
+            if df is None or getattr(df, "empty", True):
+                return None
+            if "板块代码" not in df.columns or "板块名称" not in df.columns:
+                return None
+            sub = df[df["板块代码"] == bk]
+            if len(sub):
+                return str(sub.iloc[0]["板块名称"])
+            return None
+
+        name = lookup(ind)
+        if name is not None:
+            return ("stock_sector_fund_flow_hist", name)
+        name = lookup(con)
+        if name is not None:
+            return ("stock_concept_fund_flow_hist", name)
+        return None
 
     def get_market_breadth_raw(self) -> pd.DataFrame:
         df, src = self._call("market_breadth_raw", self._BREADTH_RAW)

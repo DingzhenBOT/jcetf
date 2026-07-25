@@ -144,3 +144,34 @@ def test_backfill_history_incremental_and_resilient(tmp_path):
                                                          date(2024, 1, 1), date(2024, 1, 31)))
         assert n_after_second == 3  # 不重复
         assert quote_repo.get_max_bar_timestamp(session, "ETF", "510300").date() == date(2024, 1, 4)
+
+
+def test_backfill_excludes_otc_funds(tmp_path):
+    """场外联接基金（listing='场外'）不走场内 ETF 历史管道，应被跳过（其行情走盈米/开放式基金源）。"""
+    s, eng = _setup(tmp_path)
+    with session_scope(eng) as session:
+        mapping_repo.upsert_mapping(
+            session, etf_code="510300", etf_name="沪深300ETF",
+            related_sector_codes=["BK0465"], related_index_code="000300",
+            category="宽基", mapping_version="v1", listing="场内",
+            valid_from=date(2000, 1, 1), valid_to=None, notes="t",
+        )
+        mapping_repo.upsert_mapping(
+            session, etf_code="110020", etf_name="沪深300ETF联接A",
+            related_sector_codes=[], related_index_code="000300",
+            category="宽基", mapping_version="v1", listing="场外",
+            valid_from=date(2000, 1, 1), valid_to=None, notes="t",
+        )
+        mint_strategy_version(session, s, RULES_V1)
+
+    c = Collector(FakeProvider(), s)
+    with session_scope(eng) as session:
+        r = c.backfill_history(session, as_of=date(2024, 1, 10))
+        # 仅场内 510300 被采；场外 110020 被跳过（不计入 ok/failed）
+        assert r["etf"]["ok"] == 1
+        assert r["etf"]["failed"] == 0
+        # 场外基金无场内 BAR 入库
+        otc_bars = quote_repo.get_bar_history(session, "ETF", "110020", date(2024, 1, 1), date(2024, 1, 31))
+        assert otc_bars == []
+        on_bars = quote_repo.get_bar_history(session, "ETF", "510300", date(2024, 1, 1), date(2024, 1, 31))
+        assert len(on_bars) == 3

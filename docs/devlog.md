@@ -1241,3 +1241,31 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - 前端：`pnpm build` 通过（vue-tsc + vite，654 模块）；echarts 分包 >800kB 仅为优化提示。
 - 本轮编辑前均先 Read 当前文件，避免网络波动导致的重复执行/重复编辑（与 C11 纪律一致）。
 - 根因 bug 修复后，512000 类脏数据不再污染信号；用户看到的「下跌却建议减仓」将随下一次采集/评估自然纠正，且建议卡片已明示阶段与时间。
+
+### C13. akshare 版本不兼容修复 + 场外联接基金排除（2026-07-26）
+
+> 用户在 CVM（腾讯云 4核4G）重跑 `collect_once --backfill` 并 grep 出详细失败，暴露两类真实 bug：
+> - `SECTOR/BK0465: sector_history failed: em: KeyError: 'daily'`
+> - `SECTOR/BK0465: sector_fund_flow_history failed: em: TypeError: stock_sector_fund_flow_hist() got an unexpected keyword argument 'period'`
+> - `ETF/110020`、`ETF/110003: etf_history failed on all sources: sina returned empty`
+
+**根因（akshare 版本漂移，本地 1.18.22 与 CVM 同款断点）**
+- `stock_board_industry_hist_em`：新版 `period` 取值为 `'日k'`（旧版 `'daily'`），硬编码 `"daily"` 触发内部 `period_map['daily']` → `KeyError`（`symbol=BK` 已被正则接受，故错误发生在 period 而非 symbol）。
+- `stock_sector_fund_flow_hist`（行业）/ `stock_concept_fund_flow_hist`（概念）：新版**仅接受板块名称**（非 BK 代码）且无 `period`/`start_date`/`end_date` 参数，返回**全量历史**。硬编码 `"period":"daily"` → `TypeError`；若仅去掉 period 传 BK 代码 → 内部 `code_name_map[BK]` 找不到 → `KeyError`（修完 TypeError 后会暴露的二级坑）。
+- `fund_etf_hist_em` 仍接受 `period="daily"`（签名未变）→ `_ETF_HIST` 无需改。
+- `110020`/`110003` 是**场外联接基金**（`seed_mapping` 标 `listing='场外'`），`fund_etf_hist_em`/sina 均无场内数据 → 必然空。其行情应走盈米/开放式基金源（README §3.5）。
+
+**修复（app/data_provider/akshare_adapter.py）**
+1. 新增模块级 `_filter_kwargs(func, kwargs)`：按目标函数真实签名过滤 kwargs，自动忽略版本升级后不再接受的参数（**版本漂移容错**）；函数含 `**kwargs` 则全透传。接入 `_call`（采集前过滤）。
+2. `get_sector_history` em 分支：`period` 由 `"daily"` → `"日k"`。
+3. `get_sector_fund_flow_history` 重写：
+   - 按 BK 代码经 `_bk_to_em_fund_flow_name`（查 `stock_board_industry_name_em` / `stock_board_concept_name_em` 的「板块代码→板块名称」映射，行业/概念分别查）→ 行业用 `stock_sector_fund_flow_hist(name)`、概念用 `stock_concept_fund_flow_hist(name)`，**仅传 `symbol`**。
+   - 取回全量历史后由 `_filter_df_by_date_range` 按 `[start, end]` 裁剪。
+   - 东财不可达（腾讯云 RST）致名称映射解析失败 → 跳过 em 源 → `DataSourceError` 优雅降级（D4）。
+   - 移除废弃静态常量 `_SECTOR_HIST` / `_SECTOR_FLOW_HIST`（inline 构造已覆盖）。
+4. `app/collector/collector.py`：`backfill_history` ETF 循环 + `collect_intraday_minute` ETF 列表，均经 `_is_on_exchange(m)`（`m.listing != '场外'`）过滤——场外联接基金走盈米/开放式基金源，不进场内 ETF 历史/分时管道。
+
+**验证**
+- 后端：227 测试全过（+3：adapter 2 例 BK→名称解析与日期裁剪、collector 1 例场外排除）；`_filter_kwargs` 对旧版 akshare 多余参数的 `TypeError` 容错。
+- CVM 预期：重跑 `collect_once --backfill` 后 sector 历史/资金流的两类 `KeyError`/`TypeError` 消失；东财可达则板块数据真正入库，否则继续 D4 降级（错误变为干净的 ConnectionError/DataSourceError 而非参数异常）。ETF 由 `ok:17/failed:2` → `ok:17/failed:0`（2 个场外被排除，不再计入失败）。
+- 盈米 CLI 仍 pending：场外基金真实数据需用户在 CVM 装 `yingmi-skill-cli` 并完成手机号+短信授权（agent 无法代填）。

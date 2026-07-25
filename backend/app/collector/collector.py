@@ -380,7 +380,7 @@ class Collector:
         """
         now = self._now()
         tdate = trading_date_for()
-        etf_codes = [m.etf_code for m in mapping_repo.get_active_mappings(session)]
+        etf_codes = [m.etf_code for m in mapping_repo.get_active_mappings(session) if self._is_on_exchange(m)]
         targets = [("ETF", c) for c in etf_codes] + [
             ("INDEX", c) for c in self.settings.strategy.broad_index_codes
         ]
@@ -427,6 +427,14 @@ class Collector:
         else:
             bucket["failed"] += 1
 
+    @staticmethod
+    def _is_on_exchange(m) -> bool:
+        """场内 ETF（走场内行情管道）；场外联接基金走盈米/开放式基金源，不采场内历史/分时。
+
+        场外 fund_etf_hist_em / sina 均无数据 -> 采则必然 FAILED；其行情由 盈米 CLI / 开放式基金源提供。
+        """
+        return (m.listing or "场内") != "场外"
+
     def backfill_history(
         self,
         session: Session,
@@ -455,9 +463,11 @@ class Collector:
             "sector_flow": {"ok": 0, "failed": 0},
         }
 
-        # ETF（来自生效映射）
+        # ETF（来自生效映射；场外联接基金走盈米/开放式基金源，不采场内历史）
         mappings = mapping_repo.get_active_mappings(session, as_of)
         for m in mappings:
+            if not self._is_on_exchange(m):
+                continue
             start = self._backfill_start(session, "ETF", m.etf_code, as_of, lookback_days)
             if start is None:
                 continue
