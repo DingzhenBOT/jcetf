@@ -1167,3 +1167,39 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - sandbox 已验证：`pnpm@9 build` 646 模块通过，产出 `dist/`（唯一警告：echarts 分包 >800kB，纯优化提示，不影响）。
 - CVM 标准流程：`升级Node20 → sudo corepack disable; sudo npm i -g pnpm@9 → git pull → pnpm install → pnpm build → sudo systemctl reload nginx`。
   - 若 `pnpm install` 报 lockfile 版本不兼容，删掉 `pnpm-lock.yaml` 让 pnpm 9 重新生成即可。
+
+### C11. 六点 UI/UX 修复（2026-07-25，用户观感反馈）
+
+> 用户就总览页/ETF 详情/资讯条提出 6 点观感，决策「全做；摆锤图+仪表盘都要；影响分析用规则模板生成」。本轮已全部落地并通过构建。
+
+**① 观察期信号（部分数据缺失降级）** — 设计行为，非 bug
+- 现象：信号标「部分数据缺失（breadth/sector_data/fund_flow/etf_rs_missing）」，已降级为观察期。
+- 原因：CVM 上板块异动/资金流（腾讯 westock-data）与 ETF 相对强度等数据尚未真实采集，规则失败 → 置信度降级。属预期降级，待 P2/P3 真实数据接入后自动消失。
+- 不做代码改动，仅在 UI 明示「观察期数据不足」（已有琥珀色提示）。
+
+**② 首页指数显示旧数据（bug，已修，commit `ece4005`）**
+- 后端 `market.py` `market_overview`：指数取值改为「最新 SNAPSHOT」与「最新日线 BAR」中**时间戳更新者**，旧 SNAPSHOT 不再压住更晚的 BAR 收盘（修复首页旧、抽屉新的不一致）。
+- 测试 `test_api_market.py` 重写两例避免共享库污染：实时例 SNAPSHOT ts 改到收盘后（16:00）> BAR（15:00）→ 取 SNAPSHOT；陈旧例改用 `000001` 自带 BAR+陈旧 SNAPSHOT，断言取更晚的 BAR。全量 215 passed。
+
+**③ 摆锤图 + 综合分仪表盘（功能，前端）**
+- 新增 `charts/PendulumChart.vue`：指数当日涨跌幅画成「绕 0 点摆动指针」，右偏红(涨)/左偏绿(跌)。`IndexTicker` 每个指数卡接入（上证 hero 78px，其余 64px），替代原纯数字。
+- 新增 `charts/GaugeChart.vue`：信号综合分 0–100 半圆仪表，分档着色（偏低蓝/中等琥珀/偏高绿），指针与读数同色。`EtfDetail`「最新信号」卡的综合分方块替换为该仪表。
+
+**④ 日K量柱按涨跌染色（bug，已修）**
+- `charts/CandlestickChart.vue`：`volData` 原用 `change_percent ?? 0 >= 0` → 该字段为 null 的量柱一律染红。改为按「收 ≥ 开」判定（与蜡烛实体同色），字段缺失才回退 `change_percent`。
+
+**⑤ 资讯滚动 + 弹窗 + 影响分析（功能，前端）**
+- `sections/NewsStrip.vue` 重写：自动横向跑马灯（hover 暂停便于点击）；「最热 5 条」= 时效性为主 + 突发/政策关键词加权（东财 7x24 倒序，无热度字段，取最新 5 作代理）；点击弹窗。
+- 新增 `lib/newsImpact.ts`：规则模板式影响分析（离线、无 LLM）——关键词命中「关联板块」+「情绪方向(利好/利空/中性)」→ 拼装人话影响句 + 关联板块标签。弹窗展示摘要 + 影响分析 + 板块 chips。
+
+**⑥ 信号按综合分排序（bug，已修，commit `ece4005`）**
+- 后端 `signal_repo.get_latest_signals` 追加 `order_by(Signal.score.desc())`（SQLite 下 NULL 自动排末）。新增 `test_signals_latest_sorted_by_score_desc`。首页信号表/复盘清单统一按分排序。
+
+**验证 / 部署注意**
+- 前端：`pnpm run build` 通过（vue-tsc + vite，654 模块）。echarts 分包 >800kB 仅为优化提示。
+- 依赖安装：sandbox 用 `pnpm install --frozen-lockfile`（Node22/pnpm10 可读 v9 锁文件，未改动）。CVM 仍按 C10 用 Node20 + pnpm9。
+- 本轮命令均核对无网络波动导致的重复执行/重复编辑（编辑前先 Read 当前文件，避免 `old_string` 错位）。
+
+**后续**
+- P4 盘后复盘（a-share-daily-review → post_close 意见）仍待办。
+- 盈米 CLI 在 CVM 安装授权（解锁 P2 真实数据）、westock-data 预装/缓存（板块异动首调慢）仍待办。

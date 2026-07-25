@@ -27,10 +27,18 @@ const candleData = computed(() =>
   ]),
 )
 const dates = computed(() => props.points.map((x) => x.date.slice(5))) // MM-DD
+
+// 单根涨跌判定：优先用「收 >= 开」（与蜡烛实体颜色一致）；缺失时回退 change_percent。
+// 原实现用 change_percent ?? 0，导致该字段为 null 的日K量柱一律染红。
+const isUp = (p: IndexHistoryPoint): boolean => {
+  if (p.open != null && p.close != null) return p.close >= p.open
+  if (p.change_percent != null) return p.change_percent >= 0
+  return true
+}
 const volData = computed(() =>
   props.points.map((p) => ({
     value: p.volume,
-    itemStyle: { color: (p.change_percent ?? 0) >= 0 ? UP : DOWN },
+    itemStyle: { color: isUp(p) ? UP : DOWN },
   })),
 )
 

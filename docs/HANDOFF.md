@@ -60,7 +60,7 @@
 | 后端 | FastAPI + SQLite(WAL)，215 测试通过 |
 | 前端 | Vue3 + ECharts，pnpm build 通过 |
 | 数据源 | 平安已弃用；腾讯自选股 + 盈米 + 东财 + NeoData + a-stock-data |
-| 远程仓库 | github.com/DingzhenBOT/jcetf.git，main 已推送至 `0961836` |
+| 远程仓库 | github.com/DingzhenBOT/jcetf.git，main 已推送至 `ece4005` |
 | DESIGN.md | 已入库，随本次推送同步 |
 
 ## 三、目录导航
@@ -70,8 +70,13 @@
 - `backend/app/data_provider/gtimg_client.py` —— 腾讯财经 qt.gtimg.cn 实时行情客户端（盘中 SNAPSHOT 附加源）
 - `backend/app/collector/collector.py` —— `collect_realtime_gtimg`（collect_market 末尾触发，优雅降级）
 - `frontend/src/views/SectorMovement.vue` / `OffExchange.vue` —— 新页面
-- `frontend/src/components/sections/NewsStrip.vue` —— 首页资讯条
-- `docs/devlog.md` —— 全量开发日志（C0–C9 章节）
+- `frontend/src/components/sections/NewsStrip.vue` —— 首页资讯条（跑马灯 + 点击弹窗 + 规则影响分析）
+- `frontend/src/components/charts/PendulumChart.vue` —— 指数当日涨跌幅摆锤图（首页指数卡）
+- `frontend/src/components/charts/GaugeChart.vue` —— 信号综合分 0–100 半圆仪表（ETF 详情页）
+- `frontend/src/components/ui/Modal.vue` —— 通用模态框（资讯弹窗复用）
+- `frontend/src/lib/newsImpact.ts` —— 规则模板式资讯影响分析（离线，关键词→板块/情绪）
+- `backend/app/api/routers/market.py` / `backend/app/repository/signal_repo.py` —— bug②/bug⑥ 后端修复
+- `docs/devlog.md` —— 全量开发日志（C0–C11 章节）
 - `DESIGN.md` —— 设计系统规范（9 章节）
 
 ## 四、关键约束提醒（踩坑经验）

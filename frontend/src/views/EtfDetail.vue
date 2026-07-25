@@ -8,10 +8,11 @@ import SignalTable from '@/components/sections/SignalTable.vue'
 import OpinionList from '@/components/sections/OpinionList.vue'
 import CandlestickChart from '@/components/charts/CandlestickChart.vue'
 import IntradayChart from '@/components/charts/IntradayChart.vue'
+import GaugeChart from '@/components/charts/GaugeChart.vue'
 import { getEtfs, getOpinions, getSignalsHistory, getEtfHistory, getIntraday } from '@/api/endpoints'
 import type { EtfHistory, EtfListItem, Intraday, Opinion, Signal } from '@/api/types'
 import { TIER_BADGE, TIER_BORDER, regimeText } from '@/lib/tier'
-import { fmtScore, fmtConfidence, confidenceLevel } from '@/lib/format'
+import { fmtConfidence, confidenceLevel } from '@/lib/format'
 import { toBeijing } from '@/lib/time'
 
 const route = useRoute()
@@ -207,22 +208,26 @@ const heroSentence = computed(() => {
           title="最新信号"
           :subtitle="`生成于 ${toBeijing(etf.latest_signal.generated_at)}`"
         >
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-            <div>
-              <div class="text-slate-400 text-xs">综合分</div>
-              <div class="tnum font-semibold">{{ fmtScore(etf.latest_signal.score) }}</div>
-            </div>
-            <div>
-              <div class="text-slate-400 text-xs">置信度</div>
-              <div class="tnum font-semibold">{{ fmtConfidence(etf.latest_signal.confidence) }}</div>
-            </div>
-            <div>
-              <div class="text-slate-400 text-xs">市场环境</div>
-              <div class="font-semibold">{{ regimeText(etf.latest_signal.market_regime) }}</div>
-            </div>
-            <div>
-              <div class="text-slate-400 text-xs">建议仓位</div>
-              <div class="font-semibold text-slate-700">{{ etf.latest_signal.position_text }}</div>
+          <div class="flex flex-col sm:flex-row gap-4 items-center">
+            <GaugeChart
+              :score="etf.latest_signal.score"
+              label="综合分"
+              height="150px"
+              class="shrink-0 w-[180px]"
+            />
+            <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm flex-1 w-full">
+              <div>
+                <div class="text-slate-400 text-xs">置信度</div>
+                <div class="tnum font-semibold">{{ fmtConfidence(etf.latest_signal.confidence) }}</div>
+              </div>
+              <div>
+                <div class="text-slate-400 text-xs">市场环境</div>
+                <div class="font-semibold">{{ regimeText(etf.latest_signal.market_regime) }}</div>
+              </div>
+              <div>
+                <div class="text-slate-400 text-xs">建议仓位</div>
+                <div class="font-semibold text-slate-700">{{ etf.latest_signal.position_text }}</div>
+              </div>
             </div>
           </div>
           <div v-if="etf.latest_signal.suggested_action" class="mt-3 text-sm text-slate-600">
