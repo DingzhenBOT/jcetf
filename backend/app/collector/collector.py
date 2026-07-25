@@ -21,9 +21,10 @@ from app.repository import mapping_repo, quote_repo
 
 
 class Collector:
-    def __init__(self, provider: BaseDataProvider, settings: Settings):
+    def __init__(self, provider: BaseDataProvider, settings: Settings, gtimg_fetcher=None):
         self.provider = provider
         self.settings = settings
+        self.gtimg_fetcher = gtimg_fetcher  # 腾讯财经实时行情拉取器（可注入；None=跳过）
         self.log = get_logger("etf-collector")
 
     # ---- 内部工具 ----
@@ -188,6 +189,57 @@ class Collector:
             source_hint=self.settings.data_source.preferred,
         )
 
+    def collect_realtime_gtimg(self, session: Session) -> Dict[str, Any]:
+        """腾讯财经 qt.gtimg.cn 实时快照（ETF + 宽基指数），CVM 不封 IP 的可靠盘中源（C2）。
+
+        作为 em/sina 之外的「附加实时源」：在 collect_market 末尾运行，写入时间戳最新 ->
+        P1 盘中综合分优先采用 gtimg 的涨跌幅（get_latest_snapshot_change_map 跨源取 max(timestamp)）；
+        em/sina 在 CVM 被 RST 时，gtimg 仍提供新鲜快照，P1 不再静默 no-op。
+        gtimg_fetcher=None（测试/未注入）-> 直接跳过，零网络。
+        任何异常：记 FAILED 状态 + 返回，绝不抛出（优雅降级）。
+        """
+        if self.gtimg_fetcher is None:
+            return {"status": "skipped", "reason": "gtimg_fetcher not injected"}
+        now = self._now()
+        # 构造 (代码, kind) 列表：生效 ETF 映射 + 宽基指数
+        etf_codes: set = set()
+        for m in mapping_repo.get_active_mappings(session):
+            if m.etf_code:
+                etf_codes.add(str(m.etf_code))
+        index_codes: set = set(self.settings.strategy.broad_index_codes)
+        codes_with_kind = [(c, "etf") for c in etf_codes] + [(c, "index") for c in index_codes]
+
+        try:
+            if not codes_with_kind:
+                raise ValueError("no active etf/index targets for gtimg")
+            df = self.gtimg_fetcher(codes_with_kind)
+            if df is None or (hasattr(df, "empty") and df.empty):
+                raise ValueError("gtimg returned empty")
+            # gtimg 单批混采 ETF+指数，normalize 需分类型（按代码集合拆回）
+            etf_df = df[df["代码"].astype(str).isin(etf_codes)] if etf_codes else df.iloc[0:0]
+            idx_df = df[df["代码"].astype(str).isin(index_codes)] if index_codes else df.iloc[0:0]
+            rows: List[Dict[str, Any]] = []
+            if not etf_df.empty:
+                rows += normalize.normalize_etf_snapshot(etf_df, "gtimg", now)
+            if not idx_df.empty:
+                rows += normalize.normalize_index_snapshot(idx_df, "gtimg", now)
+            if not rows:
+                raise ValueError("no parseable gtimg rows after normalize")
+        except Exception as e:  # noqa: BLE001 - 实时源失败：记状态，不抛出
+            self.log.error("collect gtimg realtime failed", extra={"err": str(e)})
+            self._record_failure(session, source="gtimg", symbol_type="ETF", now=now, err=str(e))
+            self._record_failure(session, source="gtimg", symbol_type="INDEX", now=now, err=str(e))
+            session.commit()
+            return {"status": "FAILED", "error": str(e)}
+
+        n = quote_repo.upsert_market_quotes(session, rows)
+        note = f"rows={n};etf={len(etf_codes)};index={len(index_codes)}"
+        self._record_success(session, source="gtimg", symbol_type="ETF", now=now, note=note)
+        self._record_success(session, source="gtimg", symbol_type="INDEX", now=now, note=note)
+        session.commit()
+        self.log.info("gtimg realtime ok", extra={"rows": n})
+        return {"status": "OK", "source": "gtimg", "count": n}
+
     # ---- 全市场宽度（每日累计） ----
     def collect_breadth(self, session: Session) -> Dict[str, Any]:
         now = self._now()
@@ -221,12 +273,17 @@ class Collector:
 
     # ---- 组合 ----
     def collect_market(self, session: Session) -> Dict[str, Any]:
-        """盘中轻量采集：指数 + ETF + 行业 + 概念（不含全市场宽度，宽度单列任务）。"""
+        """盘中轻量采集：指数 + ETF + 行业 + 概念 + 腾讯财经实时快照（gtimg，CVM 可靠源）。
+
+        gtimg 在末尾运行，写入时间戳最新 -> P1 盘中综合分优先采用其涨跌幅；
+        gtimg_fetcher 未注入时 collect_realtime_gtimg 直接跳过（零网络，不影响其余采集）。
+        """
         return {
             "index": self.collect_index_snapshot(session),
             "etf": self.collect_etf_snapshot(session),
             "industry": self.collect_sector_ranking(session, "INDUSTRY"),
             "concept": self.collect_sector_ranking(session, "CONCEPT"),
+            "gtimg": self.collect_realtime_gtimg(session),
         }
 
     def collect_all(self, session: Session) -> Dict[str, Any]:

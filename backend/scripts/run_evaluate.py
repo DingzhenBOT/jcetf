@@ -14,7 +14,7 @@ import argparse
 import sys
 
 from app.config import get_settings
-from app.data_provider import build_provider
+from app.data_provider import build_provider, gtimg_client
 from app.db import init_db, make_engine, session_scope
 from app.collector.collector import Collector
 from app.evaluation.pipeline import post_collection_evaluate
@@ -37,7 +37,7 @@ def main() -> int:
     init_db(eng, settings)
 
     if args.backfill:
-        collector = Collector(build_provider(settings), settings)
+        collector = Collector(build_provider(settings), settings, gtimg_fetcher=gtimg_client.fetch_realtime)
         with session_scope(eng) as session:
             bf = collector.backfill_history(session)
         log.info("backfill summary", extra=bf)

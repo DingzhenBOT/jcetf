@@ -1102,3 +1102,46 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
   **建议立即跟进**：把 ETF/指数 SNAPSHOT 采集源切到 **腾讯财经 `qt.gtimg.cn`**（a-stock-data，不封 IP，C2 已定为主源），保证 CVM 上 P1 真正生效。这是独立的 data-provider 改动，不在本次评分重构内。
 - `job_intraday_evaluate`（10/11/13/14 点）已重算 Signal；现在因摄入实时 SNAPSHOT，这些整点重评估的综合分将真正随盘中行情漂移（之前输入不变故恒定）。若想更细粒度，可参考 ashare-short-term-trading 把评估重排到 09:45/10:30/13:30/14:30/14:55（C3 原设想，可选增强）。
 - 前端无需改动：已每 30s 轮询 `/api/signals/latest`，`score` 现在盘中会变；`supporting_metrics` 已含盘中修正字段，ETF 详情页可后续展示"盘中动量贡献"。
+
+### C9. 本次交付（Task A：ETF/指数 SNAPSHOT 切到腾讯财经 qt.gtimg.cn，2026-07-25）
+
+> 续 C8 的「立即跟进项」：P1 盘中修正依赖 SNAPSHOT 采集；em/sina 在 CVM 可能被 RST 封 → 盘中修正静默 no-op。
+> 用户已确认：不切换会有**可用性**缺口（非数据损坏），授权先做 A。本任务把腾讯财经 `qt.gtimg.cn` 接入为盘中实时快照的**附加可靠源**（C2 已定主源），让 P1 在 CVM 真正生效。
+
+**设计取舍：附加源（augment）而非替换（replace）**
+- 不替换 em/sina 主快照采集，而是 `collect_market` 末尾追加 `collect_realtime_gtimg`：gtimg 写入时间戳最新 → `get_latest_snapshot_change_map` 跨源取 `max(timestamp)` 自然命中 gtimg（P1 生效前提，已单测验证）。
+- em/sina 失败时 gtimg 仍提供新鲜快照；gtimg 偶发失败时退化为 em/sina 快照。两者互为降级，符合 DESIGN 优雅降级。CVM 上因 gtimg 不封 IP，实际以 gtimg 为有效实时源。
+
+**新增 `app/data_provider/gtimg_client.py`（C2 实时主源客户端）**
+- `fetch_realtime(codes_with_kind, timeout=10)`：`codes_with_kind=[(数字代码,'etf'|'index'), ...]`。
+- `https://qt.gtimg.cn/q=sh510300,sz159915,...`（GBK 解码），解析 `v_xxx="..."` 的 ~ 分隔字段（实测 88 字段）。
+- 字段映射：`[3]最新价 [4]昨收 [5]今开 [32]涨跌幅% [33]最高 [34]最低 [35]="现价/成交量/成交额(元)"(取成交额) [2]数字代码(无前缀，直接匹配系统代码)`。
+- 返回 DataFrame（中文列：代码/名称/今开/最高/最低/最新价/昨收/成交量/成交额/涨跌幅），可直接喂 `normalize.normalize_etf_snapshot` / `normalize_index_snapshot`。
+- `_to_gtimg_symbol`：指数 0/6/9→sh 其余 sz；ETF 5→sh 其余 sz。
+- 任何网络/解析异常**直接抛出**，由 Collector 捕获并优雅降级（不抛上层）。
+
+**改动 `app/collector/collector.py`**
+- `Collector.__init__` 新增可注入 `gtimg_fetcher=None`（默认 None → 跳过，零网络；现有测试不受影响）。
+- 新增 `collect_realtime_gtimg(session)`：
+  - `gtimg_fetcher is None` → `{"status":"skipped"}`，不联网。
+  - 构造 `(代码,'etf'|'index')` 列表：生效 ETF 映射 + `settings.strategy.broad_index_codes`。
+  - 调 fetcher 得混合 DataFrame → 按代码集合拆 ETF/指数两批 → 分别 `normalize.normalize_etf_snapshot` / `normalize_index_snapshot`，source="gtimg"，合批 `upsert_market_quotes`。
+  - 任何异常：记 `gtimg` 的 ETF/INDEX 双 FAILED 状态 + 返回，**绝不抛出**。
+  - 不跑 `assess` 新鲜度（实时拉取天然新鲜；避免与 em/sina 口径互相标 STALE）。
+- `collect_market` 末尾追加 `"gtimg": self.collect_realtime_gtimg(session)`（其余四类不变）。
+
+**生产注入（3 处 Collector 构造）**
+- `app/worker.py._collector()`：注入 `gtimg_client.fetch_realtime`（worker 常驻缓存，盘中 `job_collect_market` 每 180s 触发）。
+- `scripts/collect_once.py` / `scripts/run_evaluate.py`：手动脚本同样注入，保持一致。
+
+**测试（新增 `tests/test_collector_gtimg.py`，+4 例；全量 215 passed）**
+- `test_gtimg_injected_writes_snapshot`：注入 fake → collect_market 末尾写 gtimg 来源 ETF+指数 SNAPSHOT，change_percent 解析正确，ETF/指数分流正确。
+- `test_gtimg_is_latest_for_p1`：`get_latest_snapshot_change_map(ETF,['510300'])` 命中 gtimg 最新值（P1 生效前提）。
+- `test_gtimg_not_injected_skips`：默认 Collector → gtimg 跳过、零网络零写入，其余采集不受影响。
+- `test_gtimg_failure_degrades`：fake 抛异常 → gtimg 返回 FAILED、collect_market 不崩、无 gtimg 行入库。
+- 真实联网冒烟（`gtimg_client.fetch_realtime` 实测 `sh510300,sz159915,sh000300,sz399001`）：4 行有效数据，ETF/指数涨跌幅/成交额解析正确。
+
+**约束 / 后续**
+- P1 现已具备 CVM 可靠实时源（gtimg 不封 IP），盘中综合分随实时行情更新在 CVM 真正生效。
+- gtimg 快照不含换手率（normalize 置 None），不影响盘中动量修正（只用 change_percent）。
+- 仍待办：P4 盘后复盘（a-share-daily-review → post_close Opinion）、盈米 CLI 在 CVM 安装授权（P2 真实数据）、westock-data 预装/缓存（板块异动首调慢）。

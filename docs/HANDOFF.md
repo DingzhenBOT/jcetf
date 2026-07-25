@@ -24,7 +24,7 @@
 - ✅ 腾讯自选股 westock-data：`npx -y westock-data-skillhub@1.0.5`，无 key，CVM 可用 → 板块异动（`sector ranking`）。
 - ✅ 东财全球资讯 7×24：`np-weblist.eastmoney.com/comm/web/getFastNewsList`，零鉴权 → 实时新闻。
 - ✅ 盈米 yingmi：`yingmi-skill-cli mcp call SearchFunds`，需在 CVM 安装并授权 → 场外基金（未装时优雅降级）。
-- ✅ a-stock-data（腾讯财经 qt.gtimg.cn 实时行情 / 东财板块排名 / 同花顺热点）：补盘中实时数据窟窿。
+- ✅ a-stock-data 腾讯财经 `qt.gtimg.cn` 实时行情：已接入 `collect_market` 作盘中 ETF/指数 SNAPSHOT 的**附加可靠源**（不封 IP，CVM 首选），让 P1 盘中动量修正真正生效；`backend/app/data_provider/gtimg_client.py` + `collector.collect_realtime_gtimg`。
 - ✅ NeoData金融搜索：自然语言查基金/股票，鉴权缓存 12h。
 - ❌ 富途 futuapi：需本机 OpenD 桌面，CVM 无头不可用，仅本地人工分析，不进自动管线。
 接入层集中在 backend/app/services/external_data.py（所有函数对失败返回 available:false 字典，绝不抛 500）。
@@ -34,10 +34,10 @@
 - P2：场外基金页（/offexchange）+ GET /api/external/offexchange（盈米，未装 CLI 降级）。
 - P3：板块异动页（/sectors-movement）+ GET /api/external/sectors/movement（腾讯自选股）。
 - P5：首页横向滚动实时资讯条（NewsStrip）+ GET /api/external/news（东财）。
-- 测试：backend 205 passed（含 tests/test_api_external.py）；前端 pnpm build 通过。
+- 测试：backend 215 passed（含 tests/test_api_external.py、tests/test_collector_gtimg.py）；前端 pnpm build 通过。
 
 【待办 / 续作（按优先级）】
-1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。**立即跟进项**：当前 SNAPSHOT 采集源为东财(em)/sina，若 CVM 上 em 被 RST 封则盘中修正静默 no-op —— 需把 ETF/指数 SNAPSHOT 采集源切到腾讯财经 `qt.gtimg.cn`（a-stock-data，不封IP，C2 已定主源），P1 才在 CVM 真正生效。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。
+1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。~~**Task A（SNAPSHOT 切腾讯财经 qt.gtimg.cn，已落地 2026-07-25）**~~：gtimg 已注入 `collect_market` 作盘中实时快照附加源，`get_latest_snapshot_change_map` 跨源取 max(timestamp) 命中 gtimg → P1 现在 CVM 真正随实时行情更新。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。
 2. P4 盘后复盘：用 a-share-daily-review 方法论，收盘后生成复盘摘要写入 Opinion(post_close)。
 3. 盈米 CLI 在 CVM 安装+授权：解锁 P2 真实场外基金数据（目前沙箱未装，走降级提示）。
 4. 板块异动生产化：westock-data 每次 npx 现场拉包首调慢，建议 CVM 预装或加缓存。
@@ -57,7 +57,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 后端 | FastAPI + SQLite(WAL)，205 测试通过 |
+| 后端 | FastAPI + SQLite(WAL)，215 测试通过 |
 | 前端 | Vue3 + ECharts，pnpm build 通过 |
 | 数据源 | 平安已弃用；腾讯自选股 + 盈米 + 东财 + NeoData + a-stock-data |
 | 远程仓库 | github.com/DingzhenBOT/jcetf.git，main 已推送至 `101fe16` |
@@ -67,9 +67,11 @@
 
 - `backend/app/services/external_data.py` —— 外部 skill 接入层（P2/P3/P5 数据源，**降级契约**所在地）
 - `backend/app/api/routers/external.py` —— `/api/external/*` 三个端点
+- `backend/app/data_provider/gtimg_client.py` —— 腾讯财经 qt.gtimg.cn 实时行情客户端（盘中 SNAPSHOT 附加源）
+- `backend/app/collector/collector.py` —— `collect_realtime_gtimg`（collect_market 末尾触发，优雅降级）
 - `frontend/src/views/SectorMovement.vue` / `OffExchange.vue` —— 新页面
 - `frontend/src/components/sections/NewsStrip.vue` —— 首页资讯条
-- `docs/devlog.md` —— 全量开发日志（C0–C7 章节）
+- `docs/devlog.md` —— 全量开发日志（C0–C9 章节）
 - `DESIGN.md` —— 设计系统规范（9 章节）
 
 ## 四、关键约束提醒（踩坑经验）

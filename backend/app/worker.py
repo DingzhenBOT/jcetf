@@ -26,6 +26,7 @@ from app.config import get_settings
 from app.db import make_engine, session_scope
 from app.evaluation.pipeline import post_collection_evaluate
 from app.logging_conf import get_logger, setup_logging
+from app.data_provider import gtimg_client
 from scripts.db_backup import run_backup
 
 LOCK_FILE_NAME = ".etf_worker.lock"
@@ -46,7 +47,9 @@ def _collector() -> Collector:
     global _COLLECTOR
     if _COLLECTOR is None:
         s = get_settings()
-        _COLLECTOR = Collector(build_provider(s), s)
+        # gtimg 为 CVM 不封 IP 的可靠实时源（C2），注入为附加实时快照采集器；
+        # 仅在 collect_market 末尾触发，失败静默降级，不影响 em/sina 主采集。
+        _COLLECTOR = Collector(build_provider(s), s, gtimg_fetcher=gtimg_client.fetch_realtime)
     return _COLLECTOR
 
 
