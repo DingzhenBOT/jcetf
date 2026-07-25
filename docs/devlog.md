@@ -1269,3 +1269,12 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - 后端：227 测试全过（+3：adapter 2 例 BK→名称解析与日期裁剪、collector 1 例场外排除）；`_filter_kwargs` 对旧版 akshare 多余参数的 `TypeError` 容错。
 - CVM 预期：重跑 `collect_once --backfill` 后 sector 历史/资金流的两类 `KeyError`/`TypeError` 消失；东财可达则板块数据真正入库，否则继续 D4 降级（错误变为干净的 ConnectionError/DataSourceError 而非参数异常）。ETF 由 `ok:17/failed:2` → `ok:17/failed:0`（2 个场外被排除，不再计入失败）。
 - 盈米 CLI 仍 pending：场外基金真实数据需用户在 CVM 装 `yingmi-skill-cli` 并完成手机号+短信授权（agent 无法代填）。
+
+**CVM 验证（2026-07-26，用户 CVM 实跑 `collect_once --backfill`）**
+- ETF：`ok:16 / failed:0`。seed 现为 **16 场内 + 3 场外**（110020/000008/110003）；场内全部成功，3 个场外被 `_is_on_exchange` 干净排除（不再计 failed，旧版会 `sina returned empty` 计 failed）。早前 `ok:17/failed:2` 是不同 seed 状态（当时 17 场内 + 2 场外）；增量回填也会跳过已齐标的，计数随 DB 状态浮动，非回归。
+- 板块历史 / 资金流：仍 `ok:0 / failed:10`（各 10）。**参数类报错已彻底消失**（`KeyError:'daily'`、`TypeError:'period'` 不再出现）；现仅剩环境性降级：
+  - `sector_history: ... ths returned empty`（ths 在腾讯云返回空）；
+  - `sector_fund_flow_history: no applicable source for BK ...`（em 被 RST 拦截 → 东财板块名映射加载失败 → 跳过 em 源，干净降级）。
+  - 此即设计文档的 D4 降级：腾讯云东财被墙、ths 无历史，板块趋势/资金流在该环境本就取不到，引擎按 sector_trend/fund_flow=None 重归一化、降置信，不崩溃。
+- 小提示：医药(BK0465)/消费(BK0438) 本无 THS 聚合板（`_bk_to_ths` 应为 None），却也报 `ths returned empty`，疑似 CVM 适配器略旧（`_BK_TO_THS` 仍映射了 THS 名）。建议 CVM `git pull` 后重跑确认；不影响板块在该环境最终结果（仍 D4 降级）。
+- 结论：C13 代码修复目标达成（消除 akshare 版本不兼容参数异常 + 场外排除）；板块数据能否在腾讯云落地取决于 em 是否可达（需代理/换源），属基础设施决策，非本修复范围。
