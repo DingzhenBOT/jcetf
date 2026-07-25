@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "A股板块资金监控与 ETF 辅助分析 — Vue 前端（P5）",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
