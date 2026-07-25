@@ -32,8 +32,10 @@ python3.11 -m venv venv
 
 # 3) 前端构建（产出 frontend/dist，由 nginx 托管）
 cd /workspace/frontend
-npm install
-npm run build      # 输出到 /workspace/frontend/dist
+# ⚠️ 必须用 pnpm 9.x：仓库已标准化 pnpm-lock.yaml；pnpm@latest(v10) 需 Node≥22.13+node:sqlite，
+#    在 Node 20 上直接崩（ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite）。先装：sudo npm i -g pnpm@9
+pnpm install
+pnpm build        # 输出到 /workspace/frontend/dist
 ```
 
 ## 2. 运行配置
@@ -171,8 +173,8 @@ cd /workspace
 git pull origin main
 # 后端依赖如有变更：
 cd backend && ./venv/bin/python -m pip install -r requirements.txt && cd ..
-# 前端如有变更：
-cd frontend && npm install && npm run build && cd ..
+# 前端如有变更（务必 pnpm 9.x，勿用 npm / pnpm@latest）：
+cd frontend && pnpm install && pnpm build && cd ..
 # 重启服务
 sudo systemctl restart etf-api etf-worker
 # nginx 配置如有变更：sudo nginx -t && sudo systemctl reload nginx
