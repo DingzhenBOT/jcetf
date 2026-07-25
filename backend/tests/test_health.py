@@ -11,9 +11,14 @@ from app.db import init_db, make_engine
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _init_real_db():
+def _init_real_db(tmp_path_factory):
     # /ready 现在依赖 DB 存在；P1 的交付物之一就是把库建出来（init_db 幂等）。
+    # 路径隔离到临时目录：避免依赖真实 data/ 的写权限（CVM 上 ubuntu 用户可能无权写 data/logs/app.log）。
     s = get_settings(force_reload=True)
+    _tmp = tmp_path_factory.mktemp("health_test")
+    s.paths.sqlite_path_abs = _tmp / "etf_monitor.db"
+    s.paths.backup_dir_abs = _tmp / "backups"
+    s.paths.log_dir_abs = _tmp / "logs"
     s.ensure_dirs()
     eng = make_engine(s)
     init_db(eng, s)
