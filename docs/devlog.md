@@ -1003,7 +1003,7 @@ cd /workspace/backend && ./venv/bin/python -m scripts.collect_once --intraday
 
 | 阶段 | 内容 | 依赖 | 状态 |
 |---|---|---|---|
-| **P1 算法重写（盘中信号更新）** | 盘中摄入腾讯财经实时报价；参考 monitoring-alert R1/R2 + ashare-short-term 节点时刻重排 intraday 评估到 09:45/10:30/13:30/14:30/14:55；铸造新 strategy_version；重算 Signal 综合分/置信度/仓位 | 设计评审（影响历史 Signal） | ⏳ 待办 |
+| **P1 算法重写（盘中信号更新）** | 盘中摄入实时报价（ETF SNAPSHOT.change_percent）作为**盘中动量加性修正**纳入综合分，使分数随行情移动；铸造新 strategy_version(v2.2)；详见 C8 | SNAPSHOT 采集可用（建议快照源切腾讯财经 qt.gtimg.cn，见 C8 约束） | ✅ 已完成 |
 | **P2 场外 ETF 板块** | 新增 `GET /api/external/offexchange`（盈米 `yingmi-skill-cli` SearchFunds）+ 前端独立页面；未装 CLI 时优雅降级 | 盈米 CLI（CVM 安装+授权） | ✅ 已完成 |
 | **P3 板块异动** | 腾讯自选股 `westock-data sector ranking` → 行业/概念涨幅 + 资金流入端点 + 前端页面 | 无（npx 直跑） | ✅ 已完成 |
 | **P4 盘后复盘** | a-share-daily-review 方法论 → 收盘后生成复盘摘要写入 `Opinion(post_close)` | 无 | ⏳ 待办 |
@@ -1073,3 +1073,32 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 **已知约束**
 - 盈米 CLI（`yingmi-skill-cli`）在本沙箱**未安装** → 场外基金页当前走降级提示；需在 CVM 安装并授权后才有真实数据。
 - 板块异动依赖 `npx westock-data`（每次调用现场拉包，首调较慢；生产建议预装或缓存）。
+
+### C8. 本次交付（P1：盘中综合分随实时行情更新，2026-07-25）
+
+> 根因（C1 已确认）：`evaluate_etf` 只读每日收盘 BAR，从不读实时 SNAPSHOT → 盘中综合分恒定。修复：把 ETF 最新 SNAPSHOT 的 `change_percent` 作为**盘中动量加性修正**纳入综合分。
+
+**后端改动（`app/strategy_engine/engine.py`）**
+- 新增模块级纯函数 `intraday_momentum_adjustment(change_pct, daily_vol_pct)`：将当日涨跌幅归一到「日波动率 z 值」(change/vol)，映射为 `clamp(z*12, -18, +18)` 的综合分加性修正；vol 缺失/过小(<0.1%) 回退 1.5%。
+- 新增 `_daily_vol_pct(df)`（ETF 日收益 std，作尺度）与 `_bar_daily_return(df, as_of)`（当日 BAR 收益率，SNAPSHOT 缺失时回退）。
+- `evaluate_etf` 在合成 `comp` 后：
+  - **仅当日实时路径**（`as_of >= date.today()`）生效：取 `get_latest_snapshot_change_map(ETF, [code])` 的 `change_percent`；SNAPSHOT 缺失则回退当日 BAR 收益率。
+  - **历史回填路径**（`as_of < 今日`）不改分 —— 避免与 `mom_5/mom_20/rs_20d` 中已内含的当日收益**双重计入**，且保证既有 past-`as_of` 测试不受影响。
+  - `composite_final = clamp(comp + intraday_adj, 0, 100)`，传入 `decide_tier`（含 vp_downgraded 基准重算）；`score` 返回 `composite_final`。
+  - 记入 `supporting_metrics.intraday_change_percent / intraday_adjust / daily_vol_pct`，并触发 `intraday_momentum_up/down`（change≠0 时）。
+  - 设计为 **additive**（与方案B 量价增强一致）：不动 `compute_composite` 权重与缺失/置信逻辑，风险最低。
+
+**策略版本（预期内铸造新版本）**
+- `app/strategy_engine/rules.py` 的 `RULES_V1` 新增 `intraday_momentum` 段，版本 `2.1 → 2.2`。`mint_strategy_version` 据此产生新 hash → 新 `strategy_version` 行；旧版本（v2.1 及以前）保留不可改写，历史 Signal 不受影响（符合 DESIGN §9.3 写保护）。灰度上线：新 Signal 自然用新版本；如需回滚只需停发新评估。
+
+**测试（`tests/test_strategy_engine.py`，+6 例，全量 211 passed）**
+- 单元：`intraday_momentum_adjustment` 的 None/缩放(+1 vol→+12)/封顶(±18)/vol 回退。
+- 集成（monkeypatch 市场环境/板块/资金/风险为 OBSERVE 基准 65）：
+  - 当日实时路径：seed SNAPSHOT change=+5% → `intraday_change_percent==5`、`intraday_adjust>0`、`intraday_momentum_up` 入 triggered、`score>65`。
+  - 历史回填路径（as_of=今日-10，即使有当日快照）：`intraday_change_percent is None`、`intraday_adjust is None`、无 `intraday_momentum_up`、`score==65`（与纯 BAR 合成一致）。
+
+**约束 / 立即跟进项（重要）**
+- P1 的实时修正**依赖 SNAPSHOT 被采集**。当前 `job_collect_market` 快照源为 东财(em)/sina；C0 曾记录 em 在 CVM 可能被 RST 封 → 快照缺失时盘中修正静默 no-op。
+  **建议立即跟进**：把 ETF/指数 SNAPSHOT 采集源切到 **腾讯财经 `qt.gtimg.cn`**（a-stock-data，不封 IP，C2 已定为主源），保证 CVM 上 P1 真正生效。这是独立的 data-provider 改动，不在本次评分重构内。
+- `job_intraday_evaluate`（10/11/13/14 点）已重算 Signal；现在因摄入实时 SNAPSHOT，这些整点重评估的综合分将真正随盘中行情漂移（之前输入不变故恒定）。若想更细粒度，可参考 ashare-short-term-trading 把评估重排到 09:45/10:30/13:30/14:30/14:55（C3 原设想，可选增强）。
+- 前端无需改动：已每 30s 轮询 `/api/signals/latest`，`score` 现在盘中会变；`supporting_metrics` 已含盘中修正字段，ETF 详情页可后续展示"盘中动量贡献"。

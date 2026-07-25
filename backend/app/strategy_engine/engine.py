@@ -99,6 +99,63 @@ def compute_composite(
     }
 
 
+# 盘中动量加性修正（P1 修复核心：让综合分随实时行情移动）
+INTRADAY_ADJ_MAX = 18.0          # 综合分加性修正上下限
+INTRADAY_ADJ_PER_VOL = 12.0     # 每单位日波动率 -> 综合分修正
+INTRADAY_VOL_FLOOR = 0.1        # 日波动率下限（%），低于则回退
+INTRADAY_VOL_FALLBACK = 1.5      # 无波动率估计时回退的日波动率（%）
+
+
+def intraday_momentum_adjustment(
+    change_pct: Optional[float],
+    daily_vol_pct: Optional[float],
+) -> Optional[float]:
+    """盘中动量加性修正（P1 修复核心：让综合分随实时行情移动）。
+
+    change_pct：ETF 当日涨跌幅（%）。None 表示无数据（盘前/非交易时段/历史回填）-> 返回 None（不加修正）。
+    daily_vol_pct：近窗口日收益率标准差（%），作归一化尺度；过小或缺失回退 INTRADAY_VOL_FALLBACK。
+    将 change_pct 归一到「日波动率 z 值」(change/vol)，再映射到 [-INTRADAY_ADJ_MAX, +INTRADAY_ADJ_MAX]。
+
+    设计为 additive（与方案B 量价增强一致）：不改变 composite 权重与缺失/置信逻辑，仅平移综合分，
+    使档位在盘中随行情上浮/下调。
+    """
+    if change_pct is None:
+        return None
+    vol = daily_vol_pct if (daily_vol_pct is not None and daily_vol_pct > INTRADAY_VOL_FLOOR) else INTRADAY_VOL_FALLBACK
+    z = change_pct / vol
+    return max(-INTRADAY_ADJ_MAX, min(INTRADAY_ADJ_MAX, z * INTRADAY_ADJ_PER_VOL))
+
+
+def _daily_vol_pct(df: pd.DataFrame) -> Optional[float]:
+    """ETF 日线收盘价收益率标准差（%），作盘中动量修正的尺度。样本不足返回 None。"""
+    if df is None or len(df) < 3 or "close" not in df:
+        return None
+    rets = df["close"].astype("float64").pct_change().dropna()
+    if len(rets) == 0:
+        return None
+    return float(rets.std() * 100.0)
+
+
+def _bar_daily_return(df: pd.DataFrame, as_of: date) -> Optional[float]:
+    """as_of 当日 BAR 收盘相对前一交易日的收益率（%），用于实时快照缺失时的回退。
+
+    找不到 as_of 行或前一行时返回 None。仅作为「当日实时」路径的兜底（as_of==今日但 SNAPSHOT 尚未采集）。
+    """
+    if df is None or len(df) == 0 or "trading_date" not in df or "close" not in df:
+        return None
+    sub = df[df["trading_date"] == as_of]
+    if len(sub) == 0:
+        return None
+    idx = int(df.index.get_loc(sub.index[0]))
+    if idx == 0:
+        return None
+    prev = float(df["close"].iloc[idx - 1])
+    cur = float(df["close"].iloc[idx])
+    if prev <= 0:
+        return None
+    return (cur / prev - 1) * 100.0
+
+
 def _vp_bearish(vp: Optional[Dict[str, Any]]) -> bool:
     """看空量价形态（方案B+ 降档用，确定性）。
 
@@ -356,6 +413,19 @@ class StrategyEngine:
         }
         comp = compute_composite(scores, self.settings.strategy.composite_weights)
 
+        # 6.5) 盘中动量修正（P1）：让综合分随实时行情移动
+        # 仅「当日实时」路径生效（as_of==今日 且存在 SNAPSHOT）；历史回填不改分（避免与 mom/rs 双重计入）。
+        composite_final = comp["composite"]
+        intraday_change = None
+        if as_of >= date.today():
+            snap = quote_repo.get_latest_snapshot_change_map(session, "ETF", [mapping.etf_code])
+            live_cp = snap.get(mapping.etf_code)
+            intraday_change = live_cp if live_cp is not None else _bar_daily_return(etf_df, as_of)
+        daily_vol = _daily_vol_pct(etf_df)
+        intraday_adj = intraday_momentum_adjustment(intraday_change, daily_vol)
+        if composite_final is not None and intraday_adj is not None:
+            composite_final = max(0.0, min(100.0, composite_final + intraday_adj))
+
         # 7) 风险
         drawdown_pct = None
         if len(etf_df) > 0 and etf_df["close"].notna().any():
@@ -383,7 +453,7 @@ class StrategyEngine:
 
         # 8) 档位
         tier = decide_tier(
-            comp["composite"],
+            composite_final,
             regime,
             risk,
             fund_flow if fund_flow and fund_flow.get("available") else None,
@@ -395,7 +465,7 @@ class StrategyEngine:
         vp_downgraded = False
         if vp and _vp_bearish(vp):
             tier_base = decide_tier(
-                comp["composite"], regime, risk,
+                composite_final, regime, risk,
                 fund_flow if fund_flow and fund_flow.get("available") else None,
                 {"score": etf_rs_score} if etf_rs_score is not None else None,
                 self.settings.strategy.thresholds, None,
@@ -413,6 +483,10 @@ class StrategyEngine:
             "fund_flow_score": fund_flow["score"] if fund_flow and fund_flow.get("available") else None,
             "advance_ratio": advance_ratio,
             "market_regime": regime,
+            # P1 盘中动量修正（随实时行情变化）
+            "intraday_change_percent": intraday_change,
+            "intraday_adjust": intraday_adj,
+            "daily_vol_pct": daily_vol,
             # 方案B：量价关系技术分析
             "vp_state": vp.get("vp_state"),
             "vp_state_text": vp.get("vp_state_text"),
@@ -444,6 +518,9 @@ class StrategyEngine:
             triggered.append("etf_rs_available")
         else:
             failed.append("etf_rs_missing")
+        # P1 盘中动量修正触发规则（change 不为 0 时才记，避免噪音）
+        if intraday_adj is not None and intraday_adj != 0:
+            triggered.append("intraday_momentum_up" if intraday_adj > 0 else "intraday_momentum_down")
         # 方案B：量价形态作为 additive 触发规则（不改变评分权重）
         for p in vp.get("vp_patterns", []) or []:
             triggered.append("vp_" + p)
@@ -467,7 +544,7 @@ class StrategyEngine:
 
         return {
             "signal_type": tier,
-            "score": comp["composite"],
+            "score": composite_final,
             "confidence": comp["confidence"],
             "market_regime": regime,
             "triggered_rules": triggered,

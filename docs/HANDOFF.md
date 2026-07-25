@@ -37,7 +37,7 @@
 - 测试：backend 205 passed（含 tests/test_api_external.py）；前端 pnpm build 通过。
 
 【待办 / 续作（按优先级）】
-1. P1 算法重写（最高优先，核心痛点）：evaluate_etf 只读每日收盘 BAR，从不读实时 SNAPSHOT → 盘中综合分/意见"不变"。需让策略盘中摄入腾讯财经实时报价，重排 intraday 评估到 09:45/10:30/13:30/14:30/14:55（参考 monitoring-alert R1/R2 + ashare-short-term-trading 节点时刻），并铸造新 strategy_version（会重塑历史 Signal，先确认 strategy_hash 口径再灰度）。
+1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。**立即跟进项**：当前 SNAPSHOT 采集源为东财(em)/sina，若 CVM 上 em 被 RST 封则盘中修正静默 no-op —— 需把 ETF/指数 SNAPSHOT 采集源切到腾讯财经 `qt.gtimg.cn`（a-stock-data，不封IP，C2 已定主源），P1 才在 CVM 真正生效。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。
 2. P4 盘后复盘：用 a-share-daily-review 方法论，收盘后生成复盘摘要写入 Opinion(post_close)。
 3. 盈米 CLI 在 CVM 安装+授权：解锁 P2 真实场外基金数据（目前沙箱未装，走降级提示）。
 4. 板块异动生产化：westock-data 每次 npx 现场拉包首调慢，建议 CVM 预装或加缓存。

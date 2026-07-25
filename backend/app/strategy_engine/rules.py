@@ -15,8 +15,8 @@ from __future__ import annotations
 from typing import Dict
 
 RULES_V1: Dict = {
-    "version": "2.1",
-    "description": "DESIGN §9 五类评分确定性规则 + 方案B 量价关系技术分析（扩展 v2.0）+ 方案B+ 量价看空降档（v2.1）",
+    "version": "2.2",
+    "description": "DESIGN §9 五类评分确定性规则 + 方案B 量价关系技术分析（扩展 v2.0）+ 方案B+ 量价看空降档（v2.1）+ P1 盘中动量修正（intraday_momentum，v2.2）",
     "market_score": {
         "index_above_ma20_and_rising": "宽基指数站上 MA20 且上行 -> 加分",
         "advance_ratio": {"add_above": 0.60, "subtract_below": 0.40, "neutral_band": [0.45, 0.55]},
@@ -89,5 +89,13 @@ RULES_V1: Dict = {
         "tier_enhance": "strong_breakout(breakout_volume|segment_up) 且 etf_rs>=60 且 非降级 -> OBSERVE→SMALL_POSITION / SMALL_POSITION→OPPORTUNITY_ENHANCE",
         "tier_downgrade": "看空量价形态驱动下调一档（与 tier_enhance 互斥，看空优先）：divergence 或 (anomaly 且下跌方向) 或 VOL_UP_FALL -> OBSERVE→NO_PARTICIPATE / SMALL_POSITION→OBSERVE / OPPORTUNITY_ENHANCE→SMALL_POSITION；已在 NO_PARTICIPATE 不降。",
         "strength_score": "量价配合 + 趋势位置(MA20) + 形态，基准50，clamp[0,100]",
+    },
+    "intraday_momentum": {
+        "description": "P1 修复核心：让综合分随盘中实时行情移动（此前只读收盘 BAR 导致盘中综合分恒定）。additive 修正，不改 composite 权重。",
+        "scope": "仅当日实时评估（as_of==今日 且存在 ETF SNAPSHOT）生效；历史回填不修正（避免与 mom/rs 双重计入）",
+        "input": "ETF 最新 SNAPSHOT.change_percent（盘中当日涨幅）；SNAPSHOT 缺失时回退当日 BAR 收盘收益率",
+        "normalization": "日波动率 z = change_percent / daily_vol_pct（daily_vol_pct=近窗口日收益 std，过小(<0.1%)回退 1.5%）",
+        "adjustment": "intraday_adjust = clamp(z * 12, -18, +18)；+1 日波动率 -> +12 分，封顶 ±18",
+        "effect": "平移综合分到 decide_tier，使盘中档位随行情上浮/下调；记入 supporting_metrics(intraday_change_percent/intraday_adjust/daily_vol_pct) 与 triggered_rules(intraday_momentum_up/down)",
     },
 }

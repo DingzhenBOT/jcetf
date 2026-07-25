@@ -4,7 +4,7 @@
 - decide_tier：强制分数验证档位映射与降级/否决优先级。
 - evaluate_etf：空库集成，返回合法 Signal 形态字典（不抛）。
 """
-from datetime import date
+from datetime import date, timedelta
 
 from app.risk_engine.engine import RiskEngine
 from app.strategy_engine.engine import (
@@ -12,6 +12,7 @@ from app.strategy_engine.engine import (
     StrategyEngine,
     compute_composite,
     decide_tier,
+    intraday_momentum_adjustment,
 )
 
 W = {"market": 0.25, "sector_trend": 0.25, "fund_flow": 0.25, "etf_rs": 0.25}
@@ -250,3 +251,152 @@ def test_evaluate_etf_marks_vp_downgrade(monkeypatch, tmp_path):
     assert res["signal_type"] == "NO_PARTICIPATE"  # OBSERVE 被看空降档
     assert "vp_downgrade" in res["triggered_rules"]
     assert "vp_divergence" in res["triggered_rules"]
+
+
+# ---- P1：盘中动量修正（让综合分随实时行情移动） ----
+def test_intraday_momentum_adjustment_none():
+    assert intraday_momentum_adjustment(None, 1.5) is None
+
+
+def test_intraday_momentum_adjustment_scaling():
+    # z = change/vol：+1 日波动率 -> +12 分；-1 日波动率 -> -12 分
+    assert abs(intraday_momentum_adjustment(1.5, 1.5) - 12.0) < 1e-9
+    assert abs(intraday_momentum_adjustment(-1.5, 1.5) - (-12.0)) < 1e-9
+
+
+def test_intraday_momentum_adjustment_clamp():
+    # 远超上限 -> 封顶 ±18
+    assert intraday_momentum_adjustment(10.0, 1.5) == 18.0
+    assert intraday_momentum_adjustment(-10.0, 1.5) == -18.0
+
+
+def test_intraday_momentum_adjustment_vol_fallback():
+    # 波动率缺失/过小 -> 回退 1.5%
+    assert abs(intraday_momentum_adjustment(1.5, None) - 12.0) < 1e-9
+    assert abs(intraday_momentum_adjustment(1.5, 0.05) - 12.0) < 1e-9
+
+
+def _build_patched_engine(s, monkeypatch):
+    """复用方案B+ 测试的打桩：市场环境/板块/资金/风险固定为 OBSERVE 基准（65），仅量价被 mock。"""
+    engine = StrategyEngine(s)
+    monkeypatch.setattr(engine, "_evaluate_market", lambda *a, **k: (65, "VOLATILE", 0.5, True, True))
+    monkeypatch.setattr(engine.sector, "evaluate_sector_trend",
+                        lambda *a, **k: {"available": True, "score": 65, "risk_overheat": False})
+    monkeypatch.setattr(engine.sector, "evaluate_fund_flow",
+                        lambda *a, **k: {"available": True, "score": 65, "consecutive_positive_days": 3})
+    monkeypatch.setattr(engine.risk, "evaluate",
+                        lambda *a, **k: {"veto": False, "downgrade": False, "high_vol": False,
+                                         "chase_high": False, "reasons": [], "flags": {}})
+    return engine
+
+
+class _FakeTodayDate(date):
+    @staticmethod
+    def today():
+        return _FakeTodayDate._TODAY
+
+
+def test_evaluate_etf_applies_intraday_momentum_live(tmp_path, monkeypatch):
+    """P1：当日实时路径下，SNAPSHOT.change_percent 应作为盘中动量修正上修综合分。"""
+    from datetime import datetime as _dt
+
+    from app.config import get_settings
+    from app.db import init_db, make_engine, session_scope
+    from app.db.models.market import MarketQuote
+    from app.strategy_engine import engine as eng_mod
+
+    D = date(2026, 7, 25)
+    _FakeTodayDate._TODAY = D
+    monkeypatch.setattr(eng_mod, "date", _FakeTodayDate)
+
+    s = get_settings(force_reload=True)
+    s.paths.sqlite_path_abs = tmp_path / "etf_monitor.db"
+    s.paths.backup_dir_abs = tmp_path / "backups"
+    s.paths.log_dir_abs = tmp_path / "logs"
+    eng = make_engine(s)
+    init_db(eng, s)
+    with session_scope(eng) as session:
+        # ETF BAR 历史（≥3 行供日波动率估计）
+        for i, c in enumerate([4.0, 4.02, 3.98, 4.05]):
+            td = D - timedelta(days=4 - i)
+            session.add(MarketQuote(
+                data_source="em", symbol_type="ETF", symbol="510300", data_kind="BAR",
+                timeframe="1d", trading_date=td, timestamp=_dt(td.year, td.month, td.day, 7, 0, 0),
+                open=c, high=c, low=c, close=c, previous_close=c,
+                volume=1e6, amount=4e6, collected_at=_dt(td.year, td.month, td.day, 7, 0, 0),
+            ))
+        # 当日实时快照：涨 5%
+        session.add(MarketQuote(
+            data_source="em", symbol_type="ETF", symbol="510300", data_kind="SNAPSHOT",
+            timeframe="snapshot", trading_date=D, timestamp=_dt(D.year, D.month, D.day, 10, 30, 0),
+            open=4.0, high=4.2, low=3.9, close=4.2, previous_close=4.0,
+            change_percent=5.0, volume=1e6, amount=4e6, collected_at=_dt(D.year, D.month, D.day, 10, 30, 0),
+        ))
+
+    class FakeMapping:
+        etf_code = "510300"
+        related_index_code = "000300"
+        related_sector_codes = ["BK0465"]
+
+    engine = _build_patched_engine(s, monkeypatch)
+    with session_scope(eng) as session:
+        res = engine.evaluate_etf(session, FakeMapping(), "v2.2.0-test", D)
+
+    # 纯 BAR 合成应为 65（市场/板块/资金=65，etf_rs 缺失重归一化），盘中动量 +5% 应上修
+    assert res["supporting_metrics"]["intraday_change_percent"] == 5.0
+    assert res["supporting_metrics"]["intraday_adjust"] is not None and res["supporting_metrics"]["intraday_adjust"] > 0
+    assert "intraday_momentum_up" in res["triggered_rules"]
+    assert res["score"] is not None and res["score"] > 65
+
+
+def test_evaluate_etf_no_intraday_on_historical_backfill(tmp_path, monkeypatch):
+    """P1：历史回填（as_of<今日）不改综合分，避免与 mom/rs 双重计入，且不影响既有测试。"""
+    from datetime import datetime as _dt
+
+    from app.config import get_settings
+    from app.db import init_db, make_engine, session_scope
+    from app.db.models.market import MarketQuote
+    from app.strategy_engine import engine as eng_mod
+
+    D = date(2026, 7, 25)
+    _FakeTodayDate._TODAY = D
+    monkeypatch.setattr(eng_mod, "date", _FakeTodayDate)
+
+    s = get_settings(force_reload=True)
+    s.paths.sqlite_path_abs = tmp_path / "etf_monitor.db"
+    s.paths.backup_dir_abs = tmp_path / "backups"
+    s.paths.log_dir_abs = tmp_path / "logs"
+    eng = make_engine(s)
+    init_db(eng, s)
+    with session_scope(eng) as session:
+        for i, c in enumerate([4.0, 4.02, 3.98, 4.05]):
+            td = D - timedelta(days=4 - i)
+            session.add(MarketQuote(
+                data_source="em", symbol_type="ETF", symbol="510300", data_kind="BAR",
+                timeframe="1d", trading_date=td, timestamp=_dt(td.year, td.month, td.day, 7, 0, 0),
+                open=c, high=c, low=c, close=c, previous_close=c,
+                volume=1e6, amount=4e6, collected_at=_dt(td.year, td.month, td.day, 7, 0, 0),
+            ))
+        # 即使存在当日快照，历史回填也应忽略
+        session.add(MarketQuote(
+            data_source="em", symbol_type="ETF", symbol="510300", data_kind="SNAPSHOT",
+            timeframe="snapshot", trading_date=D, timestamp=_dt(D.year, D.month, D.day, 10, 30, 0),
+            open=4.0, high=4.2, low=3.9, close=4.2, previous_close=4.0,
+            change_percent=5.0, volume=1e6, amount=4e6, collected_at=_dt(D.year, D.month, D.day, 10, 30, 0),
+        ))
+
+    class FakeMapping:
+        etf_code = "510300"
+        related_index_code = "000300"
+        related_sector_codes = ["BK0465"]
+
+    engine = _build_patched_engine(s, monkeypatch)
+    with session_scope(eng) as session:
+        # as_of 为过去日期（D-10），走历史回填路径
+        res = engine.evaluate_etf(session, FakeMapping(), "v2.2.0-test", D - timedelta(days=10))
+
+    assert res["supporting_metrics"]["intraday_change_percent"] is None
+    assert res["supporting_metrics"]["intraday_adjust"] is None
+    assert "intraday_momentum_up" not in res["triggered_rules"]
+    # 综合分应等于纯 BAR 合成的 65（无盘中修正）
+    assert res["score"] is not None and abs(res["score"] - 65.0) < 1e-9
