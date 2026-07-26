@@ -57,6 +57,50 @@ def test_get_bar_history_and_max_timestamp(tmp_path):
         assert latest.close == 4.0
 
 
+def test_get_bar_history_dedupes_by_source_priority(tmp_path):
+    """C14 后数据源由 em 切到 sina；DB 中可能同时存在 em/sina 的同交易日 BAR。
+
+    get_bar_history / get_max_bar_timestamp / get_latest_quote 都应按
+    sina > ths > tx > em 优先级去重，避免 K 线重影 / 最新价跳源。
+    """
+    s, eng = _setup(tmp_path)
+    d = date(2024, 1, 2)
+    rows = [
+        dict(_bar_dict("ETF", "510300", d, 3.8, source="em"), close=3.8),
+        dict(_bar_dict("ETF", "510300", d, 3.9, source="sina"), close=3.9),
+    ]
+    with session_scope(eng) as session:
+        quote_repo.upsert_market_quotes(session, rows)
+
+        bars = quote_repo.get_bar_history(session, "ETF", "510300", date(2024, 1, 1), date(2024, 1, 31))
+        assert len(bars) == 1, "同一交易日多源应只返回一条"
+        assert bars[0].data_source == "sina"
+        assert bars[0].close == 3.9
+
+        mx = quote_repo.get_max_bar_timestamp(session, "ETF", "510300")
+        assert mx.date() == d
+
+        latest = quote_repo.get_latest_quote(session, "ETF", "510300", data_kind="BAR", timeframe="1d")
+        assert latest is not None
+        assert latest.data_source == "sina"
+        assert latest.close == 3.9
+
+
+def test_get_bar_history_dedupes_ths_over_em(tmp_path):
+    """验证 ths 优先级高于 em（sina 缺失时的 fallback 场景）。"""
+    s, eng = _setup(tmp_path)
+    d = date(2024, 1, 2)
+    rows = [
+        dict(_bar_dict("ETF", "510300", d, 3.8, source="em"), close=3.8),
+        dict(_bar_dict("ETF", "510300", d, 3.85, source="ths"), close=3.85),
+    ]
+    with session_scope(eng) as session:
+        quote_repo.upsert_market_quotes(session, rows)
+        bars = quote_repo.get_bar_history(session, "ETF", "510300", date(2024, 1, 1), date(2024, 1, 31))
+        assert len(bars) == 1
+        assert bars[0].data_source == "ths"
+
+
 def test_get_bar_history_date_filter(tmp_path):
     s, eng = _setup(tmp_path)
     rows = [
