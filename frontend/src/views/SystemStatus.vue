@@ -4,7 +4,7 @@ import Card from '@/components/ui/Card.vue'
 import StatePanel from '@/components/ui/StatePanel.vue'
 import Badge from '@/components/ui/Badge.vue'
 import { getEtfs } from '@/api/endpoints'
-import { marketState } from '@/stores/market'
+import { marketState, POLL_INTERVAL_MS } from '@/stores/market'
 import { riskLevelBadge } from '@/lib/tier'
 import { toBeijing, toRelative, daysSinceBeijingDate } from '@/lib/time'
 
@@ -57,6 +57,12 @@ const freshnessText = computed(() => {
   if (d === 1) return '昨日'
   return `${d} 天前`
 })
+const pollIntervalText = computed(() => {
+  const s = Math.round(POLL_INTERVAL_MS / 1000)
+  if (s < 60) return `${s} 秒`
+  const m = s / 60
+  return `${Number.isInteger(m) ? m : m.toFixed(1)} 分钟`
+})
 </script>
 
 <template>
@@ -84,7 +90,7 @@ const freshnessText = computed(() => {
             </span>
           </div>
           <p class="text-xs text-slate-400 mt-2">最后成功刷新：{{ toRelative(marketState.lastUpdated) }}</p>
-          <p class="text-xs text-slate-400">轮询间隔：30 秒</p>
+          <p class="text-xs text-slate-400">轮询间隔：{{ pollIntervalText }}</p>
         </Card>
 
         <Card title="数据新鲜度">

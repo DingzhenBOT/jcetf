@@ -4,6 +4,8 @@
 """
 from datetime import date
 
+from app.main import app
+
 
 def test_signals_latest_per_etf_one_row(api_client):
     r = api_client.get("/api/signals/latest")
@@ -51,8 +53,8 @@ def test_signals_history_pagination_and_filter(api_client):
     r2 = api_client.get("/api/signals/history?etf_code=510500")
     assert r2.json()["total"] == 1
 
-    # trading_date 过滤
-    r3 = api_client.get("/api/signals/history?trading_date=2025-07-18")
+    # trading_date 过滤（信号播种在近期基准日，过滤该日应命中全部 3 条）
+    r3 = api_client.get(f"/api/signals/history?trading_date={date.today().isoformat()}")
     assert r3.json()["total"] == 3
     # 非法日期 -> 422
     r4 = api_client.get("/api/signals/history?trading_date=2025-13-99")
@@ -72,3 +74,52 @@ def test_signals_history_degraded_data_ok(api_client):
     item = r.json()["items"][0]
     assert item["confidence"] == 55
     assert "broad_index_missing" in item["failed_rules"]
+
+
+def test_stale_signal_excluded_from_latest_but_kept_in_history(api_client):
+    # 用户诉求：最新信号超过两天应清除（不作为当前信号），但历史记录保留。
+    # 给 510300 插一条 >2 天的过期信号，验证：最新信号不含它，历史仍保留。
+    from app.api.deps import get_db
+    from app.db.models.signal_opinion import Signal
+    from datetime import datetime, timedelta
+
+    override = app.dependency_overrides[get_db]
+    gen = override()
+    session = next(gen)
+    try:
+        session.add(
+            Signal(
+                signal_id="sig-stale-510300",
+                strategy_version="v1.0.0-test",
+                generated_at=datetime.utcnow() - timedelta(days=10),
+                trading_date=date.today() - timedelta(days=10),
+                target_etf="510300",
+                signal_type="OBSERVE",
+                score=70,
+                confidence=80,
+                market_regime="VOLATILE",
+                suggested_action="OBSERVE",
+                suggested_position_range=[0, 10],
+                supporting_metrics={},
+                risk_flags={},
+                triggered_rules=[],
+                failed_rules=[],
+                invalidation_conditions={},
+                review_time=datetime.utcnow(),
+            )
+        )
+        session.commit()
+    finally:
+        try:
+            next(gen)
+        except StopIteration:
+            pass
+
+    # 最新信号：510300 仍取今日 MARKET_RISK_HIGH（过期 OBSERVE 被时效过滤排除，不顶替）
+    r = api_client.get("/api/signals/latest")
+    s300 = next(s for s in r.json() if s["target_etf"] == "510300")
+    assert s300["signal_type"] == "MARKET_RISK_HIGH"
+
+    # 历史：过期信号仍保留（共 3 条：今日 MRH + 今日 OBSERVE + 过期 OBSERVE）
+    rh = api_client.get("/api/signals/history?etf_code=510300")
+    assert rh.json()["total"] == 3

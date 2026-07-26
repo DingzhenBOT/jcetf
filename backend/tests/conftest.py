@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -59,11 +59,15 @@ def _seed(tmp_path, with_breadth: bool = True, with_etf_quote: bool = False):
             valid_from=date(2000, 1, 1), valid_to=None, notes="t",
         )
 
-        # 信号：510300=MARKET_RISK_HIGH, 510500=NO_PARTICIPATE（测信号风险汇总），510050 无信号
-        def _sig(code, tier, gen, score=35.0, conf=55):
+        # 信号：510300=MARKET_RISK_HIGH, 510500=NO_PARTICIPATE（测信号风险汇总），510050 无信号。
+        # 日期用近期基准（date.today），避免被 max_age_days 时效过滤误判为"过期"（贴近真实新鲜数据）；
+        # 市场/宽度/分时 BAR 仍用 2025-07-18（其它测试依赖其 as_of，保持不变）。
+        BASE = date.today()
+
+        def _sig(code, tier, gen_time, score=35.0, conf=55):
             return Signal(
                 signal_id=f"sig-{code}-{tier}", strategy_version="v1.0.0-test",
-                generated_at=gen, trading_date=date(2025, 7, 18), target_etf=code,
+                generated_at=datetime.combine(BASE, gen_time), trading_date=BASE, target_etf=code,
                 signal_type=tier, score=score, confidence=conf,
                 market_regime="VOLATILE", suggested_action=tier,
                 suggested_position_range=[0, 0],
@@ -74,21 +78,21 @@ def _seed(tmp_path, with_breadth: bool = True, with_etf_quote: bool = False):
                 review_time=datetime(2025, 7, 21, 0, 50),
             )
 
-        session.add(_sig("510300", "MARKET_RISK_HIGH", datetime(2025, 7, 18, 15, 10)))
-        # 同一 etf 的更旧一条（验证 latest 取 MAX(generated_at)）
-        session.add(_sig("510300", "OBSERVE", datetime(2025, 7, 17, 15, 10), score=70))
-        session.add(_sig("510500", "NO_PARTICIPATE", datetime(2025, 7, 18, 15, 10)))
+        session.add(_sig("510300", "MARKET_RISK_HIGH", time(15, 10)))
+        # 同一 etf 的更旧一条（同日较早，验证 latest 取 MAX(generated_at)）
+        session.add(_sig("510300", "OBSERVE", time(11, 30), score=70))
+        session.add(_sig("510500", "NO_PARTICIPATE", time(15, 10)))
 
         # 意见：510300 两条（不同 phase），验证按 generated_at desc + phase 过滤
         session.add(Opinion(
             opinion_id="op1", signal_id="sig-510300-MARKET_RISK_HIGH",
-            generated_at=datetime(2025, 7, 18, 15, 10), trading_date=date(2025, 7, 18),
+            generated_at=datetime.combine(BASE, time(15, 10)), trading_date=BASE,
             phase="post_close", title="复盘", content="沪深300ETF｜市场风险大，先观望。",
             input_summary={"etf_code": "510300"}, template_version="template-v1",
         ))
         session.add(Opinion(
             opinion_id="op2", signal_id="sig-510300-MARKET_RISK_HIGH",
-            generated_at=datetime(2025, 7, 18, 11, 30), trading_date=date(2025, 7, 18),
+            generated_at=datetime.combine(BASE, time(11, 30)), trading_date=BASE,
             phase="midday", title="盘中", content="沪深300ETF｜盘中观察。",
             input_summary={"etf_code": "510300"}, template_version="template-v1",
         ))

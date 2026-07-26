@@ -1513,3 +1513,38 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 **CVM 部署处置（用户侧）**
 - 前端重新构建并部署静态文件（`pnpm build` → 覆盖 Nginx 静态目录）后生效。
 - 顺带排查 `etf-worker` 是否运行（见 A 结论②），若挂则重启，场内 ETF 信号即恢复随新交易日更新。
+
+---
+
+## C18 · 最新信号超过两天自动清除（历史保留）+ 系统状态页文案与时效对齐（2026-07-26）
+
+**本轮两类诉求（用户原话：①「系统状态页逻辑没更新过？数据新鲜度、风险水平各种没更新」；②「ETF 这里的'最新信号'超过两天应该清除，但保留在历史记录中的不需要清除」）**
+
+### A. 「最新信号」超过 2 天从「当前信号」中清除，历史记录完整保留（后端）
+- **根因澄清**：用户说的"清除"不是物理删库，而是**「最新信号」查询不再返回过期信号**——对应 ETF 在首页最新信号表/ETF 列表中即"无最新信号"，但 `/api/signals/history` 仍保留全部历史，可随时回看。这是对 C17「≥2 天标⚠」的进一步收敛（从"标红提示"升级为"自动不显示当前信号"）。
+- **实现**（`backend/app/repository/signal_repo.py`）：
+  - 新增常量 `LATEST_SIGNAL_MAX_AGE_DAYS = 2`（「最新信号」最大时效，天）。
+  - `get_latest_signals` 新增 `max_age_days: Optional[int] = LATEST_SIGNAL_MAX_AGE_DAYS` 参数：子查询在 `group_by(target_etf)` 后加 `cutoff = utcnow() - timedelta(days=max_age_days)` 过滤 `Signal.generated_at >= cutoff`。**过期信号不计入"最新" → 该 ETF 在返回列表中被排除**（即"无当前信号"）；其历史记录完全不受影响。
+  - `get_latest_signal_for_etf` 同步透传 `max_age_days`（默认 2）→ `/api/etfs` 左连接取最新信号时也遵循时效。
+  - **关键不变量**：`get_signal_history`（历史分页）**未触碰** → 历史 `total` / 明细完整保留，全链路满足"清除当前、保留历史"。
+  - 路由 `etfs.py` / `signals.py`（`/latest`、`/etfs` 左连接、`/market/overview` 派生风险）均走默认 `max_age_days=2`，无需逐一路由改动；内部/测试可用 `max_age_days=None` 关闭过滤。
+- **测试配套**：
+  - `backend/tests/conftest.py`：原有信号种在 `2025-07-18`（比今天早一年多），开启 2 天过滤后会被误判过期 → 现有 etfs/signals 测试失败。把信号播种日期改为 `date.today()`（`_sig()` 用 `datetime.combine(BASE, gen_time)`、`trading_date=BASE`），意见 `generated_at`/`trading_date` 同步；**市场/宽度/分时 BAR 仍保留 `2025-07-18` 不动**（其它测试依赖其 as_of 断言，不波及）。
+  - `backend/tests/test_api_signals.py`：新增 `from app.main import app`；硬编码的 `trading_date=2025-07-18` 历史过滤改为 `date.today().isoformat()`（期望 total==3 不变）。新增 `test_stale_signal_excluded_from_latest_but_kept_in_history`：插一条 `utcnow()-timedelta(days=10)` 的过期信号，断言 `/api/signals/latest` 中 510300 仍取今日 MARKET_RISK_HIGH（过期被排除），`/api/signals/history?etf_code=510300` 的 `total==3`（历史保留）。
+
+### B. 系统状态页（/#/system）「逻辑没更新过」修复（前端）
+- **明证**：`SystemStatus.vue` 第 87 行写死「轮询间隔：30 秒」——实际全局轮询早已随 C17 改为 5 分钟，这条文案从没跟上，正是用户"逻辑没更新过"的第一观感。改为动态引用 `POLL_INTERVAL_MS`：新增 `pollIntervalText` computed（`300_000/1000=300s → "5 分钟"`），模板改为 `轮询间隔：{{ pollIntervalText }}`。
+- **「数据新鲜度 / 风险水平各种没更新」的真实成因**（非前端 bug）：这两个面板数据来自 `marketState.overview`（由 5 分钟全局轮询刷新），本身会随轮询更新。若它们"看起来冻"，根因是 **CVM `etf-worker` 停了**——信号与 overview 数据停在不更新的旧交易日，页面如实显示「N 天前 + 数据较旧，请检查采集任务」(amber 告警，代码已在)。即：前端在正确反映后端数据停滞，需要的是去 CVM 排查 `etf-worker`，而非改前端。
+- **排查建议已写在页面说明**：`SystemStatus.vue` 说明区明确「完整系统端点（数据源状态、任务运行记录、健康检查明细）将于部署阶段 P8 接入」——当前页仅派生自已落地端点，不足以 100% 定位 worker 是否运行，需配合 CVM `systemctl status etf-worker` 判断。
+
+**验证**
+- 后端：定向 `test_api_signals.py + test_api_etfs.py + test_api_market.py` = 19 passed；全量 `pytest -q` = **240 passed**（含新增 C18 过期信号测试，无回归）。
+- 前端：`pnpm build` 通过（vue-tsc -b + vite build，656 模块，无类型错误）。
+
+**CVM 部署处置（用户侧）**
+- 后端 `git pull` + `systemctl restart etf_api` 即生效（纯查询逻辑，无需 worker 重跑、无需 backfill）。
+- 前端重新 `pnpm build` 覆盖 Nginx 静态目录后，系统状态页「轮询间隔」显示「5 分钟」。
+- **务必同步排查 `etf-worker`**：若场内 ETF 信号长期停在同一直播日、系统状态页新鲜度持续「N 天前」，确认 `systemctl status etf-worker`；挂则 `systemctl restart etf-worker`，信号即随新交易日恢复。C18 的「>2 天清除」只是把过期信号从"当前"隐藏，并不能替你跑 worker——数据源头活了才会产生新信号。
+
+**推送 / 安全**
+- 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多轮明文暴露，强烈建议到 GitHub 吊销并换发新 token。**

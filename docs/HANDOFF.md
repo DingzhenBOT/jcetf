@@ -42,7 +42,8 @@
 - C16（2026-07-26 续作，用户 5 点诉求）：① 板块异动端点/前端补「更新时间」（`SectorMovementOut.generated_at` + `SectorMovement.vue` 用 `toBeijing` 展示）；② 复盘「查看依据」由原始 KV 改为算法生成的专业文字分析——新增 `Opinion.basis_text` 列（幂等 ALTER 补列）+ `opinion_engine/templates.basis_text()`（用 `supporting_metrics` 写市场环境/ETF技术/量价/板块资金/数据完整性叙述）+ 前端 `OpinionList.vue`「查看依据」渲染 `basis_text`，原始 `input_summary` 降为次级「原始信号参数」折叠；③ 诊断并澄清：110020 沪深300ETF联接A 是**场外联接基金**（`seed_mapping.py:75 listing="场外"`），按设计无场内日K线/板块/ETF技术面 → 复盘意见仅由市场宽度+指数环境驱动（综合 50/置信 55/环境 WEAK/仓位 0-0% 看似不变是预期，非 bug）；前端 `EtfDetail.vue` 对 `listing="场外"` 显示「场外联接基金无场内日K线」。④ CVM 板块历史源调查：亲测腾讯 `web.ifzq.gtimg.cn` K 线接口**不支持板块 BK 代码**（仅指数/个股），不可作板块历史源；CVM 那次 10 BK 全失败是旧代码（`preferred="em"`）未 `git pull` 所致，新版走 ths 后 6/8 板块可补（2 个不可映射）。
 - C16.2（2026-07-26，hotfix）：修复 ETF 详情页 500——根因是 API 进程 `lifespan` 从不调 `init_db`，CVM 旧库缺 C16 新增的 `opinion.basis_text` 列，`opinion_to_dict` 读该列 → `no such column` → 500。修复：`session.py` 把私有 `_ensure_columns` 提为公共 `ensure_schema_columns()`（表不存在/列已存在均跳过、幂等），`main.py` 在 `lifespan` 用可写引擎（非 query_only 的 read_engine）启动即补列，API 启动自愈，不依赖 worker 先跑。详见 devlog C16.2。
 - C17（2026-07-26）：① 板块异动三个 Card 副标题加数据日期；② ETF 列表/详情页加「信号时效」标识（≥2 天标「⚠ 信号 N 天前」，2-3 天 amber/≥3 天 rose），场外基金标注「场外·随大盘」避免误读成"针对该 ETF 的风险预警"；③ 非盘中页刷新 60s→5min（`market.ts` POLL_INTERVAL_MS=300_000 + NewsStrip 同步），盘中详情页(EtfDetail)新增 60s 短轮询（修正此前"分时图每60秒更新"名不副实的注释）；④ 美股三大指数(UsIndexTicker)并入大盘指数(IndexTicker)旁并排（桌面端右列 460px，移动端上下相邻）。**诊断结论**：110003 等场外基金显示「市场风险大/综合50/置信55」是设计内（无自身行情、信号纯由宽基市场环境驱动），非脏数据/算法 bug；信号停在旧日期不更新= CVM `etf-worker` 未运行（残留脏数据不会，信号按交易日 upsert）。详见 devlog C17。
-- 测试：backend 243 passed（含 tests/test_us_index.py 等）；前端 pnpm build 通过。
+- C18（2026-07-26）：① 系统状态页 `/#/system`「轮询间隔：30 秒」写死文案改为动态引用 `POLL_INTERVAL_MS`（显示「5 分钟」），消除"逻辑没更新过"的观感；并明确「数据新鲜度/风险水平没更新」真因是 CVM `etf-worker` 停了（前端如实反映后端停滞，非前端 bug，需 `systemctl status etf-worker` 排查）。② **「最新信号」超过 2 天自动从"当前信号"中清除、历史保留**：`signal_repo.get_latest_signals` / `get_latest_signal_for_etf` 新增 `max_age_days=2` 默认过滤（子查询 `generated_at >= utcnow()-2d`），过期 ETF 在最新信号表/ETF 列表即"无当前信号"；`get_signal_history` 不动 → 历史完整保留。新增测试 `test_stale_signal_excluded_from_latest_but_kept_in_history` 验证。详见 devlog C18。
+- 测试：backend 240 passed（含 C18 过期信号测试）；前端 pnpm build 通过。
 
 【待办 / 续作（按优先级）】
 1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。~~**Task A（SNAPSHOT 切腾讯财经 qt.gtimg.cn，已落地 2026-07-25）**~~：gtimg 已注入 `collect_market` 作盘中实时快照附加源，`get_latest_snapshot_change_map` 跨源取 max(timestamp) 命中 gtimg → P1 现在 CVM 真正随实时行情更新。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。
@@ -66,7 +67,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 后端 | FastAPI + SQLite(WAL)，231 测试通过 |
+| 后端 | FastAPI + SQLite(WAL)，240 测试通过（C18 后） |
 | 前端 | Vue3 + ECharts，pnpm build 通过 |
 | 数据源 | 平安已弃用；**东财 em 已于 C14 弃用（preferred=sina）**；腾讯自选股 + 盈米 + 东财新闻 + gtimg(A股+美股) + NeoData(agent侧) |
 | 远程仓库 | github.com/DingzhenBOT/jcetf.git，main（C14 已全部推送远程：**`70e61d1`** 功能提交 + 文档同步提交；原远程 `65ba8c2`→`70e61d1`，其余为文档提交。本仓库 main 即远程最新） |
