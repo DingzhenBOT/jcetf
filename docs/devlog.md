@@ -1420,3 +1420,27 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 
 **推送 / 安全**
 - 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多次明文暴露，强烈建议到 GitHub 吊销并换发。**
+
+---
+
+## C16.1 · 实时资讯：仅展示最热前 10 且算法可推算「板块+利好/利空」（2026-07-26）
+
+**用户诉求**
+- 实时资讯只选取当时最热门的 10 条；且只有咱算法能推算出「板块 + 利好/利空」的才展示。
+
+**现状**
+- 后端 `collect_news`（东财 7×24）按时间序返回，无热度字段；`/api/external/news` 透传。
+- 前端 `NewsStrip.vue` 原用 `hotBoost` 关键词启发式取最热前 5 做跑马灯；`newsImpact.ts` 规则模板能在点击弹窗时推算「板块 + 情绪(利好/利空/中性)」，但**所有资讯都展示，未做过滤**。
+
+**改动（frontend/src/components/sections/NewsStrip.vue）**
+- 拉取候选池加大到 `getNews(50)`，保证过滤后仍有足够候选。
+- 新增 `scored10`：`items` 每条经 `analyzeNewsImpact` 推算 → 过滤 `sectors.length>0 && sentiment!=='中性'`（即能判定板块且利好/利空）→ 按 `hotBoost` 降序取前 10。
+- 跑马灯改渲染 `loopScored`（复制首尾衔接），每条前加**情绪小圆点**（利好=绿 / 利空=红），直观体现「算法推算结果」。
+- 空态文案改为「暂无可解读的实时资讯」；点击弹窗仍展示完整影响分析（板块标签+情绪+文字）。
+- 算法复用既有 `newsImpact.ts`（关键词→板块/情绪），未改规则本身，避免逻辑分叉。
+
+**设计取舍**
+- 过滤放在前端展示层（与 `newsImpact` 同处），不改动后端 schema/接口；契合用户「才展示」语义，改动聚焦、零回归风险。若日后需 API 层权威过滤，可把 `newsImpact` 上提到后端并在 `NewsItem` 返回 `sentiment/sectors`（待定）。
+
+**验证**
+- 前端 `pnpm build` 通过（vue-tsc + vite）。

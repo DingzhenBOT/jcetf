@@ -23,7 +23,7 @@
 - ❌ 平安证券（pa-public-fund-filter / news-search）：用户确认"不能直接拿数据就不用了"，已删除全部依赖。
 - ❌ 东财(em)：腾讯云直连被 RST 拦截 + 新版 akshare 签名漂移（C13）。**C14 起退出采集轮转**（`DataSourceConfig.preferred="sina"`、`fallback=["ths","tx"]`），适配器内 em source map 保留但 dormant；ETF/指数历史改走新浪(sina)。板块趋势/资金流：新版 `get_sector_history` 在 ordered sources 内**只构造 ths**（em 不进轮转，因 CVM 上 em 被 RST 拦截）；`_BK_TO_THS` 覆盖 6/8 跟踪板块（军工/新能源车/5G/证券/银行/白酒），2 个（医药 BK0465、消费 BK0438）THS 无单一聚合板、设计内不可映射 → D4 降级（sector_score/fund_flow_score=None，引擎降置信、权重重归一化）。
 - ✅ 腾讯自选股 westock-data：`npx -y westock-data-skillhub@1.0.5`，无 key，CVM 可用 → 板块异动（`sector ranking`）。
-- ✅ 东财全球资讯 7×24：`np-weblist.eastmoney.com/comm/web/getFastNewsList`，零鉴权 → 实时新闻。
+- ✅ 东财全球资讯 7×24：`np-weblist.eastmoney.com/comm/web/getFastNewsList`，零鉴权 → 实时新闻。前端 `NewsStrip.vue` 用 `newsImpact.ts` 规则模板过滤：**仅展示最热前 10 且能推算出板块+利好/利空**的资讯（其余不展示），每条带情绪小圆点。
 - ✅ 盈米 yingmi：`yingmi-skill-cli mcp call SearchFunds`，需在 CVM 安装并授权 → 场外基金（未装时优雅降级）。
 - ✅ a-stock-data 腾讯财经 `qt.gtimg.cn` 实时行情（CVM 不封 IP，最稳）：
   - A股 ETF/指数盘中 SNAPSHOT 附加可靠源 → `gtimg_client.fetch_realtime` + `collector.collect_realtime_gtimg`（C2）。
