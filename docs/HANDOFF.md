@@ -65,7 +65,7 @@
 | 后端 | FastAPI + SQLite(WAL)，231 测试通过 |
 | 前端 | Vue3 + ECharts，pnpm build 通过 |
 | 数据源 | 平安已弃用；**东财 em 已于 C14 弃用（preferred=sina）**；腾讯自选股 + 盈米 + 东财新闻 + gtimg(A股+美股) + NeoData(agent侧) |
-| 远程仓库 | github.com/DingzhenBOT/jcetf.git，main（C14 已推送，远程 head=`5cd7889`：含 `70e61d1` 功能提交 + 文档同步提交；原 `65ba8c2`） |
+| 远程仓库 | github.com/DingzhenBOT/jcetf.git，main（C14 已全部推送远程：**`70e61d1`** 功能提交 + 文档同步提交；原远程 `65ba8c2`→`70e61d1`，其余为文档提交。本仓库 main 即远程最新） |
 | DESIGN.md | 已入库，随本次推送同步 |
 
 ## 三、目录导航
