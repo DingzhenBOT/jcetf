@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from datetime import datetime
 import subprocess
 import urllib.parse
 import urllib.request
@@ -71,6 +72,7 @@ def collect_sector_movement() -> Dict[str, Any]:
     return {
         "available": True,
         "source": "腾讯自选股 westock-data",
+        "generated_at": datetime.utcnow().isoformat(),
         "industry": industry,
         "concept": concept,
         "fund_flow": fund_flow,

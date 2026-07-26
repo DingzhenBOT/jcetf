@@ -102,6 +102,12 @@ def _ensure_columns(engine: Engine) -> None:
     if "phase" not in existing_sig:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE signal ADD COLUMN phase VARCHAR(32)"))
+
+    # opinion.basis_text（复盘「分析依据」专业叙述，前端「查看依据」渲染）
+    existing_op = {c["name"] for c in inspector.get_columns("opinion")}
+    if "basis_text" not in existing_op:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE opinion ADD COLUMN basis_text TEXT"))
             # 存量信号：从同 signal_id 的最新意见回填 phase（盘中/收盘后区分落地前的数据）
             conn.execute(
                 text(

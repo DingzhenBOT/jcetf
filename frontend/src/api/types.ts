@@ -151,6 +151,7 @@ export interface Opinion {
   phase?: OpinionPhase
   title?: string | null
   content?: string | null
+  basis_text?: string | null
   input_summary?: Record<string, unknown> | null
   template_version?: string | null
 }
@@ -204,6 +205,7 @@ export interface FetchState<T> {
 export interface SectorMovement {
   available: boolean
   source?: string | null
+  generatedAt?: string | null
   industry: Record<string, any>[]
   concept: Record<string, any>[]
   fund_flow: Record<string, any>[]

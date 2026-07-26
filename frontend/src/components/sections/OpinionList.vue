@@ -6,7 +6,7 @@ import { phaseText } from '@/lib/tier'
 
 defineProps<{ opinions: Opinion[] }>()
 
-// 将 input_summary 拍平为 "key: value" 行，作为可展开的"依据"。
+// 将 input_summary 拍平为 "key: value" 行，作为「分析依据」下的次级"原始参数"折叠。
 function summaryLines(o: Opinion): string[] {
   const s = o.input_summary
   if (!s) return []
@@ -34,11 +34,17 @@ function summaryLines(o: Opinion): string[] {
       <p class="mt-1 whitespace-pre-line text-sm leading-relaxed text-slate-600">
         {{ o.content ?? '（无内容）' }}
       </p>
-      <details v-if="summaryLines(o).length" class="group mt-2">
+      <details v-if="o.basis_text || summaryLines(o).length" class="group mt-2">
         <summary class="cursor-pointer text-xs text-slate-400 hover:text-slate-600">查看依据</summary>
-        <ul class="mt-1 space-y-0.5 border-l border-slate-100 pl-3 text-xs text-slate-500">
-          <li v-for="(line, i) in summaryLines(o)" :key="i">{{ line }}</li>
-        </ul>
+        <p v-if="o.basis_text" class="mt-1.5 whitespace-pre-line border-l border-slate-200 pl-3 text-xs leading-relaxed text-slate-600">
+          {{ o.basis_text }}
+        </p>
+        <details v-if="summaryLines(o).length" class="group mt-1.5">
+          <summary class="cursor-pointer text-[11px] text-slate-400 hover:text-slate-600">原始信号参数</summary>
+          <ul class="mt-1 space-y-0.5 border-l border-slate-100 pl-3 text-[11px] text-slate-500">
+            <li v-for="(line, i) in summaryLines(o)" :key="i">{{ line }}</li>
+          </ul>
+        </details>
       </details>
     </li>
   </ul>

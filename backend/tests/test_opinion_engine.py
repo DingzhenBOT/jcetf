@@ -79,3 +79,46 @@ def test_missing_data_note():
         {},
     )
     assert "数据不足" in out["content"] or "—" in out["content"]
+
+
+def test_generate_returns_basis_text():
+    # 引擎应一并返回专业「分析依据」叙述（前端「查看依据」渲染，替代原始 KV）
+    out = OpinionEngine().generate(_signal(), "post_close", {"etf_code": "510300"})
+    assert "basis_text" in out
+    assert isinstance(out["basis_text"], str) and len(out["basis_text"]) > 0
+    assert "510300" in out["basis_text"]
+
+
+def test_basis_text_offexchange_honest():
+    # 场外联接基金：无场内K线/板块/资金，应诚实说明数据缺失，而非谎称中性
+    from app.opinion_engine.templates import basis_text
+
+    sup = {
+        "etf_rsi14": None, "etf_rs_20d": None, "etf_ma20_slope": None, "etf_atr_pct": None,
+        "sector_score": None, "fund_flow_score": None, "advance_ratio": 0.48, "market_regime": "WEAK",
+        "vp_state": None, "vp_state_text": None, "vp_patterns": [],
+    }
+    inp = {"etf_code": "110020", "sector_code": None, "related_index_code": "000300", "market_regime": "WEAK"}
+    text = basis_text(sup, inp, "post_close")
+    assert "未获取到该标的场内日 K 线" in text
+    assert "ETF 技术面、板块趋势、资金持续性 缺失" in text
+    assert "110020" in text
+
+
+def test_basis_text_full_data():
+    # 场内 ETF 数据齐全：应给出 RSI/相对强弱/均线/波动率/板块/资金的完整叙述
+    from app.opinion_engine.templates import basis_text
+
+    sup = {
+        "etf_rsi14": 62.0, "etf_rs_20d": 1.08, "etf_ma20_slope": 0.004, "etf_atr_pct": 1.9,
+        "sector_score": 68, "fund_flow_score": 72, "advance_ratio": 0.63, "market_regime": "TREND_UP",
+        "vp_state_text": "价升量增", "vp_patterns": ["breakout_volume"],
+    }
+    inp = {"etf_code": "510300", "sector_code": "BK0428", "related_index_code": "000300", "market_regime": "TREND_UP"}
+    text = basis_text(sup, inp, "post_close")
+    assert "RSI14=62" in text
+    assert "RS=1.08" in text
+    assert "板块趋势评分 68" in text
+    assert "资金持续性 72" in text
+    # 数据齐全时不应出现缺失说明
+    assert "缺失" not in text

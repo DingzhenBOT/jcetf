@@ -209,7 +209,12 @@ const primaryPhaseText = computed(() => {
               </p>
             </template>
             <div v-else class="py-10 text-center text-sm text-slate-400">
-              该 ETF 暂无历史行情，暂时无法形成判断。
+              <template v-if="etf && etf.listing === '场外'">
+                场外联接基金无场内日 K 线行情。其净值与涨跌请见「场外基金」模块（盈米数据源）。
+              </template>
+              <template v-else>
+                该 ETF 暂无历史行情，暂时无法形成判断。
+              </template>
             </div>
           </Card>
 

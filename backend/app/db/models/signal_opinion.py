@@ -56,6 +56,7 @@ class Opinion(Base):
     title: Mapped[str | None] = mapped_column(String(256))
     content: Mapped[str | None] = mapped_column(Text)
     input_summary: Mapped[dict | None] = mapped_column(JSON)
+    basis_text: Mapped[str | None] = mapped_column(Text)  # 专业「分析依据」叙述（由 supporting_metrics 算法生成，前端「查看依据」渲染）
     template_version: Mapped[str | None] = mapped_column(String(32), default="template-v1")
     model_version: Mapped[str | None] = mapped_column(String(32))  # 预留（真实 LLM 时填）
 

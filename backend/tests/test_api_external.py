@@ -36,6 +36,26 @@ def test_sectors_movement_ok(client, monkeypatch):
     assert d["fund_flow"][0]["mainNetInflow"] == 123456
 
 
+def test_sectors_movement_carries_generated_at(client, monkeypatch):
+    # 板块异动应携带生成时间（前端展示「更新于 …」）
+    monkeypatch.setattr(
+        ext,
+        "collect_sector_movement",
+        lambda: {
+            "available": True,
+            "source": "腾讯自选股 westock-data",
+            "generated_at": "2026-07-21T15:30:00",
+            "industry": [{"name": "银行", "changePct": 1.2, "changePct5d": 0.5, "leadStock": "招商银行"}],
+            "concept": [],
+            "fund_flow": [],
+        },
+    )
+    r = client.get("/api/external/sectors/movement")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["generated_at"] == "2026-07-21T15:30:00"
+
+
 def test_sectors_movement_degraded(client, monkeypatch):
     def boom():
         raise RuntimeError("npx timeout")

@@ -17,6 +17,7 @@ from app.opinion_engine.templates import (
     TEMPLATE_V1,
     TEMPLATE_VERSION,
     TIER_TEXT,
+    basis_text,
     key_metrics_text,
     position_text_of,
 )
@@ -57,9 +58,16 @@ class OpinionEngine:
         content = self.phrase.phrase(content)
 
         title = f"{signal.get('target_etf', '')} {tier_text}"
+        # 专业「分析依据」叙述：用算法关键指标替代原始 KV，供前端「查看依据」渲染
+        basis = basis_text(
+            signal.get("supporting_metrics", {}) or {},
+            input_summary,
+            phase,
+        )
         return {
             "title": title,
             "content": content,
+            "basis_text": basis,
             "template_version": TEMPLATE_VERSION,
             "model_version": None,
             "phase": phase,

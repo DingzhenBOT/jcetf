@@ -37,6 +37,7 @@ class FundFlowItem(BaseModel):
 class SectorMovementOut(BaseModel):
     available: bool = True
     source: Optional[str] = None
+    generated_at: Optional[str] = None
     industry: List[Dict[str, Any]] = []
     concept: List[Dict[str, Any]] = []
     fund_flow: List[Dict[str, Any]] = []
@@ -78,6 +79,7 @@ def sectors_movement() -> SectorMovementOut:
     return SectorMovementOut(
         available=data.get("available", True),
         source=data.get("source"),
+        generated_at=data.get("generated_at"),
         industry=data.get("industry", []),
         concept=data.get("concept", []),
         fund_flow=data.get("fund_flow", []),

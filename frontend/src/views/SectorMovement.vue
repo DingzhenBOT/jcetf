@@ -4,6 +4,7 @@ import Card from '@/components/ui/Card.vue'
 import StatePanel from '@/components/ui/StatePanel.vue'
 import { getSectorMovement } from '@/api/endpoints'
 import type { SectorMovement } from '@/api/types'
+import { toBeijing } from '@/lib/time'
 
 const data = ref<SectorMovement | null>(null)
 const loading = ref(false)
@@ -37,6 +38,7 @@ const industry = computed(() => data.value?.industry ?? [])
 const concept = computed(() => data.value?.concept ?? [])
 const fundFlow = computed(() => data.value?.fund_flow ?? [])
 const degraded = computed(() => data.value != null && data.value.available === false)
+const updatedAt = computed(() => data.value?.generatedAt ? toBeijing(data.value.generatedAt) : null)
 </script>
 
 <template>
@@ -45,6 +47,7 @@ const degraded = computed(() => data.value != null && data.value.available === f
       <h1 class="text-xl font-semibold tracking-tight text-slate-800">板块异动</h1>
       <p class="text-sm text-slate-400 mt-0.5">
         行业/概念涨幅排名与领涨股、行业资金流入（来源：腾讯自选股）
+        <span v-if="updatedAt" class="ml-1 text-slate-400">· 更新于 {{ updatedAt }}</span>
       </p>
     </div>
 

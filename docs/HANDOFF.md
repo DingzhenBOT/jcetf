@@ -21,7 +21,7 @@
 
 【数据源矩阵（重要：平安证券已彻底弃用；东财 em 已于 C14 弃用）】
 - ❌ 平安证券（pa-public-fund-filter / news-search）：用户确认"不能直接拿数据就不用了"，已删除全部依赖。
-- ❌ 东财(em)：腾讯云直连被 RST 拦截 + 新版 akshare 签名漂移（C13）。**C14 起退出采集轮转**（`DataSourceConfig.preferred="sina"`、`fallback=["ths","tx"]`），适配器内 em source map 保留但 dormant；ETF/指数历史改走新浪(sina)。板块趋势/资金流在腾讯云仍 D4 降级（em 不可达、ths 无历史）。
+- ❌ 东财(em)：腾讯云直连被 RST 拦截 + 新版 akshare 签名漂移（C13）。**C14 起退出采集轮转**（`DataSourceConfig.preferred="sina"`、`fallback=["ths","tx"]`），适配器内 em source map 保留但 dormant；ETF/指数历史改走新浪(sina)。板块趋势/资金流：新版 `get_sector_history` 在 ordered sources 内**只构造 ths**（em 不进轮转，因 CVM 上 em 被 RST 拦截）；`_BK_TO_THS` 覆盖 6/8 跟踪板块（军工/新能源车/5G/证券/银行/白酒），2 个（医药 BK0465、消费 BK0438）THS 无单一聚合板、设计内不可映射 → D4 降级（sector_score/fund_flow_score=None，引擎降置信、权重重归一化）。
 - ✅ 腾讯自选股 westock-data：`npx -y westock-data-skillhub@1.0.5`，无 key，CVM 可用 → 板块异动（`sector ranking`）。
 - ✅ 东财全球资讯 7×24：`np-weblist.eastmoney.com/comm/web/getFastNewsList`，零鉴权 → 实时新闻。
 - ✅ 盈米 yingmi：`yingmi-skill-cli mcp call SearchFunds`，需在 CVM 安装并授权 → 场外基金（未装时优雅降级）。
@@ -39,6 +39,7 @@
 - P5：首页横向滚动实时资讯条（NewsStrip）+ GET /api/external/news（东财）。
 - C14：首页美股大盘面板（道琼斯/纳斯达克/标普500，gtimg us 通道，`UsIndexTicker.vue`）+ ETF 扩至 48 支（16+29 场内 + 3 场外）并加板块简写（`category` 标签，EtfTable/WatchBoard 名称后显示）。
 - C15（hotfix）：修复 C14 切源后 ETF 日 K 重影。`quote_repo.get_bar_history/get_max_bar_timestamp/get_latest_quote` 新增数据源优先级去重（sina > ths > tx > em），避免 em + sina 同交易日 BAR 同时返回导致 K 线重复蜡烛。
+- C16（2026-07-26 续作，用户 5 点诉求）：① 板块异动端点/前端补「更新时间」（`SectorMovementOut.generated_at` + `SectorMovement.vue` 用 `toBeijing` 展示）；② 复盘「查看依据」由原始 KV 改为算法生成的专业文字分析——新增 `Opinion.basis_text` 列（幂等 ALTER 补列）+ `opinion_engine/templates.basis_text()`（用 `supporting_metrics` 写市场环境/ETF技术/量价/板块资金/数据完整性叙述）+ 前端 `OpinionList.vue`「查看依据」渲染 `basis_text`，原始 `input_summary` 降为次级「原始信号参数」折叠；③ 诊断并澄清：110020 沪深300ETF联接A 是**场外联接基金**（`seed_mapping.py:75 listing="场外"`），按设计无场内日K线/板块/ETF技术面 → 复盘意见仅由市场宽度+指数环境驱动（综合 50/置信 55/环境 WEAK/仓位 0-0% 看似不变是预期，非 bug）；前端 `EtfDetail.vue` 对 `listing="场外"` 显示「场外联接基金无场内日K线」。④ CVM 板块历史源调查：亲测腾讯 `web.ifzq.gtimg.cn` K 线接口**不支持板块 BK 代码**（仅指数/个股），不可作板块历史源；CVM 那次 10 BK 全失败是旧代码（`preferred="em"`）未 `git pull` 所致，新版走 ths 后 6/8 板块可补（2 个不可映射）。
 - 测试：backend 233 passed（含 tests/test_us_index.py 等）；前端 pnpm build 通过。
 
 【待办 / 续作（按优先级）】
@@ -108,5 +109,5 @@
 5. **Edit 前必须先 Read**（本 agent 环境硬性要求）。
 6. **git token 勿硬编码进源码**，推送时用环境变量/临时 URL。
 7. **CVM 必须先确认 `git pull` 真正生效**（2026-07-26 backfill 实测踩坑）：旧代码（`DataSourceConfig.preferred="em"`）下 `sector_history` 仍先试东财报 `em: ConnectionError`；C14 已改 `preferred="sina"`，em 不进轮转，此时板块应报 `no applicable source`（快速失败）而非触网。若 CVM backfill 仍见 `em:` 报错，说明工作树仍是 C14 前代码——先 `git log -1`（应见 `0bc2005`）+ `git status`（应 clean）+ 确认 `config.py:73 preferred="sina"`，再重跑。
-8. **板块历史/资金流在 CVM 为 D4 降级（设计内，非回归）**：em 被 RST 拦截、ths 返回 empty、sina/tx 无板块历史实现 → 10 个 BK 板块全失败。采集器 `try/except` 捕获（回填照常完成），引擎对缺失板块返回 `None` 并从 composite 剔除（不崩，仅降置信度）。产品核心「板块资金流」信号在 CVM 缺失；如需补齐需找 CVM 可达的板块历史源（如 `qt.gtimg.cn` 板块 K 线）或接受仅用盘中板块异动（westock-data/gtimg）+ ETF/指数信号。
+8. **板块历史/资金流在 CVM 为 D4 降级（设计内，非回归）**：em 被 RST 拦截、ths 仅覆盖 6/8 板块、sina/tx 无板块历史实现 → 部分 BK 失败。采集器 `try/except` 捕获（回填照常完成），引擎对缺失板块返回 `None` 并从 composite 剔除（不崩，仅降置信度）。产品核心「板块资金流」信号在 CVM 部分缺失。**已亲测腾讯 `web.ifzq.gtimg.cn` K 线接口不支持板块 BK 代码（仅指数/个股）**，故 gtimg 不可作板块历史源；CVM 板块历史唯一可达源是同花顺 ths（新版 `get_sector_history` 已改走 ths）。CVM 那次 10 BK 全失败是**旧代码（`preferred="em"`）未 `git pull`** 所致——先 `git log -1` 应见 `2368864` + `git status` clean + 确认 `config.py:73 preferred="sina"`，`systemctl restart etf-api` 后重跑 backfill，6 个 ths 覆盖板块应出数据。2 个不可映射板块（医药/消费）属设计内 D4。
 9. **盈米「报未初始化」是 root/ubuntu $HOME 不一致（CVM 实测）**：后端 `User=root`（`deploy/etf-api.service`），盈米 apiKey 存 `$HOME/.yingmi-skill-cli/config.json`；初始化多在 `ubuntu` 用户下完成 → 服务端子进程读 `/root/.yingmi-skill-cli` 找不到授权。解法三选一（推荐①）：① `/workspace/config/.env` 加 `YINGMI_HOME=/home/ubuntu` 后 `systemctl restart etf-api`（代码 `_yingmi_env()` 已支持）；② `sudo ln -sfn /home/ubuntu/.yingmi-skill-cli /root/.yingmi-skill-cli`；③ `sudo su -` 后 root 重做 init（需再收短信）。详见 README §3.5。

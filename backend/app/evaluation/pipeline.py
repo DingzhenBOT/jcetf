@@ -118,6 +118,7 @@ def post_collection_evaluate(
                 o.generated_at = utcnow()
                 o.title = opin["title"]
                 o.content = opin["content"]
+                o.basis_text = opin.get("basis_text")
                 o.input_summary = input_summary
                 o.template_version = opin["template_version"]
                 o.model_version = opin["model_version"]
@@ -131,6 +132,7 @@ def post_collection_evaluate(
                     phase=phase,
                     title=opin["title"],
                     content=opin["content"],
+                    basis_text=opin.get("basis_text"),
                     input_summary=input_summary,
                     template_version=opin["template_version"],
                     model_version=opin["model_version"],

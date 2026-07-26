@@ -1374,3 +1374,49 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
    DELETE FROM market_quote WHERE symbol_type='ETF' AND data_kind='BAR' AND data_source='em';
    ```
    但非必须。
+
+---
+
+## C16 · 用户 5 点诉求续作：板块异动时间 / 复盘依据文字化 / 110020与CVM板块源诊断（2026-07-26）
+
+**用户诉求（原文要点）**
+1. 板块异动部分标明日期时间。
+2. ETF 历史行情都看不到了（截图：110020 沪深300ETF联接A 收盘复盘，综合 50/置信 55/环境 WEAK/仓位 0-0%）。
+3. 复盘「查看依据」现在是 as_of/etf_code/sector_code 等键值对，而不是专业分析——用我们的算法写成文字分析。
+4. 最好能补齐 CVM 板块历史源。
+5. 确认为什么综合分 / 置信 / 市场环境 / 建议仓位都没变过了。
+
+**改动 1：板块异动补「更新时间」**
+- `backend/app/services/external_data.py` `collect_sector_movement` 注入 `generated_at = datetime.utcnow().isoformat()`（naive UTC）。
+- `backend/app/api/routers/external.py` `SectorMovementOut` 加 `generated_at: Optional[str]`，路由透传。
+- `frontend/src/api/types.ts` `SectorMovement.generatedAt`；`frontend/src/views/SectorMovement.vue` 顶部副标题用 `toBeijing(generatedAt)` 显示「· 更新于 YYYY-MM-DD HH:mm」。
+- `tests/test_api_external.py` 新增 `test_sectors_movement_carries_generated_at`。
+
+**改动 2：复盘「查看依据」改专业文字分析（替代原始 KV）**
+- `backend/app/db/models/signal_opinion.py` `Opinion` 新增 `basis_text: Text` 列。
+- `backend/app/db/session.py` `_ensure_columns` 幂等 ALTER 补 `opinion.basis_text`（已验证：删列后二次 `init_db` 能补回，生产库重启自动生效）。
+- `backend/app/opinion_engine/templates.py` 新增 `basis_text(supporting, input_summary, phase)`：用 `supporting_metrics` 生成专业叙述——市场环境+市场宽度 / ETF技术面(RSI·RS20d·MA20斜率·ATR) / 量价关系 / 板块趋势+资金持续性 / 数据完整性说明(缺失项→置信下调)。缺失项明确标注，绝不误读为中性。
+- `backend/app/opinion_engine/engine.py` `generate()` 一并计算并返回 `basis_text`；`backend/app/evaluation/pipeline.py` 新建/更新 Opinion 时落库 `basis_text`；`backend/app/api/serializers.py` `opinion_to_dict` 暴露 `basis_text`。
+- `frontend/src/api/types.ts` `Opinion.basisText`；`frontend/src/components/sections/OpinionList.vue`「查看依据」改为渲染 `basis_text` 专业段落，原始 `input_summary` KV 降为「原始信号参数」次级折叠。
+- `tests/test_opinion_engine.py` 新增 `test_generate_returns_basis_text` / `test_basis_text_offexchange_honest`（110020 诚实说明无场内K线）/ `test_basis_text_full_data`（510300 完整分析）。
+
+**诊断 3 & 5：110020 为何「看不到历史 / 分数不变」**
+- `seed_mapping.py:75` 确认 110020 是**场外联接基金**（`("110020","沪深300ETF联接A","000300",[],"宽基","场外")`）：`related_sector_codes=[]`、按设计不走场内 K 线回填。
+- 策略引擎对 110020：无场内ETF日K → `etf_rsi14/etf_rs_20d/etf_ma20_slope/etf_atr_pct=None`；无板块 → `sector_score=None`；无资金 → `fund_flow_score=None`；仅 `advance_ratio`(市场宽度)+`market_regime` 有值。
+- 合成分只含 `market` 一项 → 综合分 50、置信 = 100−3×15 = 55、环境由指数+宽度定（WEAK）、仓位 0-0%。**这些只随大盘环境变化；若市场环境连续数日持平，分数自然「不变」——这是场外基金的预期行为，非 bug。**
+- ETF 历史看不到 = 110020 因场外无场内K线（设计内）。已端到端验证**场内 ETF 历史读取在 C15 后正常**（临时库种 510300 sina 日线 20 天，`etf_history` 端点返回 20 点）。
+- 前端 `EtfDetail.vue` 对 `listing="场外"` 的空历史显示「场外联接基金无场内日K线行情，净值涨跌请见『场外基金』模块」，避免像坏了。
+
+**调查 4：CVM 板块历史源**
+- 亲测腾讯 `web.ifzq.gtimg.cn/appstock/app/fqkline/get`（正确参数序 `code,day,start,end,count,qfq`）：指数 `sh000300` 正常返回，板块 `BK0438` 无论 `BK0438`/`shBK0438`/`szBK0438` 或 `kline` 变体均 `param error` → **gtimg K 线接口不支持板块 BK 代码，不可作板块历史源**。
+- CVM 那次 10 BK 全失败（`em: ConnectionError` + `ths returned empty`）是**旧代码（`preferred="em"`）未 `git pull`**：旧代码 `get_sector_history` 先试 em（CVM 上被 RST 拦截）→ ConnectionError；新版（2368864 起）`ordered_sources=["sina","ths","tx"]`，而 `get_sector_history` 只构造 ths/em 分支 → em 不进轮转，ths 解析 `_BK_TO_THS` 命中 6/8 板块。
+- 结论：CVM 板块历史唯一可达源是同花顺 ths（沙箱 akshare 版本无 `stock_board_industry_hist_ths`，无法代表；以 CVM 实跑为准）。CVM 侧先 `git pull` 到 `2368864`+、`systemctl restart etf_api`、重跑 backfill，6 个 ths 覆盖板块应出数据；医药/消费 2 个属设计内 D4（THS 无聚合板）。
+
+**验证**
+- 后端全量 `233 → 243 passed`（新增 10 个测试）。
+- 前端 `pnpm build` 通过（vue-tsc + vite）。
+- `_ensure_columns` 删列补列幂等验证通过。
+- `basis_text` 双场景输出核对：110020 诚实「未获取到该标的场内日K线…ETF技术面、板块趋势、资金持续性缺失」；510300 完整「RSI14=62 / RS=1.08 / MA20斜率+0.4% / 板块趋势评分 68 / 资金持续性 72」。
+
+**推送 / 安全**
+- 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多次明文暴露，强烈建议到 GitHub 吊销并换发。**

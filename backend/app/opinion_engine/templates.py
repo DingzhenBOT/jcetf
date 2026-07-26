@@ -123,3 +123,121 @@ def key_metrics_text(supporting: Dict) -> str:
     if not parts:
         return "当前数据不足，关键指标缺失，建议以观察为主。"
     return "；".join(parts) + "。"
+
+
+def basis_text(
+    supporting: Dict,
+    input_summary: Dict | None = None,
+    phase: str | None = None,
+) -> str:
+    """用算法关键指标生成专业「分析依据」叙述（前端「查看依据」渲染，替代原始 KV）。
+
+    输入 supporting_metrics（StrategyEngine 产出）：etf_rsi14 / etf_rs_20d / etf_ma20_slope /
+    etf_atr_pct / etf_vol_ratio / sector_score / fund_flow_score / advance_ratio / market_regime /
+    intraday_change_percent / vp_state / vp_state_text / vp_vol_ratio_state / vp_patterns 等。
+    input_summary：as_of / etf_code / sector_code / related_index_code / market_regime（标注标的）。
+    phase：pre_market/midday/pre_close/post_close（决定「盘中/复盘」语境前缀）。
+
+    确定性、不引入外部判断；缺失项明确标注，避免误读为「中性」。
+    """
+    if not supporting:
+        return "当前算法依据不足：未获取到该标的的任何技术指标，建议以观察为主，等待数据补全后复核。"
+
+    parts: List[str] = []
+    phase_prefix = {
+        "pre_market": "盘前",
+        "midday": "盘中",
+        "pre_close": "收盘前",
+        "post_close": "收盘复盘",
+    }.get(phase or "", "")
+
+    etf_code = (input_summary or {}).get("etf_code")
+    sector_code = (input_summary or {}).get("sector_code")
+    related_index = (input_summary or {}).get("related_index_code")
+
+    # 0) 标的 + 市场环境 + 市场宽度（首句）
+    env = supporting.get("market_regime")
+    env_s = REGIME_TEXT.get(env, env) if env else "未知"
+    ar = supporting.get("advance_ratio")
+    if ar is not None:
+        width_label = "偏多" if ar > 0.6 else ("偏弱" if ar < 0.4 else "多空均衡")
+        width_s = f"全市场上涨家数占比 {ar * 100:.0f}%（{width_label}）"
+    else:
+        width_s = "市场宽度数据缺失"
+    lead = f"{phase_prefix}依据：标的 {etf_code or '—'}"
+    if sector_code:
+        lead += f" 所属板块 {sector_code}"
+    if related_index:
+        lead += f"（跟踪指数 {related_index}）"
+    lead += f"，当前市场环境「{env_s}」；{width_s}。"
+    parts.append(lead)
+
+    # 1) ETF 技术面（RSI / 相对强弱 / MA20 斜率 / ATR 波动）
+    rsi = supporting.get("etf_rsi14")
+    rs = supporting.get("etf_rs_20d")
+    slope = supporting.get("etf_ma20_slope")
+    atr = supporting.get("etf_atr_pct")
+    if any(v is not None for v in (rsi, rs, slope, atr)):
+        tech = "ETF 技术面："
+        if rsi is not None:
+            tech += (
+                f"RSI14={rsi:.0f}"
+                + ("（超买，警惕回调）" if rsi > 70 else ("（超卖，下行动能或近尾声）" if rsi < 30 else "（中性）"))
+                + "；"
+            )
+        if rs is not None:
+            tech += (
+                f"近 20 日相对沪深300 强弱 RS={rs:.2f}"
+                + ("（明显强于大盘）" if rs > 1.05 else ("（弱于大盘）" if rs < 0.95 else "（与大盘同步）"))
+                + "；"
+            )
+        if slope is not None:
+            tech += f"MA20 斜率 {slope * 100:+.1f}%（" + ("向上，短期趋势偏强" if slope > 0 else "向下，短期趋势偏弱") + "）；"
+        if atr is not None:
+            tech += f"ATR 波动率 {atr:.1f}%（" + ("波动较大，仓位需控风险" if atr > 3 else "波动温和") + "）。"
+        parts.append(tech)
+    else:
+        parts.append("ETF 技术面：未获取到该标的场内日 K 线（如场外联接基金无场内行情），无法计算 RSI / 相对强弱 / 均线 / 波动率，技术信号不参与评分。")
+
+    # 2) 量价关系（最贴近「该不该动」）
+    vp_text = supporting.get("vp_state_text")
+    vp_patterns = supporting.get("vp_patterns") or []
+    if vp_text and vp_text not in ("数据不足", "样本不足"):
+        s = f"量价关系：{vp_text}"
+        if vp_patterns:
+            s += "；形态：" + "、".join(VP_PATTERN_TEXT.get(p, p) for p in vp_patterns)
+        parts.append(s + "。")
+
+    # 3) 板块趋势 + 资金持续性
+    sec = supporting.get("sector_score")
+    ff = supporting.get("fund_flow_score")
+    if sec is not None or ff is not None:
+        seg = "板块与资金："
+        if sec is not None:
+            seg += f"所属板块趋势评分 {sec:.0f}（" + ("偏强" if sec >= 60 else ("偏弱" if sec < 40 else "温和")) + "）；"
+        if ff is not None:
+            seg += f"板块资金持续性 {ff:.0f}（" + ("偏强" if ff >= 60 else ("偏弱" if ff < 40 else "一般")) + "）。"
+        parts.append(seg)
+    else:
+        parts.append("板块与资金：该标的未关联板块或板块资金数据缺失，板块趋势与主力资金持续性未纳入评分。")
+
+    # 4) 数据完整性 -> 置信说明（解释为何综合分偏保守）
+    miss_etf = all(v is None for v in (rsi, rs, slope, atr))
+    miss_sector = sec is None
+    miss_flow = ff is None
+    missing = []
+    if miss_etf:
+        missing.append("ETF 技术面")
+    if miss_sector:
+        missing.append("板块趋势")
+    if miss_flow:
+        missing.append("资金持续性")
+    if ar is None:
+        missing.append("市场宽度")
+    if missing:
+        parts.append(
+            f"数据完整性：{'、'.join(missing)} 缺失，置信度相应下调，综合分偏保守；"
+            "以上结论主要基于已获取的市场环境信号，建议结合其他信息复核后再决策。"
+        )
+
+    return "".join(parts)

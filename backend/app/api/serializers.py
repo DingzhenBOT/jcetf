@@ -58,6 +58,7 @@ def opinion_to_dict(o: Opinion) -> Dict[str, Any]:
         "phase": o.phase,
         "title": o.title,
         "content": o.content,
+        "basis_text": o.basis_text,
         "input_summary": o.input_summary,
         "template_version": o.template_version,
     }
