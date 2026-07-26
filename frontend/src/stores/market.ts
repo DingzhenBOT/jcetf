@@ -9,8 +9,9 @@ import { reactive, ref, computed } from 'vue'
 import { getOverview, getSignalsLatest } from '@/api/endpoints'
 import type { MarketOverview, Signal } from '@/api/types'
 
-// 轮询间隔：之前 30 秒偏频繁，改为 60 秒（数据本身分钟级变化，无需更密）。
-export const POLL_INTERVAL_MS = 60_000
+// 轮询间隔：非盘中页统一 5 分钟（300s）。数据本身分钟级变化，无需更密；
+// 盘中详情页（EtfDetail）单独用 60s 短轮询保持实时。
+export const POLL_INTERVAL_MS = 300_000
 
 interface MarketState {
   overview: MarketOverview | null

@@ -4,9 +4,16 @@ import type { EtfListItem } from '@/api/types'
 import Badge from '@/components/ui/Badge.vue'
 import { TIER_BADGE, regimeText, listingBadge } from '@/lib/tier'
 import { fmtScore } from '@/lib/format'
+import { daysSinceBeijingDate } from '@/lib/time'
 
 defineProps<{ etfs: EtfListItem[] }>()
 const router = useRouter()
+
+// 信号生成距今天数（按北京日期）。>=1 表示信号未随新交易日刷新（可能 worker 未跑）。
+function staleDays(sig: EtfListItem['latest_signal']): number | null {
+  if (!sig) return null
+  return daysSinceBeijingDate(sig.generated_at)
+}
 </script>
 
 <template>
@@ -58,11 +65,22 @@ const router = useRouter()
             <span v-else class="text-slate-300">--</span>
           </td>
           <td class="px-4 py-2">
-            <Badge
-              v-if="e.latest_signal"
-              :text="e.latest_signal.signal_type_text"
-              :class="TIER_BADGE[e.latest_signal.signal_type]"
-            />
+            <div v-if="e.latest_signal" class="flex flex-col gap-1">
+              <Badge
+                :text="e.latest_signal.signal_type_text"
+                :class="TIER_BADGE[e.latest_signal.signal_type]"
+              />
+              <span
+                v-if="(staleDays(e.latest_signal) ?? 0) >= 2"
+                class="text-[10px] leading-none font-medium"
+                :class="(staleDays(e.latest_signal) ?? 0) >= 3 ? 'text-rose-500' : 'text-amber-500'"
+                :title="`信号生成于 ${e.latest_signal.generated_at}，已 ${staleDays(e.latest_signal)} 天未随新交易日刷新（可能 CVM 的 etf-worker 未运行）`"
+                >⚠ 信号 {{ staleDays(e.latest_signal) }} 天前</span
+              >
+              <span v-else-if="e.listing === '场外'" class="text-[10px] leading-none text-teal-500"
+                >场外·随大盘</span
+              >
+            </div>
             <span v-else class="text-slate-300">暂无信号</span>
           </td>
           <td class="px-4 py-2 tnum text-slate-700">

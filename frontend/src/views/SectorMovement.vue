@@ -4,7 +4,7 @@ import Card from '@/components/ui/Card.vue'
 import StatePanel from '@/components/ui/StatePanel.vue'
 import { getSectorMovement } from '@/api/endpoints'
 import type { SectorMovement } from '@/api/types'
-import { toBeijing } from '@/lib/time'
+import { toBeijing, toBeijingDate } from '@/lib/time'
 
 const data = ref<SectorMovement | null>(null)
 const loading = ref(false)
@@ -39,6 +39,8 @@ const concept = computed(() => data.value?.concept ?? [])
 const fundFlow = computed(() => data.value?.fund_flow ?? [])
 const degraded = computed(() => data.value != null && data.value.available === false)
 const updatedAt = computed(() => data.value?.generatedAt ? toBeijing(data.value.generatedAt) : null)
+// 小标题旁展示的数据日期（如「行业板块涨幅 · 数据 2026-07-26」）
+const dataDate = computed(() => (data.value?.generatedAt ? toBeijingDate(data.value.generatedAt) : null))
 </script>
 
 <template>
@@ -57,7 +59,7 @@ const updatedAt = computed(() => data.value?.generatedAt ? toBeijing(data.value.
       </div>
 
       <div v-if="data" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card title="行业板块涨幅" :subtitle="`${industry.length} 个`">
+        <Card title="行业板块涨幅" :subtitle="`${industry.length} 个 · 数据 ${dataDate ?? '—'}`">
           <table class="w-full text-sm">
             <thead>
               <tr class="text-left text-xs text-slate-400 border-b border-slate-100">
@@ -79,7 +81,7 @@ const updatedAt = computed(() => data.value?.generatedAt ? toBeijing(data.value.
           </table>
         </Card>
 
-        <Card title="概念板块涨幅" :subtitle="`${concept.length} 个`">
+        <Card title="概念板块涨幅" :subtitle="`${concept.length} 个 · 数据 ${dataDate ?? '—'}`">
           <table class="w-full text-sm">
             <thead>
               <tr class="text-left text-xs text-slate-400 border-b border-slate-100">
@@ -101,7 +103,7 @@ const updatedAt = computed(() => data.value?.generatedAt ? toBeijing(data.value.
           </table>
         </Card>
 
-        <Card class="lg:col-span-2" title="行业资金流入 Top" :subtitle="`${fundFlow.length} 个`">
+        <Card class="lg:col-span-2" title="行业资金流入 Top" :subtitle="`${fundFlow.length} 个 · 数据 ${dataDate ?? '—'}`">
           <table class="w-full text-sm">
             <thead>
               <tr class="text-left text-xs text-slate-400 border-b border-slate-100">

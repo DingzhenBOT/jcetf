@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Card from '@/components/ui/Card.vue'
 import StatePanel from '@/components/ui/StatePanel.vue'
@@ -13,7 +13,7 @@ import { getEtfs, getOpinions, getSignalsHistory, getEtfHistory, getIntraday } f
 import type { EtfHistory, EtfListItem, Intraday, Opinion, Signal } from '@/api/types'
 import { TIER_BADGE, TIER_BORDER, regimeText, phaseText, isIntradayPhase } from '@/lib/tier'
 import { fmtConfidence, confidenceLevel } from '@/lib/format'
-import { toBeijing } from '@/lib/time'
+import { toBeijing, daysSinceBeijingDate } from '@/lib/time'
 
 const route = useRoute()
 const code = computed(() => String(route.params.code))
@@ -30,24 +30,38 @@ const intraday = ref<Intraday | null>(null)
 const chartLoading = ref(false)
 const chartError = ref<string | null>(null)
 
+// 核心信号/意见数据（盘中实时，由短轮询刷新）
+async function fetchCore(): Promise<void> {
+  const [list, op, hist] = await Promise.all([
+    getEtfs(),
+    getOpinions(code.value),
+    getSignalsHistory({ etf_code: code.value, limit: 20 }),
+  ])
+  etf.value = list.find((e) => e.etf_code === code.value) ?? null
+  opinions.value = op.items
+  history.value = hist.items
+}
+
 async function load(): Promise<void> {
   loading.value = true
   error.value = null
   try {
-    const [list, op, hist] = await Promise.all([
-      getEtfs(),
-      getOpinions(code.value),
-      getSignalsHistory({ etf_code: code.value, limit: 20 }),
-    ])
-    etf.value = list.find((e) => e.etf_code === code.value) ?? null
-    opinions.value = op.items
-    history.value = hist.items
+    await fetchCore()
   } catch (e) {
     error.value = e instanceof Error ? e.message : '未知错误'
   } finally {
     loading.value = false
   }
   void loadCharts()
+}
+
+// 盘中详情页 60s 短轮询（其余页面为 5min）：仅静默刷新信号/意见，不重载图表、不闪骨架屏。
+async function poll(): Promise<void> {
+  try {
+    await fetchCore()
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '未知错误'
+  }
 }
 
 // 走势图（日线历史）+ 盘中分时（独立、非致命）
@@ -72,6 +86,10 @@ async function loadCharts(): Promise<void> {
 
 onMounted(load)
 watch(code, load)
+
+// 盘中详情页：60s 短轮询保持实时（与全局 5min 轮询区分）
+const timer = window.setInterval(poll, 60_000)
+onBeforeUnmount(() => window.clearInterval(timer))
 
 const missingRules = computed(() =>
   etf.value?.latest_signal?.failed_rules?.filter((r) => r.includes('missing')) ?? [],
@@ -104,6 +122,14 @@ const primaryPhaseText = computed(() => {
   const t = toBeijing(o.generated_at)
   if (o.phase === 'post_close') return `收盘后复盘 · ${t}（供次日参考）`
   return `盘中建议 · ${t}`
+})
+
+// 信号时效提示：生成距今天数 >=1 即提示「已 N 天未更新」（可能 worker 未跑）
+const signalStaleText = computed(() => {
+  const sig = etf.value?.latest_signal
+  if (!sig) return ''
+  const d = daysSinceBeijingDate(sig.generated_at)
+  return d != null && d >= 2 ? ` · ⚠ 已 ${d} 天未更新` : ''
 })
 </script>
 
@@ -246,7 +272,7 @@ const primaryPhaseText = computed(() => {
         <Card
           v-if="etf.latest_signal"
           title="最新信号"
-          :subtitle="`${etf.latest_signal.phase ? phaseText(etf.latest_signal.phase) : '未标注阶段'} · 生成于 ${toBeijing(etf.latest_signal.generated_at)}`"
+          :subtitle="`${etf.latest_signal.phase ? phaseText(etf.latest_signal.phase) : '未标注阶段'} · 生成于 ${toBeijing(etf.latest_signal.generated_at)}${signalStaleText}`"
         >
           <div class="flex flex-col sm:flex-row gap-4 items-center">
             <GaugeChart

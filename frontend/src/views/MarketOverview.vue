@@ -60,7 +60,7 @@ const openCode = ref<string | null>(null)
         <h1 class="text-xl font-semibold tracking-tight text-slate-800">市场总览</h1>
         <p class="mt-0.5 text-sm text-slate-400">
           数据截至 <span class="tnum">{{ toBeijingDate(ov?.as_of) }}</span>
-          <span class="ml-2 text-slate-300">每 60 秒自动刷新 · 还 <span class="tnum">{{ secondsToRefresh }}</span> 秒</span>
+          <span class="ml-2 text-slate-300">每 5 分钟自动刷新 · 还 <span class="tnum">{{ secondsToRefresh }}</span> 秒</span>
         </p>
       </div>
       <div class="flex items-center gap-2">
@@ -95,11 +95,11 @@ const openCode = ref<string | null>(null)
       <NewsStrip />
     </div>
 
-    <!-- 顶部指数数字带：上证指数 hero + 其余指数红涨绿跌，点开看详情 -->
-    <IndexTicker @open="openCode = $event" />
-
-    <!-- 美股大盘条（道琼斯/纳斯达克/标普500，腾讯财经实时源） -->
-    <UsIndexTicker />
+    <!-- 顶部指数带：A股主要指数 + 美股三大指数并排（大盘指数旁），点开看 A股详情 -->
+    <div class="flex flex-col gap-4 lg:flex-row lg:items-stretch">
+      <div class="lg:flex-1 min-w-0"><IndexTicker @open="openCode = $event" /></div>
+      <UsIndexTicker class="lg:w-[460px] shrink-0" />
+    </div>
 
     <!-- 今日关注榜（结论前置，两种模式都显示） -->
     <Card title="今日关注榜" subtitle="按可操作度排序的 TOP 机会">

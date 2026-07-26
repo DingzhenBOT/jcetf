@@ -66,8 +66,8 @@ function openItem(n: NewsItem): void {
 }
 
 onMounted(load)
-// 跟随首页 60s 轮询节奏刷新
-const timer = window.setInterval(load, 60_000)
+// 跟随首页 5 分钟轮询节奏刷新（非盘中页统一 5min）
+const timer = window.setInterval(load, 300_000)
 onBeforeUnmount(() => window.clearInterval(timer))
 </script>
 

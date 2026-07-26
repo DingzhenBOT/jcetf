@@ -1478,3 +1478,38 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 
 **推送 / 安全**
 - 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多次明文暴露，强烈建议到 GitHub 吊销并换发。**
+
+---
+
+## C17 · 板块异动加数据日期 + ETF列表信号冻结诊断 + 刷新5分钟 + 美股并入大盘指数（2026-07-26）
+
+**本轮四类诉求 + 诊断**
+
+### A. 诊断：ETF 列表「最新信号/综合分」冻结（用户疑问：数据不通？算法问题？残留脏数据？）
+- **代码定位**：后端 `strategy_engine/engine.py:evaluate_etf` 对每支生效映射按交易日重算（`evaluation/pipeline.py` 按 `(trading_date,target_etf,version)` upsert；`signal_repo.get_latest_signals` 取每 ETF 的 `MAX(generated_at)`）。worker 每天跑（`worker.py` 的 `job_intraday_evaluate` 10/11/13/14、`job_pre_close_evaluate` 14:50、`job_post_close_evaluate` 15:10）即信号新鲜；**若信号停在旧日期不更新，唯一原因是 CVM 的 `etf-worker` 进程没在跑**（残留脏数据不会——旧信号按交易日 upsert，不会"挂着"，除非 worker 停）。
+- **110003 专项（用户贴的样例逐字吻合）**：`seed_mapping.py:77` → 易方达上证50联接A，`listing="场外"`，`related_sector_codes=[]`。场外基金不采集自身行情 → `evaluate_etf` 里 `etf_df` 为空 → 信号**完全由宽基市场环境驱动**（`engine.py:204` `market_regime∈{WEAK,BEAR} → MARKET_RISK_HIGH`）。大盘弱时即输出「市场风险大，先观望 / 综合50 / 置信55 / WEAK / 减仓观望」。这是**设计内**，不是脏数据、不是算法 bug、不是残留。它"看起来冻"是因为场外无自身数据、分数恒在 50/WEAK 附近随大盘摆。
+- **结论给用户**：① 110003 这类场外基金显示「市场风险大」是预期（无盘中数据，仅随大盘环境），现已在列表/详情页标注「场外·随大盘」避免误读；② 若**场内 ETF（如 510300）也停在同一直播日不更新**，则确认 CVM `etf-worker` 挂了，需 `systemctl status etf-worker` / `journalctl -u etf-worker` 排查并 `systemctl restart etf-worker`；若场内是新的、仅场外停在旧日，则是场外"看起来冻"的错觉。
+
+### B. ETF 列表加「信号时效」标识（让冻结一眼可见）
+- `frontend/src/components/sections/EtfTable.vue`：导入 `daysSinceBeijingDate`（`lib/time.ts`，正确处理 naive UTC）；`最新信号` 单元格在 badge 下加「⚠ 信号 N 天前」（≥2 天告警，2-3 天 amber、≥3 天 rose，title 提示可能 worker 未跑）；场外且新鲜的显示「场外·随大盘」。阈值取 ≥2 天以避开每天盘前/盘中的正常"昨日信号"误报。
+- `frontend/src/views/EtfDetail.vue`：`最新信号` 卡片副标题追加「· ⚠ 已 N 天未更新」（同样 ≥2 天）。
+
+### C. 板块异动小标题加数据日期
+- `frontend/src/views/SectorMovement.vue`：复用 `generatedAt`（`toBeijingDate`）→ 三个 Card 副标题改为「N 个 · 数据 YYYY-MM-DD」（行业板块涨幅 / 概念板块涨幅 / 行业资金流入 Top）。
+
+### D. 非盘中页刷新改 5 分钟（盘中详情页保留 60s 短轮询）
+- `frontend/src/stores/market.ts`：`POLL_INTERVAL_MS` 60_000 → 300_000（全局轮询驱动总览/今日关注榜/最新信号表）。
+- `frontend/src/components/sections/NewsStrip.vue`：独立 `setInterval` 60_000 → 300_000（与首页节奏一致）。
+- `frontend/src/views/MarketOverview.vue`：顶部「每 60 秒自动刷新」文案 → 「每 5 分钟自动刷新」。
+- `frontend/src/views/EtfDetail.vue`（盘中详情页）：原只有 `onMounted`+`watch(code)` **无任何定时器**（分时图注释却写"每 60 秒自动更新"，与实际不符）。现拆分 `fetchCore()`（信号/意见/历史，实时）+ `loadCharts()`（日K/分时，仅挂载时一次），新增 60s `setInterval(poll)` 静默刷新核心数据（不闪骨架屏、不重载图表），`onBeforeUnmount` 清理。注释与行为终于一致。
+
+### E. 美股并入大盘指数旁
+- `frontend/src/views/MarketOverview.vue`：原 `IndexTicker`（A股主要指数）与 `UsIndexTicker`（道琼斯/纳斯达克/标普500）是上下两块独立卡片。现包进 `flex flex-col lg:flex-row` 容器：桌面端 A股带占 `lg:flex-1`、美股条收窄为 `lg:w-[460px] shrink-0` 右侧列并排；移动端仍上下相邻。解决"美股单独占一个板块太占地方"。
+
+**验证**
+- 前端 `pnpm build` 通过（vue-tsc + vite，656 模块）。
+- 后端本轮未改动（仅前端），C16.2 已提交推送，测试基线 243 passed 不受影响。
+
+**CVM 部署处置（用户侧）**
+- 前端重新构建并部署静态文件（`pnpm build` → 覆盖 Nginx 静态目录）后生效。
+- 顺带排查 `etf-worker` 是否运行（见 A 结论②），若挂则重启，场内 ETF 信号即恢复随新交易日更新。
