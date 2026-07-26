@@ -1332,6 +1332,7 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - 前端：`pnpm build` 通过（vue-tsc 类型检查 + vite 构建）。
 - ETF 代码真实性：用 akshare `fund_etf_category_sina` 全量列表（1608 支）反查，29 支新增代码**全部真实存在**、名称与标签一致。
 - 美股符号：curl `qt.gtimg.cn` 实测 `usDJI/usIXIC/usINX` 均返回有效实时数据。
+- **推送**：已用明文 token 推至远程 `main`（`65ba8c2`→`70e61d1`），推送后远程 URL 已恢复为无 token 公开地址。**该 token 已在会话中明文暴露，强烈建议尽快到 GitHub 吊销并换发新 token。**
 
 **注意 / 待办**
 - 美股指数交易时段（北京夜间）采集：A股盘中采集窗口（09:30–15:00）美股休市，gtimg 返回最近一次美股收盘值——首页面板显示的是「最新美股收盘」，符合预期。
