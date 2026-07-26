@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import urllib.parse
@@ -24,12 +25,34 @@ EM_GLOBAL_NEWS_URL = "https://np-weblist.eastmoney.com/comm/web/getFastNewsList"
 # --------------------------------------------------------------------------- #
 # 通用：执行外部命令 / HTTP
 # --------------------------------------------------------------------------- #
-def _run_cmd(cmd: List[str], timeout: int = 120) -> str:
-    """执行命令返回 stdout；失败抛 RuntimeError（由调用方捕获降级）。"""
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+def _run_cmd(cmd: List[str], timeout: int = 120, env: Optional[Dict[str, str]] = None) -> str:
+    """执行命令返回 stdout；失败抛 RuntimeError（由调用方捕获降级）。
+
+    env=None 时继承当前进程环境（默认）。盈米等依赖 $HOME 定位授权状态的 CLI 可显式传入
+    修正后的环境（见 _yingmi_env）。
+    """
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"cmd failed({proc.returncode}): {proc.stderr[:300]}")
     return proc.stdout
+
+
+def _yingmi_env() -> Optional[Dict[str, str]]:
+    """盈米子进程环境。
+
+    盈米把 apiKey 写在 $HOME/.yingmi-skill-cli/config.json。本服务以 root 运行
+    （deploy/etf-api.service: User=root），而运营初始化常在 ubuntu 用户下完成，
+    导致子进程 $HOME=/root 找不到授权、报「未完成初始化」。
+
+    若进程环境（如 /workspace/config/.env 经 systemd EnvironmentFile 注入）含
+    YINGMI_HOME，则用它覆盖 HOME，使 CLI 读到初始化时写入的授权文件。
+    """
+    home = os.environ.get("YINGMI_HOME")
+    if not home:
+        return None
+    env = os.environ.copy()
+    env["HOME"] = home
+    return env
 
 
 def _get_json(url: str, params: Dict[str, str], headers: Dict[str, str], timeout: int = 10) -> Any:
@@ -171,6 +194,7 @@ def collect_offexchange_funds(keyword: str = "ETF", limit: int = 10) -> Dict[str
                 json.dumps({"keyword": keyword, "size": limit}),
             ],
             timeout=60,
+            env=_yingmi_env(),
         )
         data = json.loads(out)
         items = _extract_yingmi_funds(data)

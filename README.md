@@ -146,6 +146,21 @@ yingmi-skill-cli init status
 > 这是**一次性**初始化；`apiKey` 写入 `~/.yingmi-skill-cli/config.json`，重启/升级代码不受影响。
 > 重新部署后若场外数据变 `available:false`，先重跑 ② 复核，必要时重跑 ④⑤。
 
+> **⚠️ 常见坑：root / ubuntu 的 $HOME 不一致导致「报未初始化」**
+> 后端以 root 运行（`deploy/etf-api.service: User=root`），而初始化常在 `ubuntu` 用户下完成，
+> 于是服务端调用 `yingmi-skill-cli` 时 `$HOME=/root`，读 `/root/.yingmi-skill-cli/config.json`
+> 找不到授权，CLI 报：`未完成初始化，请先执行: yingmi-skill-cli init setup --phone <手机号>`；
+> 但你在自己 ubuntu shell 跑 `init status` 却显示已初始化（读的是 `/home/ubuntu/.yingmi-skill-cli`）。
+> 三种解法任选其一：
+> 1. **（推荐，无需重发验证码）** 在 `/workspace/config/.env` 增加一行 `YINGMI_HOME=/home/ubuntu`
+>    （systemd `EnvironmentFile` 会注入到后端进程环境，盈米子进程据此读取 ubuntu 的授权文件），
+>    然后 `sudo systemctl restart etf-api`。
+> 2. **软链**：`sudo ln -sfn /home/ubuntu/.yingmi-skill-cli /root/.yingmi-skill-cli`，再重启服务。
+> 3. **以 root 重做初始化**（需再收一次短信验证码）：`sudo su -` → `yingmi-skill-cli init setup --phone <手机号>`
+>    → `yingmi-skill-cli init setup --verify-code <验证码>` → `exit`，再重启服务。
+> 代码层已支持 `YINGMI_HOME`：`app/services/external_data.py` 的 `_yingmi_env()` 会在该变量存在时
+> 覆盖子进程的 `HOME`。
+
 ### 4. 进程托管：systemd
 
 ```bash

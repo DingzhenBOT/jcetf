@@ -115,3 +115,18 @@ def test_offexchange_unavailable(client, monkeypatch):
     d = r.json()
     assert d["available"] is False
     assert d["reason"] == "盈米 CLI 未安装或未授权"
+
+
+def test_yingmi_env_overrides_home(monkeypatch):
+    """YINGMI_HOME 设入进程环境时，盈米子进程应以该 HOME 运行（root 服务读取 ubuntu 授权）。"""
+    monkeypatch.setenv("YINGMI_HOME", "/home/ubuntu")
+    monkeypatch.setenv("HOME", "/root")
+    env = ext._yingmi_env()
+    assert env is not None
+    assert env["HOME"] == "/home/ubuntu"
+
+
+def test_yingmi_env_none_without_var(monkeypatch):
+    """未设 YINGMI_HOME 时继承当前进程环境（None），不强制覆盖 HOME。"""
+    monkeypatch.delenv("YINGMI_HOME", raising=False)
+    assert ext._yingmi_env() is None
