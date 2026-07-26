@@ -1444,3 +1444,37 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 
 **验证**
 - 前端 `pnpm build` 通过（vue-tsc + vite）。
+
+---
+
+## C16.2 · 修复 ETF 详情页 500（opinion.basis_text 缺列，API 启动自检补列）（2026-07-26）
+
+**用户报错**
+- 「ETF详情页直接是显示加载失败 internal server error」。
+
+**根因诊断**
+- C16 新增 `Opinion.basis_text` 列（复盘「分析依据」专业文字化），`opinion_to_dict`(serializers.py) 读 `o.basis_text` 返回前端。
+- 但 `init_db`/`ensure_schema_columns` 全代码库**只被 worker 脚本**（collect_once / run_evaluate / seed_mapping / flag_ohlc_anomalies / scripts/init_db）调用；**API 进程 `lifespan` 从不调 `init_db`**。
+- CVM 现有库是 C16 推送前建的旧 schema，`opinion` 表缺 `basis_text` 列 → `opinion_to_dict` 触发 SQLAlchemy `no such column: opinion.basis_text` → 500。
+- 读引擎 `build_read_engine` 挂 `PRAGMA query_only=ON` **只读不能写**，即便在 read_engine 上跑 ALTER 也失败；唯一可写的是 `build_write_engine`（回测引擎，无 query_only）。
+
+**改动**
+1. `backend/app/db/session.py`
+   - 原私有 `_ensure_columns` 提为公共 `ensure_schema_columns(engine)`，新增 helper `add_column_if_missing(table, col, sqltype)`：**表不存在则跳过（返回 False、不报错）**，列已存在则跳过；仅当列缺失时真正 `ALTER TABLE ... ADD COLUMN`。
+   - 覆盖 `etf_mapping.listing`(VARCHAR8) / `signal.phase`(VARCHAR32，含存量回填) / `opinion.basis_text`(TEXT)。
+   - 顺手删除旧 `_ensure_columns` 末尾的悬空残留（重复 ALTER + 引用未定义 `conn` 的 `UPDATE signal` 回填，导入即 `NameError`）。
+2. `backend/app/main.py`
+   - `lifespan` 内、建好可写引擎 `backtest_engine = build_write_engine(settings)` 之后，调用 `ensure_schema_columns(backtest_engine)`。
+   - 用可写引擎（非 query_only 的 read_engine）跑补列；表缺失则跳过，**API 启动即自愈历史库缺列，不依赖 worker 先跑一轮**。
+   - 新增 import `from app.db.session import ensure_schema_columns`。
+
+**验证**
+- `import app.main` 通过；后端全量测试 `243 passed`（无回归）。
+- 精准模拟历史库场景：构造缺 `basis_text` 的 `opinion` 表 → `ensure_schema_columns` 成功补列；幂等重跑不报错；表缺失时正常跳过（`ALL SIM OK`）。
+
+**CVM 部署处置（用户侧执行）**
+- `git pull` 到本提交、`systemctl restart etf_api` 后，API 启动即给旧库补 `basis_text` 列，ETF 详情页不再 500。
+- 无需重跑 worker / backfill（补列与数据采集解耦）。
+
+**推送 / 安全**
+- 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多次明文暴露，强烈建议到 GitHub 吊销并换发。**

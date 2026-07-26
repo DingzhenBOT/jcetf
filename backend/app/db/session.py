@@ -76,38 +76,38 @@ def init_db(engine: Engine, settings: Settings | None = None) -> None:
 
     Base.metadata.create_all(engine)
     # SQLite 下 create_all 不会给已存在的表补列；新增列用幂等 ALTER 补充
-    _ensure_columns(engine)
+    ensure_schema_columns(engine)
     if settings is not None:
         _seed_strategy_version(engine, settings)
 
 
-def _ensure_columns(engine: Engine) -> None:
-    """对已存在表幂等补充新增列（SQLite 不支持 ALTER 自动加列）。"""
+def ensure_schema_columns(engine: Engine) -> None:
+    """对已存在表幂等补充新增列（SQLite 不支持 ALTER 自动加列）。
+
+    供 init_db 与 API 启动时调用：保证读取路径所需列存在，不依赖 worker 先跑一轮。
+    仅当列缺失时才真正写；表尚未创建（如 worker 未运行）时跳过，不报错、不影响启动。
+    """
     from sqlalchemy import inspect, text
 
     inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    def add_column_if_missing(table: str, col: str, sqltype: str) -> bool:
+        if table not in existing_tables:
+            return False
+        cols = {c["name"] for c in inspector.get_columns(table)}
+        if col in cols:
+            return False
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {sqltype}"))
+        return True
 
     # etf_mapping.listing（P4 场内/场外区分）
-    existing_map = {c["name"] for c in inspector.get_columns("etf_mapping")}
-    needed_map = {
-        "listing": "VARCHAR(8)",  # '场内' / '场外'
-    }
-    with engine.begin() as conn:
-        for col, sqltype in needed_map.items():
-            if col not in existing_map:
-                conn.execute(text(f"ALTER TABLE etf_mapping ADD COLUMN {col} {sqltype}"))
+    add_column_if_missing("etf_mapping", "listing", "VARCHAR(8)")
 
     # signal.phase（#67 续：标注信号由哪个阶段评估生成 pre_market/midday/pre_close/post_close）
-    existing_sig = {c["name"] for c in inspector.get_columns("signal")}
-    if "phase" not in existing_sig:
+    if add_column_if_missing("signal", "phase", "VARCHAR(32)"):
         with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE signal ADD COLUMN phase VARCHAR(32)"))
-
-    # opinion.basis_text（复盘「分析依据」专业叙述，前端「查看依据」渲染）
-    existing_op = {c["name"] for c in inspector.get_columns("opinion")}
-    if "basis_text" not in existing_op:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE opinion ADD COLUMN basis_text TEXT"))
             # 存量信号：从同 signal_id 的最新意见回填 phase（盘中/收盘后区分落地前的数据）
             conn.execute(
                 text(
@@ -118,6 +118,9 @@ def _ensure_columns(engine: Engine) -> None:
                     ") WHERE phase IS NULL"
                 )
             )
+
+    # opinion.basis_text（复盘「分析依据」专业叙述，前端「查看依据」渲染）
+    add_column_if_missing("opinion", "basis_text", "TEXT")
 
 
 def _seed_strategy_version(engine: Engine, settings: Settings) -> None:

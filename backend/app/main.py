@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.db.session import ping_db
+from app.db.session import ensure_schema_columns, ping_db
 from app.api.deps import build_read_engine, build_session_factory, build_write_engine
 from app.errors import AppError, ConfigError
 from app.logging_conf import clear_request_id, get_logger, setup_logging
@@ -47,6 +47,10 @@ async def lifespan(app: FastAPI):
     backtest_engine = build_write_engine(settings)
     app.state.backtest_engine = backtest_engine
     app.state.backtest_db_factory = build_session_factory(backtest_engine)
+    # C16.2：API 启动即幂等补列（opinion.basis_text / signal.phase / etf_mapping.listing）。
+    # 读引擎挂了 query_only=ON 不可写，故用可写引擎；表缺失则跳过，不依赖 worker 先跑。
+    # 根因：历史库上 C16 新增的 basis_text 列未建出，opinion_to_dict 读该列 → no such column → 500。
+    ensure_schema_columns(backtest_engine)
     logger.info(
         "etf-api lifespan start",
         extra={"environment": settings.app.environment, "host": settings.server.host, "port": settings.server.port},
