@@ -106,3 +106,5 @@
 4. **P1 铸造新 strategy_version 会重塑历史 Signal** → 先定口径再灰度，别直接覆盖。
 5. **Edit 前必须先 Read**（本 agent 环境硬性要求）。
 6. **git token 勿硬编码进源码**，推送时用环境变量/临时 URL。
+7. **CVM 必须先确认 `git pull` 真正生效**（2026-07-26 backfill 实测踩坑）：旧代码（`DataSourceConfig.preferred="em"`）下 `sector_history` 仍先试东财报 `em: ConnectionError`；C14 已改 `preferred="sina"`，em 不进轮转，此时板块应报 `no applicable source`（快速失败）而非触网。若 CVM backfill 仍见 `em:` 报错，说明工作树仍是 C14 前代码——先 `git log -1`（应见 `0bc2005`）+ `git status`（应 clean）+ 确认 `config.py:73 preferred="sina"`，再重跑。
+8. **板块历史/资金流在 CVM 为 D4 降级（设计内，非回归）**：em 被 RST 拦截、ths 返回 empty、sina/tx 无板块历史实现 → 10 个 BK 板块全失败。采集器 `try/except` 捕获（回填照常完成），引擎对缺失板块返回 `None` 并从 composite 剔除（不崩，仅降置信度）。产品核心「板块资金流」信号在 CVM 缺失；如需补齐需找 CVM 可达的板块历史源（如 `qt.gtimg.cn` 板块 K 线）或接受仅用盘中板块异动（westock-data/gtimg）+ ETF/指数信号。
