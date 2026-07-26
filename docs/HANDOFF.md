@@ -38,7 +38,8 @@
 - P3：板块异动页（/sectors-movement）+ GET /api/external/sectors/movement（腾讯自选股）。
 - P5：首页横向滚动实时资讯条（NewsStrip）+ GET /api/external/news（东财）。
 - C14：首页美股大盘面板（道琼斯/纳斯达克/标普500，gtimg us 通道，`UsIndexTicker.vue`）+ ETF 扩至 48 支（16+29 场内 + 3 场外）并加板块简写（`category` 标签，EtfTable/WatchBoard 名称后显示）。
-- 测试：backend 231 passed（含 tests/test_us_index.py 等）；前端 pnpm build 通过。
+- C15（hotfix）：修复 C14 切源后 ETF 日 K 重影。`quote_repo.get_bar_history/get_max_bar_timestamp/get_latest_quote` 新增数据源优先级去重（sina > ths > tx > em），避免 em + sina 同交易日 BAR 同时返回导致 K 线重复蜡烛。
+- 测试：backend 233 passed（含 tests/test_us_index.py 等）；前端 pnpm build 通过。
 
 【待办 / 续作（按优先级）】
 1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。~~**Task A（SNAPSHOT 切腾讯财经 qt.gtimg.cn，已落地 2026-07-25）**~~：gtimg 已注入 `collect_market` 作盘中实时快照附加源，`get_latest_snapshot_change_map` 跨源取 max(timestamp) 命中 gtimg → P1 现在 CVM 真正随实时行情更新。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。

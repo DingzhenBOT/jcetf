@@ -1339,3 +1339,38 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - 板块趋势/资金流在腾讯云仍 D4 降级（em 不可达）；ETF/指数/美股实时均正常。
 - 后续：P4 盘后复盘（a-share-daily-review）仍 pending；盈米 CLI 仍待 CVM 授权。
 - CVM 部署：拉取本提交后重跑 `python -m scripts.seed_mapping` 注入新增 ETF，再 `collect_once --backfill` 增量回填（sina 源）。
+
+---
+
+## C15 · 数据质量：ETF 日 K 重影修复（2026-07-26）
+
+**问题（用户反馈）**
+- 前端 ETF 日 K 线出现重复蜡烛/日期重叠，文本显示「近 347 个交易日医药 ETF 累计下跌 13.10%」，K 线有明显重影。
+
+**根因**
+- `market_quote` 唯一键含 `data_source`，允许同一标的同一交易日存在多源 BAR。
+- C14 前已用 em 回填过 ETF 历史；C14 切到 sina 为主源后，`collect_once --backfill` 又写入 sina 源的 ETF BAR。
+- `quote_repo.get_bar_history` 未按数据源去重，把 em + sina 两条同交易日数据都返回给前端 → 图表重影。
+- 同理 `get_latest_quote` / `get_max_bar_timestamp` 在 timestamp 相同时会随机/跨源返回，导致最新价/回填起点不一致。
+
+**修复**
+- `app/repository/quote_repo.py`：
+  - 新增 `_SOURCE_PRIORITY = {"sina": 1, "ths": 2, "tx": 3, "em": 4}`，与 `DataSourceConfig` 一致。
+  - `get_bar_history` 对每个 `trading_date` 按数据源优先级去重，只返回最佳源那条 BAR。
+  - `get_max_bar_timestamp` 与读路径保持一致的去重逻辑，避免 em 旧数据把回填起点顶到最新。
+  - `get_latest_quote` 在时间戳相同时按数据源优先级排序，避免 `market_overview` 中指数最新价跳源。
+- `tests/test_repository_read.py`：新增 `test_get_bar_history_dedupes_by_source_priority`（sina > em）和 `test_get_bar_history_dedupes_ths_over_em`（ths > em）两个回归测试。
+
+**验证**
+- 后端全量测试通过：`233 passed`（原 231 + 2 新测试）。
+- 前端 `pnpm build` 通过。
+
+**CVM 处置（用户操作）**
+1. 拉取本提交：`git pull`（应到 `485e5b8` 或更新）。
+2. **不需要清 DB**：旧 em BAR 仍留在表中，读路径已去重；重新打开 ETF 详情页/刷新首页，K 线应恢复正常。
+3. 为让 sina 源数据覆盖完整区间，可再跑一次 `python -m scripts.collect_once --backfill`（会按去重后的 max timestamp 增量补 sina 数据）。
+4. 若磁盘敏感想彻底清理旧 em ETF BAR，可执行（备份后）：
+   ```sql
+   DELETE FROM market_quote WHERE symbol_type='ETF' AND data_kind='BAR' AND data_source='em';
+   ```
+   但非必须。
