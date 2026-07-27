@@ -26,11 +26,12 @@ def main() -> None:
     print("=== [2/4] 日K历史回填 backfill_history (ETF/指数/板块 BAR) ===")
     worker.job_backfill_history()
 
-    print("=== [3/4] 补今日分时（绕过盘中 is_trading_now 守卫；sina 分时接口返回当日完整数据） ===")
+    print("=== [3/4] 补今日分时（绕过盘中 is_trading_now 守卫；优先腾讯 gtimg 当日分时，降级 sina） ===")
     from app.db import session_scope
 
     with session_scope(worker._engine()) as session:
-        worker._collector().collect_intraday_minute(session)
+        res = worker._collector().collect_intraday_minute(session)
+        print(f"    分时采集结果: ok={res.get('ok')} failed={res.get('failed')}")
 
     print("=== [4/4] 收盘后评估 post_close_evaluate ===")
     worker.job_post_close_evaluate()
