@@ -21,8 +21,10 @@ _MAX_LIMIT = 200
 
 # 「最新信号」最大时效（天）：超过该时长的信号视为过期，不再作为"当前信号"返回
 # （用户诉求：最新信号超过两天应清除，避免冻结的脏信号一直挂着；历史记录 /api/signals/history
-# 不受影响，仍保留全部）。None 表示不过滤（内部/测试可用）。
-LATEST_SIGNAL_MAX_AGE_DAYS = 2
+# 不受影响，仍保留全部）。None 表示不过滤。
+# C18-hotfix：worker 刚重启、尚无当日新信号时，None 避免旧信号被误清导致前端"数据全没"；
+# 等 worker 稳定产出当日信号后，可恢复为 2（需重启 API）。
+LATEST_SIGNAL_MAX_AGE_DAYS: Optional[int] = None
 
 
 def get_latest_signals(
