@@ -121,6 +121,7 @@ def job_collect_market() -> None:
     from app.market_calendar import is_trading_now
 
     if not is_trading_now():
+        get_logger("etf-worker.job").debug("collect_market skipped: not trading now")
         return
     with session_scope(_engine()) as session:
         run_job("collect_market", _collector().collect_market, session)
@@ -131,6 +132,7 @@ def job_collect_intraday_minute() -> None:
     from app.market_calendar import is_trading_now
 
     if not is_trading_now():
+        get_logger("etf-worker.job").debug("intraday_minute skipped: not trading now")
         return
     with session_scope(_engine()) as session:
         run_job("collect_intraday_minute", _collector().collect_intraday_minute, session)
@@ -165,6 +167,7 @@ def job_post_close() -> None:
     from app.market_calendar import is_trading_day, trading_date_for
 
     if not is_trading_day(trading_date_for()):
+        get_logger("etf-worker.job").debug("post_close skipped: not trading day")
         return
     with session_scope(_engine()) as session:
         run_job("post_close_review", _collector().collect_all, session)
@@ -320,6 +323,13 @@ def main() -> int:
     # 启动期尝试加载交易日历（网络不可达则回退启发式，不影响调度）
     try:
         market_calendar.init_calendar(_collector().provider)
+        # 记日志：日历是否加载、覆盖到哪天——若 last_day 早于今天，说明日历陈旧，
+        # is_trading_day 会自动回退启发式（周一~周五），但仍值得关注。
+        last_day = market_calendar.calendar_last_day()
+        if last_day:
+            log.info("trade calendar loaded; last covered day = %s", last_day)
+        else:
+            log.warning("trade calendar NOT loaded; using heuristic fallback (Mon-Fri)")
     except Exception as e:  # noqa: BLE001
         log.warning("calendar init failed; heuristic fallback", extra={"err": str(e)})
     jobs = [j.id for j in scheduler.get_jobs()]

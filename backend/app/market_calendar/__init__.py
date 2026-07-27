@@ -73,9 +73,37 @@ def _heuristic_trading_day(d: date) -> bool:
     return d.weekday() < 5
 
 
+def calendar_last_day() -> Optional[str]:
+    """返回已加载日历覆盖到的最后一个交易日（YYYYMMDD）；未加载返回 None。
+
+    供 worker 启动日志诊断：若 last_day 早于今天，说明日历数据陈旧（akshare 历史日历不含未来），
+    is_trading_day 会回退启发式兜底，但仍提示运维关注。
+    """
+    if not _CALENDAR:
+        return None
+    try:
+        return max(_CALENDAR)
+    except ValueError:
+        return None
+
+
 def is_trading_day(d: date) -> bool:
+    ds = d.strftime("%Y%m%d")
     if _CALENDAR is not None:
-        return d.strftime("%Y%m%d") in _CALENDAR
+        if ds in _CALENDAR:
+            return True
+        # 日历加载成功但不含该日期：akshare(sina) 历史交易日历不含未来交易日，
+        # 会把"今天/近期交易日"误判为非交易日 -> 盘中采集被 is_trading_now 守卫静默跳过、数据停更。
+        # 回退策略：当查询日期晚于日历最大已知日期（即落在"未来"，日历本就不覆盖未来）时，
+        # 用启发式（周一~周五视为交易日）兜底，避免漏采。
+        # 历史明确休市日（早于日历最大日期且不在日历中）仍返回 False，尊重日历。
+        try:
+            max_day = max(_CALENDAR)
+        except ValueError:
+            max_day = None
+        if max_day is not None and ds > max_day:
+            return _heuristic_trading_day(d)
+        return False
     return _heuristic_trading_day(d)
 
 
