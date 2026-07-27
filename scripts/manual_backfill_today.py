@@ -20,13 +20,22 @@ import app.worker as worker  # noqa: E402
 
 
 def main() -> None:
-    print("=== [1/2] 完整采集 collect_all (post_close) ===")
+    print("=== [1/4] 完整采集 collect_all (post_close: 指数/ETF/板块快照 + gtimg + 美股 + 宽度) ===")
     worker.job_post_close()
 
-    print("=== [2/2] 收盘后评估 post_close_evaluate ===")
+    print("=== [2/4] 日K历史回填 backfill_history (ETF/指数/板块 BAR) ===")
+    worker.job_backfill_history()
+
+    print("=== [3/4] 补今日分时（绕过盘中 is_trading_now 守卫；sina 分时接口返回当日完整数据） ===")
+    from app.db import session_scope
+
+    with session_scope(worker._engine()) as session:
+        worker._collector().collect_intraday_minute(session)
+
+    print("=== [4/4] 收盘后评估 post_close_evaluate ===")
     worker.job_post_close_evaluate()
 
-    print("=== 手动补采完成。检查数据库 SNAPSHOT 时间戳是否已更新到今日 ===")
+    print("=== 手动补采完成。检查数据库 SNAPSHOT/BAR/INTRADAY_MINUTE 时间戳是否已更新到今日 ===")
 
 
 if __name__ == "__main__":
