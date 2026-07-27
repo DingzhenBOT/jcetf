@@ -164,6 +164,7 @@ class AkShareAdapter(BaseDataProvider):
         code = str(code).strip().lower()
         if code[:2] in ("sh", "sz"):
             return code
+        kind = (kind or "").lower()
         head = code[0] if code else ""
         if kind == "index":
             prefix = "sh" if head in ("0", "6", "9") else "sz"
