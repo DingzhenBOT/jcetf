@@ -1579,8 +1579,8 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
   - `worker._collector()` 注入 `gtimg_intraday_fetcher=gtimg_client.fetch_intraday_minute`。
 - **测试**：新增 `tests/test_collector_intraday_gtimg.py`（4 例：优先 gtimg / 降级 sina / 双源失败记 FAILED / `fetch_intraday_minute` mock 解析含 volume 增量断言）；全量 **244 passed**（无回归）。
 
-### E. 仍为 D4 降级（设计内，非本次回归）
-- **板块历史/资金流**：ths/腾讯均救不了（腾讯 `web.ifzq.gtimg.cn` K 线不支持板块 BK 代码，仅指数/个股）→ 仍 `sector_data_missing/fund_flow_missing` 提示。需接东方财富网页源（`push2his.eastmoney.com` 板块历史 + `push2.eastmoney.com` 板块资金流）才能消除，**待用户拍板是否做**。
+### E. 综合分/WEAK 属设计内（板块数据降级已在 F 消除）
+- **板块历史/资金流**：原以为 ths/腾讯均救不了（腾讯 `web.ifzq.gtimg.cn` K 线不支持板块 BK 代码，仅指数/个股），一度 `sector_data_missing/fund_flow_missing` 提示。**本轮（F）经 CVM 实测 `push2.eastmoney.com` 可达，已用直连源消除该降级**——见 F。
 - **综合分 92 但 regime=WEAK/减仓观望**：是算法逻辑（大盘均线弱），非数据 bug；置信 70/55 才是数据降级（板块缺失 + 部分 ETF 指标缺失）。算法调参待数据打通后由产品/交易 skills 处理。
 
 **验证**
@@ -1592,6 +1592,32 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 2. 重跑 `backend/venv/bin/python scripts/manual_backfill_today.py`（注意：命令前**不要**再加 `python3`，否则把 venv 二进制当脚本读报 SyntaxError）→ 验证 INTRADAY_MINUTE 到 7/27。
 3. 前端此前 C17/C18 改动（板块异动日期、系统状态页文案）仍未 build → 需 `cd frontend && pnpm build` 覆盖 Nginx 静态目录生效。
 4. 板块降级提示 + 综合分/WEAK 属设计内，本次不处理。
+
+**推送 / 安全**
+- 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多轮明文暴露，强烈建议到 GitHub 吊销并换发新 token。**
+
+### F. 板块数据降级消除：东方财富 push2 直连源（本轮续作，CVM 实测可达）
+- **背景**：CVM 跑 `scripts/diag_sources_cvm.py` 实测——`push2.eastmoney.com`（板块资金流 clist + 板块日K kline 同主机）**可达**（`rc:0`，返回有效 JSON 含 BK0420）；而 akshare 历史主机 `push2his.eastmoney.com` 被 RST，同花顺 ths `stock_board_industry_index_ths` 解析报错/返回空、且 `get_sector_fund_flow_history` 根本没接 ths。=> 板块数据在 CVM 完全缺失的根因是 **em(push2his) 被墙 + ths 坏 + 资金流未接 ths**，非"部分缺失"。
+- **方案**：绕过 akshare/ths，直连 `push2.eastmoney.com`（CVM 可达），新增 `backend/app/data_provider/eastmoney_web.py`：
+  - `fetch_sector_fund_flow_snapshot(trade_date)`：`/api/qt/clist/get?fs=m:90+t:2`(行业)+`m:90+t:3`(概念)，`fields=f12,f14,f2,f3,f62,f66,f184,f6` → 一次性全部板块当日主力净流入/超大单净流入/涨跌幅/成交额；按 BK 过滤。列名对齐 `normalize_sector_fund_flow_bar`（bk_code/name/日期/收盘/涨跌幅/主力净流入-净额/超大单净流入-净额/成交额）。
+  - `fetch_sector_kline(bk_code, start, end)`：`/api/qt/stock/kline/get?secid=90.{BK}`，解析 `klines` 行 → 列名对齐 `normalize_sector_bar`（日期/开盘/收盘/最高/最低/成交量/成交额/振幅/涨跌幅/涨跌额/换手率）。
+  - 任何异常抛出 `RuntimeError`，由 collector 的 `*_web` 方法捕获优雅降级（不抛上层）。
+- **接入 collector.py**：
+  - `_sector_codes(session, as_of)`：生效映射 `related_sector_codes` 并集 + `settings.backfill.major_sector_codes`（C19 误用静态方法已纠为实例方法）。
+  - `collect_sector_history_web(session, sector_codes, as_of)`：逐 BK 调 `fetch_sector_kline` → `normalize_sector_bar` → 入库 `SECTOR/BAR/em_web`。
+  - `collect_sector_fund_flow_web(session, sector_codes, as_of)`：一次性拉全板块 → 按 BK 过滤 → `normalize_sector_fund_flow_bar` → 入库；`collect_market` 已加 `"sector_fund_flow_web"` 键作为盘中板块异动面板数据源。
+  - `backfill_history` 末尾：原逐 BK 走被墙的 `collect_sector_history`/`collect_sector_fund_flow_history` → 改为 `collect_sector_history_web` + `collect_sector_fund_flow_web`（消费 `sector_codes = self._sector_codes(session, as_of)`）。
+- **注意点（已修）**：`collect_sector_fund_flow_web` 初版误传 `normalize_sector_fund_flow_bar(row, source, code, tdate, now)`（5 参）与函数签名 `(df, source, symbol, collected_at)`（4 参）不符 → 改为 4 参（`日期` 已从 row 的 `日期` 列读取）。
+- **测试**：新增 `tests/test_eastmoney_web.py`（4 例：clist/kline 解析 mock + collector web 入库；mock 用 `monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)` 且 `_fake_urlopen` 兼容 `Request` 对象，避沙箱 push2 被 RST 触真实网）。全量 **248 passed**（原 244 + 4，无回归）。
+
+**验证**
+- mock 测试 4 例全过；全量 `pytest -q` = 248 passed。
+- 沙箱 push2 被 RST，故解析用 mock 验证；**真实拉取交 CVM**（用户 `git pull` 后重跑 `manual_backfill_today.py`，应见 SECTOR BAR 入库到 7/27，消除 `sector_data_missing/fund_flow_missing`）。
+
+**CVM 部署处置（用户侧，本轮新增）**
+1. `git pull`（应见本 F 的提交：`eastmoney_web.py` + collector 接入 + 测试）。
+2. 重跑 `backend/venv/bin/python scripts/manual_backfill_today.py` → 验证 SECTOR BAR（资金流+日K）入库到 7/27，`sector_data_missing`/`fund_flow_missing` 提示应消失。
+3. 前端 C17/C18 改动此前未 build → `cd frontend && pnpm build`（不是 `pnpm rebuild`，rebuild 只重建原生依赖不编译前端）覆盖 Nginx 静态目录。
 
 **推送 / 安全**
 - 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多轮明文暴露，强烈建议到 GitHub 吊销并换发新 token。**

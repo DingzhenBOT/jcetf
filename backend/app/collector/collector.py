@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.collector import normalize
 from app.config import Settings
+from app.data_provider import eastmoney_web
 from app.data_provider.base import BaseDataProvider
 from app.data_quality.checker import assess
 from app.logging_conf import get_logger
@@ -307,20 +308,25 @@ class Collector:
 
     # ---- 组合 ----
     def collect_market(self, session: Session) -> Dict[str, Any]:
-        """盘中轻量采集：指数 + ETF + 行业 + 概念 + 腾讯财经实时快照（gtimg，CVM 可靠源）+ 美股指数。
+        """盘中轻量采集：指数 + ETF + 行业 + 概念 + 腾讯财经实时快照（gtimg，CVM 可靠源）+ 美股指数
+        + 东方财富板块资金流快照（em_web，CVM 可达，喂「板块异动」面板）。
 
         gtimg 在末尾运行，写入时间戳最新 -> P1 盘中综合分优先采用其涨跌幅；
         gtimg_fetcher 未注入时 collect_realtime_gtimg 直接跳过（零网络，不影响其余采集）。
         美股指数（usDJI/usIXIC/usINX）同样走腾讯财经，与 A股 regime 隔离（US_INDEX）。
+        em_web 板块资金流失败优雅降级（不抛上层）。
         """
-        return {
+        sector_codes = self._sector_codes(session, trading_date_for())
+        res = {
             "index": self.collect_index_snapshot(session),
             "etf": self.collect_etf_snapshot(session),
             "industry": self.collect_sector_ranking(session, "INDUSTRY"),
             "concept": self.collect_sector_ranking(session, "CONCEPT"),
             "gtimg": self.collect_realtime_gtimg(session),
             "us_index": self.collect_us_indices(session),
+            "sector_fund_flow_web": self.collect_sector_fund_flow_web(session, sector_codes, trading_date_for()),
         }
+        return res
 
     def collect_all(self, session: Session) -> Dict[str, Any]:
         """完整采集（含宽度），用于收盘复盘/手动全量。"""
@@ -407,6 +413,83 @@ class Collector:
             normalize.normalize_sector_fund_flow_bar,
             source_hint=self.settings.data_source.preferred,
         )
+
+    # ---- 东方财富 push2 直连（CVM 可达，替代被墙的 akshare em / ths）----
+    def _sector_codes(self, session: Session, as_of: date) -> set:
+        """板块 BK 代码全集：生效映射 related_sector_codes 并集 + settings.backfill.major_sector_codes。"""
+        sector_codes: set = set()
+        mappings = mapping_repo.get_active_mappings(session, as_of)
+        for m in mappings:
+            if m.related_sector_codes:
+                sector_codes.update(m.related_sector_codes)
+        sector_codes.update(self.settings.backfill.major_sector_codes)
+        return sector_codes
+
+    def collect_sector_history_web(self, session: Session, sector_codes: set, as_of: date) -> Dict[str, Any]:
+        """板块日K历史（东方财富 push2 kline 主机，CVM 可达）。逐 BK 拉取后归一化入库。
+
+        替代被墙的 akshare em(push2his RST) / ths(返回空)；源标签 'em_web'。
+        任一板块失败记 FAILED 不抛出（部分板块失败不影响其余）。
+        """
+        now = self._now()
+        end = as_of.strftime("%Y%m%d")
+        bucket: Dict[str, int] = {"ok": 0, "failed": 0}
+        for code in sorted(sector_codes):
+            try:
+                df = eastmoney_web.fetch_sector_kline(code, "19900101", end)
+                source = df.attrs.get("__source") or "em_web"
+                rows = normalize.normalize_sector_bar(df, source, code, now)
+                if not rows:
+                    raise ValueError("no parseable kline rows")
+            except Exception as e:  # noqa: BLE001
+                self.log.error(f"sector history web failed: {code}: {e}", extra={"symbol": code, "err": str(e)})
+                self._record_failure(session, source="em_web", symbol_type="SECTOR", now=now, err=str(e))
+                bucket["failed"] += 1
+                continue
+            assess(rows, is_trading_now=False, now=now, cfg=self.settings.data_quality)
+            quote_repo.upsert_market_quotes(session, rows)
+            self._record_success(session, source="em_web", symbol_type="SECTOR", now=now, note=f"rows={len(rows)}")
+            bucket["ok"] += 1
+        session.commit()
+        return {"status": "done", **bucket}
+
+    def collect_sector_fund_flow_web(self, session: Session, sector_codes: set, as_of: date) -> Dict[str, Any]:
+        """板块资金流快照（东方财富 push2 clist，CVM 可达）。一次性拉全板块，按 BK 过滤入库。
+
+        仅含当日资金流（clist 不提供历史区间）；源标签 'em_web'。替代被墙的 akshare em / ths。
+        """
+        now = self._now()
+        tdate = as_of
+        bucket: Dict[str, int] = {"ok": 0, "failed": 0}
+        try:
+            df = eastmoney_web.fetch_sector_fund_flow_snapshot(trade_date=tdate)
+            source = df.attrs.get("__source") or "em_web"
+        except Exception as e:  # noqa: BLE001
+            self.log.error("sector fund flow web failed", extra={"err": str(e)})
+            self._record_failure(session, source="em_web", symbol_type="SECTOR", now=now, err=str(e))
+            session.commit()
+            return {"status": "FAILED", "error": str(e)}
+        for code in sorted(sector_codes):
+            row = df[df["bk_code"] == code]
+            if row.empty:
+                self._record_failure(session, source=source, symbol_type="SECTOR", now=now, err=f"bk {code} not in clist")
+                bucket["failed"] += 1
+                continue
+            try:
+                rows = normalize.normalize_sector_fund_flow_bar(row, source, code, now)
+                if not rows:
+                    raise ValueError("no parseable fund flow rows")
+            except Exception as e:  # noqa: BLE001
+                self.log.error(f"sector fund flow web normalize failed: {code}: {e}", extra={"symbol": code, "err": str(e)})
+                self._record_failure(session, source=source, symbol_type="SECTOR", now=now, err=str(e))
+                bucket["failed"] += 1
+                continue
+            assess(rows, is_trading_now=False, now=now, cfg=self.settings.data_quality)
+            quote_repo.upsert_market_quotes(session, rows)
+            self._record_success(session, source=source, symbol_type="SECTOR", now=now, note=f"rows={len(rows)}")
+            bucket["ok"] += 1
+        session.commit()
+        return {"status": "done", **bucket}
 
     def collect_intraday_minute(self, session: Session) -> Dict[str, Any]:
         """盘中 1 分钟分时采集：遍历 ETF(生效映射) + 宽基指数。
@@ -540,20 +623,13 @@ class Collector:
             r = self.collect_index_history(session, code, start, end)
             self._tally(result["index"], r)
 
-        # 板块（行业/概念 BK 代码并集 + 额外 major）
-        sector_codes: set = set()
-        for m in mappings:
-            if m.related_sector_codes:
-                sector_codes.update(m.related_sector_codes)
-        sector_codes.update(self.settings.backfill.major_sector_codes)
-        for code in sorted(sector_codes):
-            start = self._backfill_start(session, "SECTOR", code, as_of, lookback_days)
-            if start is None:
-                continue
-            r = self.collect_sector_history(session, code, start, end)
-            self._tally(result["sector"], r)
-            r2 = self.collect_sector_fund_flow_history(session, code, start, end)
-            self._tally(result["sector_flow"], r2)
+        # 板块（行业/概念 BK 代码并集 + 额外 major）—— 东方财富 push2 直连（CVM 可达，
+        # 替代被墙的 akshare em / 返回空的 ths）。一次性拉全板块后按 BK 过滤入库。
+        sector_codes = self._sector_codes(session, as_of)
+        r = self.collect_sector_history_web(session, sector_codes, as_of)
+        self._tally(result["sector"], r)
+        r2 = self.collect_sector_fund_flow_web(session, sector_codes, as_of)
+        self._tally(result["sector_flow"], r2)
 
         self.log.info("backfill done", extra=result)
         return result
