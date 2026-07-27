@@ -1548,3 +1548,50 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 
 **推送 / 安全**
 - 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多轮明文暴露，强烈建议到 GitHub 吊销并换发新 token。**
+
+---
+
+## C19 · 盘中不采集根因修复 + 分时源切腾讯（2026-07-27）
+
+**背景**：用户反馈「盘中依旧不收集数据（或未更新）」「首页 ETF 数据全没了」「今日分时拿不到」。本轮定位并修复了三个根因，并完成腾讯分时适配器。
+
+### A. 盘中不采集根因：交易日历误判非交易日（核心 bug，已修）
+- **现象**：worker 心跳正常（`health_heartbeat tick` 持续），但全天无任何 `collect_market` 日志，ETF 列表/首页数据停滞。
+- **根因**：`market_calendar.is_trading_day` 用 akshare `tool_trade_date_hist_sina`（**历史**日历，只含过去交易日，不含未来）。今天（7/27）不在日历 → 返回 `False` → `job_collect_market` 的 `is_trading_now()` 守卫静默 `return`，全天无采集。**worker 没停，是被日历误判"非交易日"挡掉了**。
+- **修复**（`backend/app/market_calendar/__init__.py`）：当天数晚于 `_CALENDAR` 最大已知日（即"未来"，历史日历本不覆盖）时回退启发式 `_heuristic_trading_day`（周一~周五=True）；历史明确休市日仍返 False。新增 `calendar_last_day()` 返回覆盖最大日。
+- **worker 日志增强**（`worker.py` `main()`）：启动打印 `trade calendar loaded; last covered day = ...` 或 `NOT loaded; using heuristic`；`job_collect_market`/`job_collect_intraday_minute`/`job_post_close` 守卫 `return` 前打印 skip 原因（便于诊断）。
+
+### B. sina 分时代码前缀 bug（已修）
+- **根因**：`akshare_adapter._to_sina_symbol` 判 `if kind == "index"`（小写），但 `collector.collect_intraday_minute` 传入 `symbol_type="INDEX"`（大写）→ 不匹配 → 走 ETF 分支 → 沪深300(000300) 被误拼 `sz000300` → sina 报「股票数据不存在」。
+- **修复**：加 `kind = (kind or "").lower()` 后再判（commit `85e488e`）。
+
+### C. 今日数据漏采补救：手动补采脚本（已加）
+- 因 13:48 启动的是 C19 前旧代码（日历不含 7/27）全天 skip；15:28 新进程日历完整但当日采集窗口已过 → 新增 `scripts/manual_backfill_today.py`（复刻 post_close 采集+复盘，并绕过盘中守卫补今日分时）。
+- 演进：`a2e813d` 初版仅快照+复盘；`281889b` 补全日K回填(`backfill_history`)+今日分时补采，覆盖「收盘后日K/分时刷新」诉求。
+- 诊断：`scripts/diag_data.py`（`9514492`）打印 `market_quote` 各 `symbol_type/data_kind` 最新时间戳、大盘涨跌、signal 当日 regime/confidence/failed；`scripts/diagnose_worker.sh` 一键诊断 systemd/journalctl/库时间戳/磁盘/curl gtimg 连通性。
+
+### D. 分时源切腾讯 gtimg（C19 收尾，本轮完成）
+- **实测结论**（CVM + 沙箱一致）：sina `stock_zh_a_minute` 在腾讯云返回**两周前旧数据（7/15）**，致 INTRADAY_MINUTE 表空；腾讯 `web.ifzq.gtimg.cn/appstock/app/minute/query?code=shXXXXXX` 返回**当日 7/27** 分时，CVM 不封 IP → 切腾讯为分时主源。
+- **接口格式**：`data.{code}.data.data` 为行列表，每行 `"HHMM price cum_vol cum_amount"`；`data.{code}.data.date` 为日期。volume 为**累计**成交量（取相邻分钟增量即得每分钟量）。腾讯分时**无分钟级 OHLC**，仅每分钟标记价 → open/high/low/close 均取该分钟价（价格线准确，分钟高低点为近似，可接受）。
+- **实现**：
+  - `gtimg_client.fetch_intraday_minute(code, kind, timeout=10)`：解析 JSON → DataFrame（`day/open/high/low/close/volume`，`day` 为北京时 naive datetime），`attrs['__source']='gtimg'`，可直接喂 `normalize.normalize_intraday_minute`（与 sina 同列名）。含 `_parse_minute_date`/`_merge_minute_dt` 容错解析。
+  - `collector.collect_intraday_minute`：**优先腾讯**（注入 `gtimg_intraday_fetcher`），失败优雅降级回 sina；源标签动态（`gtimg`/`sina`）。
+  - `worker._collector()` 注入 `gtimg_intraday_fetcher=gtimg_client.fetch_intraday_minute`。
+- **测试**：新增 `tests/test_collector_intraday_gtimg.py`（4 例：优先 gtimg / 降级 sina / 双源失败记 FAILED / `fetch_intraday_minute` mock 解析含 volume 增量断言）；全量 **244 passed**（无回归）。
+
+### E. 仍为 D4 降级（设计内，非本次回归）
+- **板块历史/资金流**：ths/腾讯均救不了（腾讯 `web.ifzq.gtimg.cn` K 线不支持板块 BK 代码，仅指数/个股）→ 仍 `sector_data_missing/fund_flow_missing` 提示。需接东方财富网页源（`push2his.eastmoney.com` 板块历史 + `push2.eastmoney.com` 板块资金流）才能消除，**待用户拍板是否做**。
+- **综合分 92 但 regime=WEAK/减仓观望**：是算法逻辑（大盘均线弱），非数据 bug；置信 70/55 才是数据降级（板块缺失 + 部分 ETF 指标缺失）。算法调参待数据打通后由产品/交易 skills 处理。
+
+**验证**
+- 实跑 `gtimg_client.fetch_intraday_minute("510300","ETF")` → 267 行、`("000300","INDEX")` → 242 行，北京时当日、volume 增量正确、价格一致。
+- 全量 `pytest -q` + 新增分时测试 = 通过（无回归）。
+
+**CVM 部署处置（用户侧）**
+1. `git pull`（应见本 C19 全部提交）。
+2. 重跑 `backend/venv/bin/python scripts/manual_backfill_today.py`（注意：命令前**不要**再加 `python3`，否则把 venv 二进制当脚本读报 SyntaxError）→ 验证 INTRADAY_MINUTE 到 7/27。
+3. 前端此前 C17/C18 改动（板块异动日期、系统状态页文案）仍未 build → 需 `cd frontend && pnpm build` 覆盖 Nginx 静态目录生效。
+4. 板块降级提示 + 综合分/WEAK 属设计内，本次不处理。
+
+**推送 / 安全**
+- 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多轮明文暴露，强烈建议到 GitHub 吊销并换发新 token。**

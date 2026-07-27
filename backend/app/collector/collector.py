@@ -21,11 +21,12 @@ from app.repository import mapping_repo, quote_repo
 
 
 class Collector:
-    def __init__(self, provider: BaseDataProvider, settings: Settings, gtimg_fetcher=None, us_index_fetcher=None):
+    def __init__(self, provider: BaseDataProvider, settings: Settings, gtimg_fetcher=None, us_index_fetcher=None, gtimg_intraday_fetcher=None):
         self.provider = provider
         self.settings = settings
         self.gtimg_fetcher = gtimg_fetcher  # 腾讯财经实时行情拉取器（可注入；None=跳过）
         self.us_index_fetcher = us_index_fetcher  # 美股指数拉取器（gtimg_client.fetch_us_indices；None=跳过）
+        self.gtimg_intraday_fetcher = gtimg_intraday_fetcher  # 腾讯财经当日分时拉取器（gtimg_client.fetch_intraday_minute；None=跳过，降级 sina）
         self.log = get_logger("etf-collector")
 
     # ---- 内部工具 ----
@@ -408,9 +409,12 @@ class Collector:
         )
 
     def collect_intraday_minute(self, session: Session) -> Dict[str, Any]:
-        """盘中 1 分钟分时采集：遍历 ETF(生效映射) + 宽基指数，sina 拉当日分时。
+        """盘中 1 分钟分时采集：遍历 ETF(生效映射) + 宽基指数。
 
-        - 单次批量；每个标的失败记 FAILED 不抛出（sina 偶发超时属非致命）。
+        源优先级（C19 修复 sina 在 CVM 返回两周前旧数据）：
+        - 腾讯财经 web.ifzq.gtimg.cn（gtimg_intraday_fetcher 注入）：返回当日分时，CVM 不封 IP -> 优先。
+        - sina stock_zh_a_minute：腾讯失败时降级兜底。
+        - 单次批量；每个标的失败记 FAILED 不抛出（源偶发超时属非致命）。
         - 幂等：同一分钟 timestamp 覆盖更新（upsert）。
         """
         now = self._now()
@@ -421,24 +425,43 @@ class Collector:
         ]
         bucket: Dict[str, int] = {"ok": 0, "failed": 0}
         for symbol_type, code in targets:
-            try:
-                df = self.provider.get_intraday_minute(symbol_type, code)
-                source = df.attrs.get("__source") or "sina"
-                rows = normalize.normalize_intraday_minute(df, source, symbol_type, code, tdate, now)
-                if not rows:
-                    raise ValueError("no parseable intraday rows")
-            except Exception as e:  # noqa: BLE001
-                self.log.error(
-                    f"collect intraday failed: {symbol_type}/{code}: {e}",
-                    extra={"symbol_type": symbol_type, "symbol": code, "err": str(e)},
-                )
-                self._record_failure(session, source="sina", symbol_type=symbol_type, now=now, err=str(e))
+            rows = None
+            tried_source = None
+            # 优先腾讯分时（返回当日、CVM 可用）
+            if self.gtimg_intraday_fetcher is not None:
+                try:
+                    df = self.gtimg_intraday_fetcher(code, symbol_type)
+                    tried_source = df.attrs.get("__source") or "gtimg"
+                    rows = normalize.normalize_intraday_minute(df, tried_source, symbol_type, code, tdate, now)
+                except Exception as e:  # noqa: BLE001
+                    self.log.warning(
+                        "intraday gtimg failed, fallback sina",
+                        extra={"symbol_type": symbol_type, "symbol": code, "err": str(e)},
+                    )
+                    tried_source = None
+                    rows = None
+            # 降级 sina
+            if rows is None:
+                try:
+                    df = self.provider.get_intraday_minute(symbol_type, code)
+                    tried_source = df.attrs.get("__source") or "sina"
+                    rows = normalize.normalize_intraday_minute(df, tried_source, symbol_type, code, tdate, now)
+                except Exception as e:  # noqa: BLE001
+                    self.log.error(
+                        f"collect intraday failed: {symbol_type}/{code}: {e}",
+                        extra={"symbol_type": symbol_type, "symbol": code, "err": str(e)},
+                    )
+                    self._record_failure(session, source=(tried_source or "sina"), symbol_type=symbol_type, now=now, err=str(e))
+                    bucket["failed"] += 1
+                    continue
+            if not rows:
+                self._record_failure(session, source=(tried_source or "sina"), symbol_type=symbol_type, now=now, err="no parseable intraday rows")
                 bucket["failed"] += 1
                 continue
             # 盘中分时质量评估（#67）：OHLC 关系/跨度异常标记 ANOMALY；不校验时间新鲜度。
             assess(rows, is_trading_now=False, now=now, cfg=self.settings.data_quality)
             quote_repo.upsert_market_quotes(session, rows)
-            self._record_success(session, source=source, symbol_type=symbol_type, now=now, note=f"rows={len(rows)}")
+            self._record_success(session, source=tried_source, symbol_type=symbol_type, now=now, note=f"rows={len(rows)}")
             bucket["ok"] += 1
         session.commit()
         return {"status": "done", **bucket}

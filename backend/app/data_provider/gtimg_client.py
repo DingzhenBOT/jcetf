@@ -12,12 +12,17 @@
 """
 from __future__ import annotations
 
+import json
 import urllib.request
+from datetime import date, datetime
 from typing import List, Optional, Tuple
 
 import pandas as pd
 
 _QT_URL = "https://qt.gtimg.cn/q="
+# 腾讯财经当日分时接口（web.ifzq.gtimg.cn）：返回当日 1 分钟分时，CVM 不封 IP。
+# 注意：与 qt.gtimg.cn 实时快照不同，分钟数据走 web.ifzq.gtimg.cn 的 appstock/minute/query。
+_MINUTE_URL = "https://web.ifzq.gtimg.cn/appstock/app/minute/query?code="
 
 # 代码 -> 腾讯财经前缀（与 akshare_adapter._to_sina_symbol 同规则）
 _INDEX_HEADS = ("0", "6", "9")  # 上交所指数
@@ -156,3 +161,88 @@ def fetch_us_indices(codes: List[str], timeout: int = 10) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def _parse_minute_date(s: str) -> Optional[date]:
+    """分时 date 节点容错解析：支持 '2026-07-27' / '20260727'；异常返 None。"""
+    if not s:
+        return None
+    s = s.strip()
+    try:
+        if len(s) == 8 and s.isdigit():
+            return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _merge_minute_dt(d: Optional[date], hhmm: str) -> Optional[datetime]:
+    """把 'HHMM' 合并到交易日期得到北京时 naive datetime；格式异常返 None。"""
+    hhmm = (hhmm or "").strip().zfill(4)
+    if len(hhmm) != 4 or not hhmm.isdigit():
+        return None
+    base = d or date.today()
+    try:
+        return datetime(base.year, base.month, base.day, int(hhmm[:2]), int(hhmm[2:4]))
+    except (ValueError, TypeError):
+        return None
+
+
+def fetch_intraday_minute(code: str, kind: str, timeout: int = 10) -> pd.DataFrame:
+    """腾讯财经 web.ifzq.gtimg.cn 当日 1 分钟分时（CVM 不封 IP、返回当日，替代 sina 旧数据问题）。
+
+    返回 DataFrame（列：day/open/high/low/close/volume，day 为北京时 naive datetime），
+    可直接喂 normalize.normalize_intraday_minute（与 sina stock_zh_a_minute 同列名）。
+
+    腾讯分时每行格式："HHMM price cum_vol cum_amount"：
+    - 仅含该分钟标记价、无分钟级 OHLC -> open/high/low/close 均取该分钟价（价格线准确，分钟高低点为近似）。
+    - volume 为「累计」成交量 -> 取相对上一分钟的增量，与 sina 每分钟量语义一致。
+    任何网络/解析异常直接抛出，由 Collector.collect_intraday_minute 捕获并优雅降级（回退 sina）。
+    """
+    code = str(code).strip()
+    if not code:
+        raise ValueError("empty code")
+    symbol = _to_gtimg_symbol(code, (kind or "").lower())
+    url = _MINUTE_URL + symbol
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.qq.com/"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        text = resp.read().decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(text)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"gtimg minute json parse failed: {e}")
+
+    node = ((payload.get("data") or {}).get(symbol) or {}).get("data") or {}
+    arr = node.get("data") or []
+    if not arr:
+        raise ValueError(f"gtimg minute {symbol} returned empty")
+    trade_date = _parse_minute_date((node.get("date") or "").strip())
+
+    rows: List[dict] = []
+    prev_vol: Optional[float] = None
+    for line in arr:
+        parts = str(line).split()
+        if len(parts) < 3:
+            continue
+        hhmm, price = parts[0], _to_float(parts[1])
+        cum_vol = _to_float(parts[2]) if len(parts) > 2 else None
+        if price is None:
+            continue
+        dt = _merge_minute_dt(trade_date, hhmm)
+        if dt is None:
+            continue
+        inc_vol = (cum_vol - prev_vol) if (prev_vol is not None and cum_vol is not None) else (cum_vol or 0.0)
+        prev_vol = cum_vol
+        rows.append({
+            "day": dt,
+            "open": price, "high": price, "low": price, "close": price,
+            "volume": inc_vol,
+        })
+    if not rows:
+        raise ValueError(f"gtimg minute {symbol} parsed 0 rows")
+    df = pd.DataFrame(rows)
+    df.attrs["__source"] = "gtimg"
+    return df

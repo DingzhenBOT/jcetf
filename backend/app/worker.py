@@ -53,6 +53,7 @@ def _collector() -> Collector:
             build_provider(s), s,
             gtimg_fetcher=gtimg_client.fetch_realtime,
             us_index_fetcher=gtimg_client.fetch_us_indices,
+            gtimg_intraday_fetcher=gtimg_client.fetch_intraday_minute,
         )
     return _COLLECTOR
 
