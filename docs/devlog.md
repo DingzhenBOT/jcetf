@@ -1676,3 +1676,5 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
   - **部署动作**：CVM 确认 `backfill_history` 真正写入 BAR；若 akshare/em 被 RST 封写不进，按 HANDOFF 约束 8 换 CVM 稳源。
 - **算法评估**：复合分 D4 缺失重归一 + 风险否决(BEAR+缺失) + 保守档位，模型合理。用户提到的 `@持仓监控告警`/`@基金分析` skills 本沙箱未安装，评估基于代码分析。
 - **验证**：前端 `pnpm build` 通过（658 模块）；后端 `pytest -q` **全量 249 passed**（无回归）。test 数据（注入的 `data_source='test'` BAR）已清理。
+
+**提交/推送状态**：本地已提交 `a3e369c`（11 文件）。`git push origin main` 因沙箱 credential helper 无 GitHub token 失败（`could not read Username`）。待用户提供（建议换发新的，因旧 token 已在对话暴露）token 后用临时 `x-access-token:TOKEN@github.com` URL 推送，推完恢复公开 URL。**CVM 生产环境仍需确认 `backfill_history` 真正写入 `data_kind='BAR'`**，否则 #104「恒观望」在生产仍会复现（代码已修，但缺 BAR 数据）。
