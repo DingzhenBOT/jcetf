@@ -103,18 +103,20 @@ def fetch_realtime(codes_with_kind: List[Tuple[str, str]], timeout: int = 10) ->
 
 # 美股指数代码前缀（腾讯财经 qt.gtimg.cn）：us + 代码，如 usDJI/usIXIC/usINX。
 # 注意：与 A股不同，美股用 `us` 前缀（非 `s_us_`）；道琼斯=.DJI 纳斯达克=.IXIC 标普500=.INX。
-# 字段位置（实测 2026-07-24）：[1]名称 [2]代码(.DJI) [3]最新价 [4]昨收 [5]今开
-#   [31]时间戳 [32]涨跌额 [33]涨跌幅% [34]最高 [35]最低
+# 字段位置（实测 2026-07-28，GBK 解码）：[1]名称 [2]代码(.DJI) [3]最新价 [4]昨收 [5]今开
+#   [30]时间戳 [31]涨跌额 [32]涨跌幅% [33]最高 [34]最低 [35]币种(USD)
+# 注意：美股格式与 A股 v_* 不同（A股 [32]=涨跌幅、[33]=最高），美股需整体 +25 偏移，
+# 早期把涨跌幅错配到 [33]（实际是最高价 ~52871）导致 +52607% 类荒谬值，已修正为 [32]。
 _US_NAME = 1
 _US_CODE = 2
 _US_CLOSE = 3
 _US_PREV = 4
 _US_OPEN = 5
-_US_TS = 31
-_US_CHG = 32
-_US_PCT = 33
-_US_HIGH = 34
-_US_LOW = 35
+_US_TS = 30
+_US_CHG = 31
+_US_PCT = 32
+_US_HIGH = 33
+_US_LOW = 34
 
 
 def fetch_us_indices(codes: List[str], timeout: int = 10) -> pd.DataFrame:

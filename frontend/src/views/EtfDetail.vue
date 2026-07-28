@@ -158,9 +158,7 @@ const signalStaleText = computed(() => {
               </span>
             </div>
             <p v-if="etf.related_index_code" class="text-xs text-slate-400 mt-1">
-              关联指数：{{ etf.related_index_code }} · 关联板块：{{
-                (etf.related_sector_codes ?? []).join(', ') || '—'
-              }}
+              关联指数：{{ etf.related_index_code }}
             </p>
           </div>
           <div v-if="etf.latest_signal" class="flex flex-col items-end gap-2">

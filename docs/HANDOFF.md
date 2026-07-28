@@ -119,3 +119,40 @@
 7. **CVM 必须先确认 `git pull` 真正生效**（2026-07-26 backfill 实测踩坑）：旧代码（`DataSourceConfig.preferred="em"`）下 `sector_history` 仍先试东财报 `em: ConnectionError`；C14 已改 `preferred="sina"`，em 不进轮转，此时板块应报 `no applicable source`（快速失败）而非触网。若 CVM backfill 仍见 `em:` 报错，说明工作树仍是 C14 前代码——先 `git log -1`（应见 `0bc2005`）+ `git status`（应 clean）+ 确认 `config.py:73 preferred="sina"`，再重跑。
 8. **板块主源 = westock-data 异动榜（C19-G）**：CVM 上 em(push2/push2his) 批量请求被 RST、ths 解析报错/空、akshare 无 sina 板块函数 → **无任何源能稳定拿全量板块历史+资金流**。westock-data（`npx -y westock-data-skillhub@1.0.5`）是 CVM 唯一稳定板块源，但返回「异动 TOP 榜」（非全量）→ 板块信号从"完整历史"降级为"当日异动排名"，非活跃板块引擎 D4 降级属设计内（见 `sector_engine.engine`）。push2 直连（`eastmoney_web.py`）C19-F 误判可达，**C19-G 实测批量 RST，已默认关闭（`use_em_web=False`）**，仅作不可靠备选，勿在 CVM 开启。注：腾讯 `web.ifzq.gtimg.cn` K 线仍不支持板块 BK 代码（仅指数/个股），gtimg 不作板块历史源。
 9. **盈米「报未初始化」是 root/ubuntu $HOME 不一致（CVM 实测）**：后端 `User=root`（`deploy/etf-api.service`），盈米 apiKey 存 `$HOME/.yingmi-skill-cli/config.json`；初始化多在 `ubuntu` 用户下完成 → 服务端子进程读 `/root/.yingmi-skill-cli` 找不到授权。解法三选一（推荐①）：① `/workspace/config/.env` 加 `YINGMI_HOME=/home/ubuntu` 后 `systemctl restart etf-api`（代码 `_yingmi_env()` 已支持）；② `sudo ln -sfn /home/ubuntu/.yingmi-skill-cli /root/.yingmi-skill-cli`；③ `sudo su -` 后 root 重做 init（需再收短信）。详见 README §3.5。
+
+## I. C19-I 本轮五处修复（用户验收反馈）
+
+> 用户原话五项：①分时图不如上一版（要连续轴/白线/黄均价线/0%居中/量对齐/净买红净卖绿）②详情页"关联板块：—"恒空删掉 ③美股指数 +52607% 错 ④系统状态秒数不动+新鲜度显示 08:00 ⑤信号恒"市场风险大先观望"且恒报数据缺失。
+
+### I.1 美股指数涨跌幅错误（#102，后端）
+- **根因（实测确认）**：`backend/app/data_provider/gtimg_client.py` 美股字段下标整体偏 +1。腾讯财经 `usDJI/usIXIC/usINX` 真实格式：`[30]=时间戳 [31]=涨跌额 [32]=涨跌幅% [33]=最高 [34]=最低`。原 `_US_PCT=33` 实际读到**最高价**(~52871) → 显示 +52871% 类荒谬值；`_US_TS=31` 读错时间戳。
+- **修复**：`_US_TS=30 / _US_CHG=31 / _US_PCT=32 / _US_HIGH=33 / _US_LOW=34`（与 A股 `v_*` 不同，美股整体 +25 偏移）。改常量 + 注释，函数逻辑不变（仍走 `normalize_us_index_snapshot`→`_derive_change_percent`）。
+- **验证**：实时 curl `qt.gtimg.cn/q=usDJI,usIXIX,usINX` 解析 → 道琼斯 +1.25% / 纳指 +0.09% / 标普 +0.44%（正确符号与量级）；`test_us_index.py` 通过。
+
+### I.2 详情页"关联板块：—"恒空（#101，前端）
+- **根因**：`EtfDetail.vue` 头部一行 `关联指数：{{code}} · 关联板块：{{ related_sector_codes.join(',') || '—' }}`，而 `etf_mapping.related_sector_codes` 对宽基 ETF 恒为 `[]`，行业 ETF 才有值 → 宽基永远显示"—"。
+- **修复**：去掉 `· 关联板块：…` 整段，仅保留 `关联指数：{{code}}`（有值时才有意义）。`related_sector_codes` 仍入库供信号引擎使用。
+- **注意**：该字段恒空恰是 #104 的侧面证据——宽基本就无关联板块。
+
+### I.3 盘中分时图 v2（#100，前端 `IntradayChart.vue` 重写）
+- **连续 x 轴**：去掉午休 11:31–12:59 空槽，`09:30–11:30` 直接接 `13:00–15:00`（类同花顺，折线不断开）。
+- **白价格线 + 黄均价线**：价格线 `#fff`，均价线 `#f5c518`（用 `IntradayPoint.avg` = 累计成交额/累计成交量 VWAP，后端已提供）；图表面板改深色 `#0d1117` 保证白线可见（同花顺分时观感）。
+- **y 轴 0% 居中**：取 change%/avg% 最大绝对值对称 `min=-M/max=+M`，0% 固定中线；涨跌幅按 price vs 昨收。
+- **量对齐 + 净买红净卖绿**：底部量柱与价格共用同一类目轴；着色按本分钟价 vs 上一分钟价（首分钟 vs 昨收）：涨=红(#ef4444) 跌=绿(#22c55e) 持平=灰。
+
+### I.4 系统状态栏（#103，前端+后端）
+- **秒数不动**：`stores/market.ts` 新增导出 `secondsSinceRefresh`（读 1 秒 `_now` 时钟），`SystemStatus.vue` 的"最后成功刷新：X 秒前"改为 `{{ secondsSinceRefresh }}` 每秒跳动；并附"还 X 秒自动刷新"（复用 `secondsToRefresh`）。
+- **新鲜度显示 08:00**：根因 `overview.as_of` 只是**交易日（日期）**，`toBeijing(as_of)` 把日期当 UTC 午夜 → 北京 08:00，与真实采集时间无关。
+- **修复**：后端 `MarketOverviewOut` 新增 `latest_collected_at`（取主要指数最新 SNAPSHOT/BAR 的最大 `timestamp`，即真实采集时刻）；`market.py` 计算并下发；前端 `MarketOverview` 类型加字段，"数据新鲜度"改用 `latest_collected_at`（回退 as_of）。白天有实时采集时显示真实时刻（如 14:32），不再固定 08:00。
+
+### I.5 信号恒"先观望"且恒报数据缺失（#104，后端策略引擎 + 部署动作）
+**根因（决定性）**：策略引擎只读 `data_kind='BAR'` 的**日线历史**；而本库 `market_quote` 只有 `data_kind='SNAPSHOT'`（CONCEPT/ETF/INDEX/INDUSTRY 快照），**一条 BAR 都没有** → `get_bar_history` 全空 → ETF/板块/指数 BAR 全缺 → `etf_rs_missing`/板块缺失/`market` 分为零 → 全部"数据缺失"，档位恒为"先观望/别碰"。
+- **引擎查询本身正确**：日线 BAR 存 `symbol_type=ETF/INDEX/SECTOR`（板块历史即 `SECTOR`+BK 代码，与 `get_bar_history("SECTOR", bk_code)` 一致）；缺口是**历史日线回填从未落库**。
+- **回填入口**：`worker.job_backfill_history` 每天 **16:30（北京）** 跑（`backfill_history` → ETF/指数用 akshare、板块用 westock-data 异动榜（CVM 稳）、板块资金流用 em_web 默认关）。需确认 CVM 上该任务真正写入 BAR（若 akshare/em 被 RST 封则写不进 → 需改用 CVM 稳源，见约束 8）。
+- **顺手修的代码缺陷（避免宽基被误判缺失）**：`strategy_engine/engine.py` 宽基 ETF（`related_sector_codes` 为空）本就把 `sector/fund_flow` 计入"缺失"→ 误扣置信度、弹"数据缺失"。改为：按 `has_sector` 动态裁掉权重中的 `sector_trend/fund_flow`，且 `failed_rules` 仅在 `has_sector` 为真且查不到时才记 `sector_data_missing/fund_flow_missing`。
+- **验证（确定性，注入最小 BAR 后跑引擎）**：
+  - 510300 沪深300（宽基）：conf **100**，`failed_rules=['breadth_missing']`（不再含 sector/fund_flow），`available` 含 market+etf_rs。
+  - 512010 医药（行业，注入 BK0465 板块 BAR）：conf **100**，`failed_rules=['breadth_missing']`，`available` 含 market+sector+fund_flow+etf_rs（全可用）。
+  - 档位为 `MARKET_RISK_HIGH`（"市场风险大，先观望"）是因为造的弱市数据使 `regime=WEAK`——**市场偏弱时观望是算法正确的保守行为，非 bug**；市场走强后档位会分化。
+- **算法合理性评估**：复合分（market+sector+fund_flow+etf_rs）D4 缺失重归一化 + 风险否决（BEAR+缺失）+ 保守档位，模型合理。用户提到的 `@持仓监控告警`/`@基金分析` skills 本沙箱未安装，评估基于代码分析。真正的 operational gap 是日线 BAR 回填必须在 CVM 真正落库。
+- **部署动作（用户侧）**：在 CVM 跑一次 `backfill_history`（或等 16:30 定时）确认 `market_quote` 出现 `data_kind='BAR'` 行；若仍为空，按约束 8 排查 akshare/em 网络，必要时为 ETF/指数历史换 CVM 稳源（gtimg 仅支持指数/个股 K 线，不支持板块 BK）。

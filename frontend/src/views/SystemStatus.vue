@@ -4,9 +4,9 @@ import Card from '@/components/ui/Card.vue'
 import StatePanel from '@/components/ui/StatePanel.vue'
 import Badge from '@/components/ui/Badge.vue'
 import { getEtfs } from '@/api/endpoints'
-import { marketState, POLL_INTERVAL_MS } from '@/stores/market'
+import { marketState, POLL_INTERVAL_MS, secondsSinceRefresh, secondsToRefresh } from '@/stores/market'
 import { riskLevelBadge } from '@/lib/tier'
-import { toBeijing, toRelative, daysSinceBeijingDate } from '@/lib/time'
+import { toBeijing, daysSinceBeijingDate } from '@/lib/time'
 
 interface EtfCoverage {
   total: number
@@ -49,7 +49,9 @@ watch(
 const ov = computed(() => marketState.overview)
 const risk = computed(() => ov.value?.signal_risk ?? null)
 const breadth = computed(() => ov.value?.breadth ?? null)
-const asOfDays = computed(() => daysSinceBeijingDate(ov.value?.as_of))
+// 真实数据新鲜度：优先用后端 latest_collected_at（真实采集时间戳），缺失时回退 as_of（仅交易日）。
+const collectedAt = computed(() => ov.value?.latest_collected_at ?? ov.value?.as_of ?? null)
+const asOfDays = computed(() => daysSinceBeijingDate(collectedAt.value))
 const freshnessText = computed(() => {
   const d = asOfDays.value
   if (d === null) return '未知'
@@ -89,14 +91,14 @@ const pollIntervalText = computed(() => {
               {{ marketState.connected ? '已连接' : '未连接' }}
             </span>
           </div>
-          <p class="text-xs text-slate-400 mt-2">最后成功刷新：{{ toRelative(marketState.lastUpdated) }}</p>
-          <p class="text-xs text-slate-400">轮询间隔：{{ pollIntervalText }}</p>
+          <p class="text-xs text-slate-400 mt-2">最后成功刷新：<span class="tnum">{{ secondsSinceRefresh }} 秒前</span></p>
+          <p class="text-xs text-slate-400">还 <span class="tnum">{{ secondsToRefresh }}</span> 秒自动刷新 · 轮询间隔 {{ pollIntervalText }}</p>
         </Card>
 
         <Card title="数据新鲜度">
           <div class="text-2xl font-semibold text-slate-700">{{ freshnessText }}</div>
           <p class="text-xs text-slate-400 mt-1">
-            数据截至交易日 <span class="tnum">{{ toBeijing(ov?.as_of) }}</span>
+            数据截至 <span class="tnum">{{ toBeijing(collectedAt) }}</span>
           </p>
           <p v-if="asOfDays != null && asOfDays > 1" class="text-xs text-amber-600 mt-1">
             数据较旧，请检查采集任务。

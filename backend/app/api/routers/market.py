@@ -94,6 +94,7 @@ def market_overview(session: Session = Depends(get_db)):
 
     indices: List[IndexSnapshotOut] = []
     index_dates: List[str] = []
+    latest_ts: Optional[datetime] = None
     for code in codes:
         # 取「最新实时 SNAPSHOT」与「最新日线 BAR」中时间戳更新者（修复 bug②：
         # 旧 SNAPSHOT 不应压住更晚的 BAR 收盘，导致首页显示旧数据；抽屉用 BAR 故表现为新旧不一致）。
@@ -121,6 +122,9 @@ def market_overview(session: Session = Depends(get_db)):
             )
             if q.trading_date is not None:
                 index_dates.append(q.trading_date.isoformat())
+            # 累计真实采集时间戳（用于数据新鲜度，避免 as_of 仅交易日导致显示 08:00 假象）
+            if q.timestamp is not None:
+                latest_ts = q.timestamp if latest_ts is None else max(latest_ts, q.timestamp)
         else:
             indices.append(IndexSnapshotOut(code=code, name=INDEX_LABELS.get(code, code)))
 
@@ -184,6 +188,7 @@ def market_overview(session: Session = Depends(get_db)):
 
     return MarketOverviewOut(
         as_of=as_of,
+        latest_collected_at=latest_ts.isoformat() if latest_ts is not None else None,
         indices=indices,
         us_indices=us_indices,
         breadth=breadth,

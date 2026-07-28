@@ -65,6 +65,12 @@ export const secondsToRefresh = computed<number>(() => {
   return Math.max(0, Math.ceil((POLL_INTERVAL_MS - elapsed) / 1000))
 })
 
+// 距上次成功刷新的秒数（基于 lastUpdated；读取 _now 故每秒自动跳动，用于「最后成功刷新：X 秒前」）。
+export const secondsSinceRefresh = computed<number>(() => {
+  if (!_state.lastUpdated) return 0
+  return Math.max(0, Math.floor((_now.value - new Date(_state.lastUpdated).getTime()) / 1000))
+})
+
 export function startPolling(intervalMs = POLL_INTERVAL_MS): void {
   if (timer !== null) return
   void tick()

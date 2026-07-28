@@ -1663,3 +1663,16 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - **验证**：后端 `pytest -q` 全量通过（含 purge 新例）；前端 `pnpm build` 通过（vue-tsc + vite，658 模块）。Nginx `root /workspace/frontend/dist` 直接指向构建产物，`git pull` 后 `pnpm build` 即生效（dist 不入库）。
 
 **推送状态**：本轮三个提交（`4561802` westock 集成、`11c6cbf` 前端三改+后端清理、`62b5bd5` 文档）已**推送至 origin/main**（用户临时提供 token，推后立即恢复公开 URL）。CVM 部署：`git pull` → `cd frontend && pnpm build`（覆盖 Nginx dist，dist 不入库）→ worker 定时自动采集（含 `sector_westock_collect` 900s + 盘中分时清理）。**该 token 已在对话中暴露，强烈建议到 GitHub 吊销并换发新 token。**
+
+### C19-I 用户验收五项修复（分时v2/关联板块/美股%/系统状态/信号缺失）
+- **#102 美股指数%错误（已修）**：`gtimg_client.py` 美股字段下标整体偏 +1（`_US_PCT=33` 实读最高价→+52871%）。实测腾讯 `usDJI/usIXIC/usINX` 真实下标 `[30]时间戳[31]涨跌额[32]涨跌幅%[33]最高[34]最低`，改为 `_US_TS=30/_US_CHG=31/_US_PCT=32/_US_HIGH=33/_US_LOW=34`。实时 curl 验证：道指+1.25%/纳指+0.09%/标普+0.44%。`test_us_index.py` 通过。
+- **#101 关联板块恒空（已修）**：`EtfDetail.vue` 去掉 `· 关联板块：…` 空显示段，仅留 `关联指数`。`related_sector_codes` 仍入库供引擎使用。该字段恒空也是 #104 宽基无板块的侧面印证。
+- **#100 分时图 v2（已修，重写 `IntradayChart.vue`）**：连续 x 轴（11:30 直连 13:00，无午休空槽）；白价格线 + 黄均价线（`avg` VWAP，面板改深色保证可见）；y 轴涨跌幅% 0% 居中对称；底部量柱与价格共用轴，净买红(#ef4444)/净卖绿(#22c55e)/持平灰（按本分钟价 vs 上分钟价）。
+- **#103 系统状态（已修，前端+后端）**：`market.ts` 导出 `secondsSinceRefresh`（读 1s `_now`），"最后成功刷新：X 秒前"每秒跳动；后端 `MarketOverviewOut.latest_collected_at`（主要指数最新 SNAPSHOT/BAR 最大 timestamp），"数据新鲜度"改用它（回退 as_of），解决固定显示 08:00 的假象。
+- **#104 信号恒观望/恒报缺失（根因定位+代码修复+部署动作）**：
+  - **根因**：引擎只读 `data_kind='BAR'` 日线，而库里只有 `data_kind='SNAPSHOT'`，**无 BAR** → 全缺 → 恒观望。回填入口 `job_backfill_history`（每天 16:30）。引擎查询本身正确（板块 BAR 存 `SECTOR`+BK，与 `get_bar_history("SECTOR",bk)` 一致）。
+  - **代码修复**：宽基 ETF（`related_sector_codes` 空）不再把 sector/fund_flow 计入缺失→误扣置信度；按 `has_sector` 动态裁权重 + 门控 `failed_rules`。
+  - **验证**：注入最小 BAR 后跑引擎，510300（宽基）conf=100 仅 `breadth_missing`；512010（医药，注入 BK0465）conf=100 全组件可用。"先观望"在弱市(`regime=WEAK`)是算法正确保守行为，非 bug。
+  - **部署动作**：CVM 确认 `backfill_history` 真正写入 BAR；若 akshare/em 被 RST 封写不进，按 HANDOFF 约束 8 换 CVM 稳源。
+- **算法评估**：复合分 D4 缺失重归一 + 风险否决(BEAR+缺失) + 保守档位，模型合理。用户提到的 `@持仓监控告警`/`@基金分析` skills 本沙箱未安装，评估基于代码分析。
+- **验证**：前端 `pnpm build` 通过（658 模块）；后端 `pytest -q` **全量 249 passed**（无回归）。test 数据（注入的 `data_source='test'` BAR）已清理。

@@ -129,6 +129,9 @@ class IntradayOut(BaseModel):
 
 class MarketOverviewOut(BaseModel):
     as_of: Optional[str] = None
+    # 真实数据新鲜度：主要指数最新 SNAPSHOT/BAR 的最大采集时间戳（北京时间展示）。
+    # 与 as_of（仅交易日）区分——as_of 用于信号计算基准，latest_collected_at 反映真实刷新时刻。
+    latest_collected_at: Optional[str] = None
     indices: List[IndexSnapshotOut]
     us_indices: List[IndexSnapshotOut] = []
     breadth: Optional[BreadthOut] = None

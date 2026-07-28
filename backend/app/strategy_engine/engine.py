@@ -386,7 +386,10 @@ class StrategyEngine:
         # 3) 板块趋势
         sector_trend = None
         sector_code = None
-        if mapping.related_sector_codes:
+        # 宽基 ETF 无关联板块（related_sector_codes 为空）：板块/资金流属「不适用」而非「数据缺失」，
+        # 不应计入缺失项、不应扣置信度（见下方权重裁剪与 failed_rules 门控）。
+        has_sector = bool(mapping.related_sector_codes)
+        if has_sector:
             sector_code = mapping.related_sector_codes[0]
             s_rows = quote_repo.get_bar_history(session, "SECTOR", sector_code, start, end)
             sector_trend = self.sector.evaluate_sector_trend(_to_df(s_rows))
@@ -405,13 +408,20 @@ class StrategyEngine:
             etf_rs_score = max(0.0, min(100.0, 50 + (etf_ind["rs_20d"] - 1) * 100))
 
         # 6) 合成（缺失项重归一化，D4）
-        scores = {
-            "market": market_score,
-            "sector_trend": sector_trend["score"] if sector_trend and sector_trend.get("available") else None,
-            "fund_flow": fund_flow["score"] if fund_flow and fund_flow.get("available") else None,
-            "etf_rs": etf_rs_score,
-        }
-        comp = compute_composite(scores, self.settings.strategy.composite_weights)
+        # 宽基 ETF 无板块：从权重中移除 sector_trend/fund_flow，使其不被计入「缺失」、不误扣置信度；
+        # 有板块的 ETF 仍按完整权重计算，数据真缺失时才降级。
+        weights = dict(self.settings.strategy.composite_weights)
+        if not has_sector:
+            weights.pop("sector_trend", None)
+            weights.pop("fund_flow", None)
+        scores = {"market": market_score}
+        if sector_trend is not None and sector_trend.get("available"):
+            scores["sector_trend"] = sector_trend["score"]
+        if fund_flow is not None and fund_flow.get("available"):
+            scores["fund_flow"] = fund_flow["score"]
+        if etf_rs_score is not None:
+            scores["etf_rs"] = etf_rs_score
+        comp = compute_composite(scores, weights)
 
         # 6.5) 盘中动量修正（P1）：让综合分随实时行情移动
         # 仅「当日实时」路径生效（as_of==今日 且存在 SNAPSHOT）；历史回填不改分（避免与 mom/rs 双重计入）。
@@ -508,11 +518,11 @@ class StrategyEngine:
             failed.append("breadth_missing")
         if sector_trend and sector_trend.get("available"):
             triggered.append("sector_trend_available")
-        else:
+        elif has_sector:
             failed.append("sector_data_missing")
         if fund_flow and fund_flow.get("available"):
             triggered.append("fund_flow_available")
-        else:
+        elif has_sector:
             failed.append("fund_flow_missing")
         if etf_rs_score is not None:
             triggered.append("etf_rs_available")
