@@ -101,6 +101,8 @@ class SchedulerConfig(BaseModel):
     intraday_interval_seconds: int = 180
     intraday_minute_interval_seconds: int = 60  # 盘中分时(1分钟)采集间隔
     pre_close_interval_seconds: int = 60
+    # 板块异动（腾讯自选股 westock-data，npx 较慢）低频采集间隔；is_trading_now 守卫。
+    sector_westock_interval_seconds: int = 900
 
 
 class CorsConfig(BaseModel):
@@ -164,6 +166,9 @@ class BackfillConfig(BaseModel):
         default_factory=lambda: ["000300", "000001", "399001"]
     )
     major_sector_codes: _t.List[str] = Field(default_factory=list)
+    # 东方财富 push2 直连（eastmoney_web）开关。CVM 上 push2 被 RST 拦截，默认关闭，
+    # 避免回填/采集中 10 个板块 kline 超时拖慢；仅在与东财直连可达的部署开启。
+    use_em_web: bool = False
 
 
 class BacktestConfig(BaseModel):

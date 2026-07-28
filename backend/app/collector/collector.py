@@ -11,7 +11,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+import pandas as pd
+
 from app.collector import normalize
+from app.collector import sector_map
 from app.config import Settings
 from app.data_provider import eastmoney_web
 from app.data_provider.base import BaseDataProvider
@@ -308,15 +311,14 @@ class Collector:
 
     # ---- 组合 ----
     def collect_market(self, session: Session) -> Dict[str, Any]:
-        """盘中轻量采集：指数 + ETF + 行业 + 概念 + 腾讯财经实时快照（gtimg，CVM 可靠源）+ 美股指数
-        + 东方财富板块资金流快照（em_web，CVM 可达，喂「板块异动」面板）。
+        """盘中轻量采集：指数 + ETF + 行业 + 概念 + 腾讯财经实时快照（gtimg，CVM 可靠源）+ 美股指数。
 
         gtimg 在末尾运行，写入时间戳最新 -> P1 盘中综合分优先采用其涨跌幅；
         gtimg_fetcher 未注入时 collect_realtime_gtimg 直接跳过（零网络，不影响其余采集）。
         美股指数（usDJI/usIXIC/usINX）同样走腾讯财经，与 A股 regime 隔离（US_INDEX）。
-        em_web 板块资金流失败优雅降级（不抛上层）。
+        板块异动（westock-data）因 npx 较慢不进本高频采集，由独立低频任务 job_collect_sector_westock
+        + backfill_history 负责落库（见 worker / backfill_history）。
         """
-        sector_codes = self._sector_codes(session, trading_date_for())
         res = {
             "index": self.collect_index_snapshot(session),
             "etf": self.collect_etf_snapshot(session),
@@ -324,7 +326,6 @@ class Collector:
             "concept": self.collect_sector_ranking(session, "CONCEPT"),
             "gtimg": self.collect_realtime_gtimg(session),
             "us_index": self.collect_us_indices(session),
-            "sector_fund_flow_web": self.collect_sector_fund_flow_web(session, sector_codes, trading_date_for()),
         }
         return res
 
@@ -491,6 +492,76 @@ class Collector:
         session.commit()
         return {"status": "done", **bucket}
 
+    def collect_sector_from_westock(self, session: Session, sector_codes: set, as_of: date) -> Dict[str, Any]:
+        """板块异动（腾讯自选股 westock-data，CVM 稳定）落库 SECTOR BAR。
+
+        westock `sector ranking` 返回「行业/概念涨幅 + 资金流入 TOP 榜」（异动榜，非全量）：
+        - industry / concept 表：name + changePct（涨跌幅）
+        - fund_flow 表：name + changePct + mainNetInflow（主力净流入）
+        按 sector_map.resolve_sector_bk 把板块名解析为跟踪 BK（仅当日活跃出现在榜上的板块入库），
+        合并为每个 BK 一行（change_percent + main_net_inflow），normalize_sector_fund_flow_bar
+        入库（source='westock'，data_kind=BAR）。引擎对非活跃板块优雅降级（D4）。
+        注：westock 不提供板块指数收盘价，close 留空；引擎 evaluate_sector_trend 在 close 缺失时
+        改用 change_percent 做动量（见 sector_engine.engine）。
+        westock 失败（npx 超时/不可用）记 FAILED 不抛。
+        """
+        now = self._now()
+        bucket: Dict[str, int] = {"ok": 0, "failed": 0}
+        try:
+            from app.services import external_data
+
+            mov = external_data.collect_sector_movement()
+            if not mov.get("available"):
+                raise RuntimeError("westock sector movement unavailable: " + str(mov.get("reason", "")))
+        except Exception as e:  # noqa: BLE001
+            self.log.error("sector westock failed", extra={"err": str(e)})
+            self._record_failure(session, source="westock", symbol_type="SECTOR", now=now, err=str(e))
+            session.commit()
+            return {"status": "FAILED", "error": str(e)}
+
+        merged: Dict[str, dict] = {}
+
+        def _merge(name, change_pct, main_inflow=None):
+            bk = sector_map.resolve_sector_bk(name, sector_codes)
+            if bk is None:
+                self.log.debug("sector westock name not mapped", extra={"name": name})
+                return
+            d = merged.setdefault(bk, {})
+            if change_pct is not None:
+                d["change_percent"] = change_pct
+            if main_inflow is not None:
+                d["main_net_inflow"] = main_inflow
+
+        for r in list(mov.get("industry", [])) + list(mov.get("concept", [])):
+            _merge(r.get("name"), r.get("changePct"))
+        for r in mov.get("fund_flow", []):
+            _merge(r.get("name"), r.get("changePct"), r.get("mainNetInflow"))
+
+        for bk, vals in merged.items():
+            try:
+                df = pd.DataFrame([{
+                    "日期": as_of.isoformat(),
+                    "主力净流入-净额": vals.get("main_net_inflow"),
+                    "涨跌幅": vals.get("change_percent"),
+                    "收盘": None,
+                    "成交额": None,
+                    "超大单净流入-净额": None,
+                }])
+                rows = normalize.normalize_sector_fund_flow_bar(df, "westock", bk, now)
+                if not rows:
+                    raise ValueError("no parseable westock sector rows")
+            except Exception as e:  # noqa: BLE001
+                self.log.error(f"sector westock normalize failed: {bk}: {e}", extra={"symbol": bk, "err": str(e)})
+                self._record_failure(session, source="westock", symbol_type="SECTOR", now=now, err=str(e))
+                bucket["failed"] += 1
+                continue
+            assess(rows, is_trading_now=False, now=now, cfg=self.settings.data_quality)
+            quote_repo.upsert_market_quotes(session, rows)
+            self._record_success(session, source="westock", symbol_type="SECTOR", now=now, note=f"rows={len(rows)}")
+            bucket["ok"] += 1
+        session.commit()
+        return {"status": "done", **bucket}
+
     def collect_intraday_minute(self, session: Session) -> Dict[str, Any]:
         """盘中 1 分钟分时采集：遍历 ETF(生效映射) + 宽基指数。
 
@@ -563,10 +634,16 @@ class Collector:
 
     @staticmethod
     def _tally(bucket: Dict[str, int], res: Dict[str, Any]) -> None:
-        if res.get("status") == "OK":
-            bucket["ok"] += 1
-        else:
+        # batch 采集方法（板块 westock/em_web、分时）返回 status="done" 并自带 ok/failed 桶；
+        # 单标的采集（ETF/指数历史）返回 "OK"/"FAILED"。两者均按成功计（除非显式 FAILED）。
+        if res.get("status") == "FAILED":
             bucket["failed"] += 1
+        elif "ok" in res and "failed" in res:
+            # batch 方法：直接合并内部 ok/failed 桶，避免把「部分成功」误判为整批失败
+            bucket["ok"] += int(res.get("ok", 0))
+            bucket["failed"] += int(res.get("failed", 0))
+        else:
+            bucket["ok"] += 1
 
     @staticmethod
     def _is_on_exchange(m) -> bool:
@@ -623,13 +700,20 @@ class Collector:
             r = self.collect_index_history(session, code, start, end)
             self._tally(result["index"], r)
 
-        # 板块（行业/概念 BK 代码并集 + 额外 major）—— 东方财富 push2 直连（CVM 可达，
-        # 替代被墙的 akshare em / 返回空的 ths）。一次性拉全板块后按 BK 过滤入库。
+        # 板块（行业/概念 BK 代码并集 + 额外 major）
+        # 主源：腾讯自选股 westock-data 板块异动榜（CVM 稳定，返回板块名+涨跌幅+主力净流入）。
+        # 仅当日活跃出现在榜上的板块入库；未出现板块由引擎优雅降级（D4）。
         sector_codes = self._sector_codes(session, as_of)
-        r = self.collect_sector_history_web(session, sector_codes, as_of)
+        r = self.collect_sector_from_westock(session, sector_codes, as_of)
         self._tally(result["sector"], r)
-        r2 = self.collect_sector_fund_flow_web(session, sector_codes, as_of)
-        self._tally(result["sector_flow"], r2)
+
+        # 备选：东方财富 push2 直连（eastmoney_web）。CVM 上 push2 被 RST 拦截，默认关闭，
+        # 避免回填中 10 个板块 kline 超时拖慢；仅在与东财直连可达的部署开 settings.backfill.use_em_web。
+        if self.settings.backfill.use_em_web:
+            r = self.collect_sector_history_web(session, sector_codes, as_of)
+            self._tally(result["sector"], r)
+            r2 = self.collect_sector_fund_flow_web(session, sector_codes, as_of)
+            self._tally(result["sector_flow"], r2)
 
         self.log.info("backfill done", extra=result)
         return result

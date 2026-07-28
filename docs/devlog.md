@@ -1621,3 +1621,32 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 
 **推送 / 安全**
 - 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多轮明文暴露，强烈建议到 GitHub 吊销并换发新 token。**
+
+### G. 重大修正：push2 直连在 CVM 实际被 RST（F 小节误判）+ 板块主源切 westock-data 异动榜
+- **F 小节误判复盘**：F 基于一次极小探测（`pz=1&fields=f12`）返回 `rc:0` 判 `push2.eastmoney.com` 在 CVM 可达。用户 CVM 实跑 `manual_backfill_today.py` 证明：**批量请求（`pz=500`+全字段 clist、逐 BK kline）在 CVM 与沙箱均被 RST**（`Remote end closed connection without response`，BK0438/0465/0471/0473/0475/0481/0900/0999/1035/1036 全挂）。=> **push2 直连不可靠、生产不能用**，F 小节"降级已消除/可达"结论作废。
+- **数据源现状（CVM 实测，本轮最终确认）**：
+  - `push2.eastmoney.com`：极小请求可达，批量 RST → 不可用。
+  - `push2his.eastmoney.com`：RST。
+  - `www.10jqka.com.cn`（ths）：主机可达但 `stock_board_industry_index_ths` 解析报错/空 → 板块不可用。
+  - akshare 1.18.22 **无 sina 板块函数**（仅 em/ths）→ em 又被 RST。
+  - **腾讯自选股 westock-data（`npx -y westock-data-skillhub@1.0.5`）：CVM 稳定可用**，返回「行业/概念涨幅 + 资金流入 TOP 榜」（异动榜，非全量）。=> CVM 上**唯一稳定可用的板块源**。
+- **方向决策（用户拍板）**：westock-data 异动榜接引擎（板块信号从"完整历史"降级为"当日异动排名"，非活跃板块引擎 D4 降级）；push2 直连保留代码但 `settings.backfill.use_em_web=False` 默认关闭，仅作不可靠备选。
+- **实现**：
+  - 新增 `backend/app/collector/sector_map.py`：`SECTOR_NAME_ALIASES`(BK→规范名+别名) + `resolve_sector_bk(name, sector_codes)`（① 别名精确匹配仅限跟踪集 ② 子串兜底；未匹配返回 None）。覆盖 BK0438/0465/0471/0473/0475/0481/0900/0999/1035/1036。
+  - `collector.collect_sector_from_westock(session, sector_codes, as_of)`：调 `external_data.collect_sector_movement()`，合并 industry/concept(涨跌幅)+fund_flow(主力净流入) 三表 → 按 BK 解析 → 构造 DataFrame(`日期`/`主力净流入-净额`/`涨跌幅`/`收盘=None`) → `normalize.normalize_sector_fund_flow_bar(df,"westock",bk,now)` 入库 `SECTOR/BAR/westock`。westock 失败记 FAILED 不抛。
+  - `backfill_history` 板块段：先 `collect_sector_from_westock`（主源），`if settings.backfill.use_em_web:` 才调 em_web（备选，默认关）。
+  - `config`：`SchedulerConfig.sector_westock_interval_seconds=900`；`BackfillConfig.use_em_web=False`。
+  - `worker.job_collect_sector_westock()`：非交易时段 skip，调 westock 采集；`build_scheduler` 注册 `interval` 秒=该值，id=`sector_westock_collect`。
+  - `sector_engine.engine.evaluate_sector_trend` 增强：close 缺失（westock 无收盘价）时改用 `change_percent` 序列做动量（近5日均值>0 +40、上涨占比≥0.6 +25、加速 +10、近3日均值>5 过热），返回 available=True 分，避免拖累综合分。
+  - `collector._tally` 修复（关键 bug）：batch 采集方法返回 `status="done"` 带 `ok/failed` 桶，原 `_tally` 只认 `"OK"` → 把 westock 整批误计为 failed。`_tally` 改为：FAILED→failed；含 ok/failed 桶→合并桶；否则 OK→ok。
+- **测试**：新增 `tests/test_collector_sector_westock.py`（6 例：名→BK 精确/别名/越界返回 None、采集入库、不可用降级、change_percent 降级、close 存在仍走 MA）；`test_collector_history` 改断言（westock 落库 BK0465、em_web 默认关）。全量 **248 passed**（无回归）。
+- **验证**：`test_backfill_history_incremental_and_resilient` 曾因 `_tally` 误计 ok=0 失败 → 修复 `_tally` 后通过；全量 `pytest -q` 通过。
+
+**CVM 部署处置（用户侧，取代 F 的处置）**
+1. `git pull`（见本 G 的提交：sector_map.py + collector/worker/config/engine 改动 + 测试）。
+2. 确认 `npx -y westock-data-skillhub@1.0.5` 在 CVM 可运行（无 key；首调慢，建议预装/缓存）。
+3. worker 定时 `sector_westock_collect`（默认 900s）自动拉异动榜；板块面板信号来自当日异动排名。非活跃板块引擎 D4 降级属设计内。
+4. **push2 直连默认关闭**：`use_em_web=False`；勿在 CVM 开启（批量请求被 RST 拖慢回填）。
+
+**推送 / 安全**
+- 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多轮明文暴露，强烈建议到 GitHub 吊销并换发新 token。**

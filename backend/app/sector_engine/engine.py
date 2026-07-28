@@ -34,44 +34,82 @@ class SectorEngine:
             if hasattr(sector_bar_df, "sort_values")
             else pd.DataFrame(sector_bar_df)
         )
-        m = self.ind.compute(df)
         close = pd.Series(df["close"].astype("float64"))
-        last_close = float(close.iloc[-1])
+        if close.notna().any():
+            m = self.ind.compute(df)
+            last_close = float(close.iloc[-1])
 
+            score = 0.0
+            supp: Dict[str, Any] = {}
+            risk_overheat = False
+
+            if m["ma20"] is not None:
+                above = last_close > m["ma20"]
+                supp["above_ma20"] = above
+                if above:
+                    score += 35
+                if m["ma20_slope"] is not None and m["ma20_slope"] > 0:
+                    score += 20
+                    supp["ma20_rising"] = True
+
+            if m["mom_20"] is not None:
+                supp["mom_20"] = m["mom_20"]
+                if m["mom_20"] > 0:
+                    score += 15
+                    supp["mom20_pos"] = True
+
+            if m["rsi14"] is not None:
+                supp["rsi14"] = m["rsi14"]
+                if 50 <= m["rsi14"] <= 70:
+                    score += 15
+                    supp["rsi_healthy"] = True
+                elif m["rsi14"] > 80:
+                    risk_overheat = True
+                    supp["rsi_overheat"] = True
+                elif m["rsi14"] >= 40:
+                    score += 8
+
+            if m["mom_5"] is not None and m["mom_5"] > 0:
+                score += 5
+                supp["mom5_pos"] = True
+
+            return {
+                "available": True,
+                "score": _clamp(score),
+                "risk_overheat": risk_overheat,
+                "supporting": supp,
+            }
+        # close 缺失（如 westock 异动榜仅给涨跌幅，无板块指数收盘价）：改用 change_percent 动量
+        return self._evaluate_sector_trend_from_change(df)
+
+    def _evaluate_sector_trend_from_change(self, df: Any) -> Dict[str, Any]:
+        """close 缺失时的板块趋势降级：用 change_percent（当日涨跌幅）序列做动量评分。
+
+        适用于 westock-data 等只提供每日涨跌幅、无板块收盘价的源。返回 available=True 的动量分，
+        使「板块信号从完整历史变为当日异动排名」时引擎仍能产出 sector_trend 分（否则为 0 拖累综合分）。
+        """
+        cp = pd.Series(df["change_percent"].astype("float64")).dropna()
+        if len(cp) == 0:
+            return {"available": False, "score": None, "risk_overheat": False, "supporting": {}}
         score = 0.0
         supp: Dict[str, Any] = {}
+        recent = cp.tail(5)
+        avg5 = float(recent.mean())
+        supp["chg_avg5"] = round(avg5, 2)
+        if avg5 > 0:
+            score += 40
+            supp["chg_avg5_pos"] = True
+        up_ratio = float((cp > 0).mean())
+        supp["up_ratio"] = round(up_ratio, 2)
+        if up_ratio >= 0.6:
+            score += 25
+        if len(cp) >= 2 and cp.iloc[-1] > cp.iloc[-2]:
+            score += 10
+            supp["accelerating"] = True
         risk_overheat = False
-
-        if m["ma20"] is not None:
-            above = last_close > m["ma20"]
-            supp["above_ma20"] = above
-            if above:
-                score += 35
-            if m["ma20_slope"] is not None and m["ma20_slope"] > 0:
-                score += 20
-                supp["ma20_rising"] = True
-
-        if m["mom_20"] is not None:
-            supp["mom_20"] = m["mom_20"]
-            if m["mom_20"] > 0:
-                score += 15
-                supp["mom20_pos"] = True
-
-        if m["rsi14"] is not None:
-            supp["rsi14"] = m["rsi14"]
-            if 50 <= m["rsi14"] <= 70:
-                score += 15
-                supp["rsi_healthy"] = True
-            elif m["rsi14"] > 80:
-                risk_overheat = True
-                supp["rsi_overheat"] = True
-            elif m["rsi14"] >= 40:
-                score += 8
-
-        if m["mom_5"] is not None and m["mom_5"] > 0:
-            score += 5
-            supp["mom5_pos"] = True
-
+        if len(cp) >= 3 and float(cp.tail(3).mean()) > 5:
+            risk_overheat = True
+            supp["overheat"] = True
         return {
             "available": True,
             "score": _clamp(score),

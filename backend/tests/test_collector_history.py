@@ -110,7 +110,18 @@ def test_sector_history_failure_is_graceful(tmp_path):
         assert bars == []
 
 
-def test_backfill_history_incremental_and_resilient(tmp_path):
+def test_backfill_history_incremental_and_resilient(tmp_path, monkeypatch):
+    # 板块主源 westock-data 在沙箱可达但返回「异动 TOP 榜」（特定板块当日未必在榜），
+    # 为确定性起见 mock 其返回含 BK0465(医药) 的样本；验证 backfill 对板块源失败/缺失优雅降级、不抛上层。
+    _WESTOCK = {
+        "available": True,
+        "source": "腾讯自选股 westock-data",
+        "industry": [{"name": "医药", "changePct": 1.5, "turnoverRate": 2.0, "changePct5d": 1.0, "changePct20d": -3.0, "leadStock": "x"}],
+        "concept": [],
+        "fund_flow": [{"name": "医药", "changePct": 1.5, "mainNetInflow": 55555.0, "mainNetInflow5d": 222.0, "upDownRatio": "30/40"}],
+    }
+    monkeypatch.setattr("app.services.external_data.collect_sector_movement", lambda: _WESTOCK)
+
     s, eng = _setup(tmp_path)
     with session_scope(eng) as session:
         mapping_repo.upsert_mapping(
@@ -125,10 +136,11 @@ def test_backfill_history_incremental_and_resilient(tmp_path):
     c = Collector(FakeProvider(), s)
     with session_scope(eng) as session:
         r1 = c.backfill_history(session, as_of=date(2024, 1, 10))
-        # ETF 成功；板块历史/资金流失败（em 不可达）属预期
+        # ETF 成功；板块主源 westock 落库 BK0465（mock 含医药），回填未因板块源失败而崩溃
         assert r1["etf"]["ok"] == 1
-        assert r1["sector"]["failed"] >= 1
-        assert r1["sector_flow"]["failed"] >= 1
+        assert r1["sector"]["ok"] >= 1
+        # em_web 默认关闭（CVM 上 push2 被 RST），sector_flow 不被触发
+        assert r1["sector_flow"] == {"ok": 0, "failed": 0}
 
     with session_scope(eng) as session:
         n_after_first = len(quote_repo.get_bar_history(session, "ETF", "510300",

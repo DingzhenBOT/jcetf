@@ -139,6 +139,22 @@ def job_collect_intraday_minute() -> None:
         run_job("collect_intraday_minute", _collector().collect_intraday_minute, session)
 
 
+def job_collect_sector_westock() -> None:
+    """板块异动（腾讯自选股 westock-data）低频采集：落库 SECTOR BAR 供引擎信号。
+
+    非交易时段跳过。npx 较慢，间隔 settings.scheduler.sector_westock_interval_seconds（默认 900s）。
+    """
+    from app.market_calendar import is_trading_now, trading_date_for
+
+    if not is_trading_now():
+        get_logger("etf-worker.job").debug("sector westock skipped: not trading now")
+        return
+    c = _collector()
+    with session_scope(_engine()) as session:
+        sector_codes = c._sector_codes(session, trading_date_for())
+        run_job("sector_westock", c.collect_sector_from_westock, session, sector_codes, trading_date_for())
+
+
 def job_collect_breadth() -> None:
     """全市场宽度累计（每日数次：午间 + 收盘）。非交易日跳过。"""
     from app.market_calendar import is_trading_day, trading_date_for
@@ -263,6 +279,11 @@ def build_scheduler(settings) -> BlockingScheduler:
     scheduler.add_job(
         job_collect_intraday_minute, "interval", seconds=settings.scheduler.intraday_minute_interval_seconds,
         id="intraday_minute_collect", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    # 板块异动（腾讯自选股 westock-data，npx 较慢）低频采集（每 sector_westock_interval_seconds；is_trading_now 守卫）
+    scheduler.add_job(
+        job_collect_sector_westock, "interval", seconds=settings.scheduler.sector_westock_interval_seconds,
+        id="sector_westock_collect", replace_existing=True, max_instances=1, coalesce=True,
     )
     # 午间宽度累计 11:35
     scheduler.add_job(
