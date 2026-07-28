@@ -1650,3 +1650,16 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 
 **推送 / 安全**
 - 用明文 token 推至远程 `main`，推送后恢复公开 URL。**该 token 已多轮明文暴露，强烈建议到 GitHub 吊销并换发新 token。**
+
+### H. 前端三改（C19-G 续）：韭菜ETF 改名 + 题材轮动榜 + 盘中分时图重构
+- **首页标题改名「韭菜ETF」**：`frontend/index.html` `<title>` → "韭菜ETF · A股板块资金与 ETF 辅助分析"；`AppNav.vue` 品牌 "A股板块资金 · ETF 分析" → "韭菜ETF"；`router/index.ts` 加 `afterEach` 写 `document.title`（首页=韭菜ETF，其余=韭菜ETF·{页}）。
+- **题材轮动榜面板**：原"板块异动"页（`SectorMovement.vue`）改名"题材轮动榜"（数据与后端 `/external/sectors/movement` = westock 异动榜一致，CVM 稳定源）；导航 label "板块异动"→"题材轮动榜"。新增首页紧凑面板 `components/sections/SectorRotationPanel.vue`（行业题材涨幅 TOP6 + 主力资金流入 TOP6，自带 120s 轮询），挂在总览页"题材轮动榜" Card，直接消费异动榜。说明：用户原话"同花顺热点"，但 CVM 实测 ths 板块源坏（详见 G），实际稳定源为腾讯自选股 westock-data 异动榜，语义即"板块异动/题材轮动"，故接此源。
+- **盘中分时图重构**（`IntradayChart.vue`）：
+  - x 轴写死 A 股交易时段（09:30-11:30 / 13:00-15:00），午休留空槽使折线断开；仅填充到当前已采集时点，未来时段为 null（读到几点画到哪，不累积多日）。
+  - y 轴改为「当日涨跌幅百分比」(价格 vs 昨收)，0 轴=昨收基准、红涨绿跌、心电图式波动（含浅色面积）。
+  - 底部成交量与 x 轴严格对齐（共用同一交易时段类目），量柱按价格 vs 昨收着色。
+  - `EtfDetail.vue` 显式传 `day=今日`(浏览器本地=北京时)，配合后端清理只取当日。
+- **后端清理前一交易日分时**：`quote_repo.purge_intraday_before(session, keep_date)` 删 `trading_date < keep_date` 的 1m 分时(BAR)行；`collector.collect_intraday_minute` 开头调用（幂等，盘中多次运行仅首日首次删除），实现"每个交易日开盘刷掉前一交易日数据"。新增测试 `test_purge_intraday_before_keeps_only_current_day`。
+- **验证**：后端 `pytest -q` 全量通过（含 purge 新例）；前端 `pnpm build` 通过（vue-tsc + vite，658 模块）。Nginx `root /workspace/frontend/dist` 直接指向构建产物，`git pull` 后 `pnpm build` 即生效（dist 不入库）。
+
+**推送状态（重要）**：本轮两个提交（`4561802` westock 集成、`11c6cbf` 前端三改+后端清理）均**未推送**（沙箱 git credential helper 无 GitHub 凭据，且不明文暴露 token）。需用户在 CVM/本地 `git push` 或提供新 token（旧 token 已多轮暴露，建议先吊销）。CVM 部署：`git pull` → `cd frontend && pnpm build`（覆盖 Nginx dist）→ worker 定时自动采集（含 `sector_westock_collect` 900s + 盘中分时清理）。
