@@ -201,3 +201,52 @@ def test_gtimg_client_parse(monkeypatch):
     assert all(r.day == 27 for r in df["day"])
     assert df["open"].equals(df["high"]) and df["high"].equals(df["low"]) and df["low"].equals(df["close"])
 
+
+
+def test_purge_intraday_before_keeps_only_current_day(tmp_path):
+    """只保留 keep_date 当日的 1m 分时；更旧交易日 1m 被删；1d/快照不受影响。"""
+    from datetime import datetime, timedelta
+
+    from app.db.models.market import MarketQuote
+    from app.repository import quote_repo
+
+    s = get_settings(force_reload=True)
+    s.paths.sqlite_path_abs = tmp_path / "etf_monitor.db"
+    s.paths.backup_dir_abs = tmp_path / "backups"
+    s.paths.log_dir_abs = tmp_path / "logs"
+    eng = make_engine(s)
+    init_db(eng, s)
+
+    old = date(2024, 1, 9)
+    new = date(2024, 1, 10)
+
+    def _row(td: date, tf: str, kind: str, minute: int):
+        return MarketQuote(
+            data_source="gtimg", symbol_type="ETF", symbol="510300",
+            data_kind=kind, timeframe=tf, trading_date=td,
+            timestamp=datetime(2024, 1, td.day, 9, 30 + minute),
+            close=4.7, collected_at=datetime.utcnow(),
+        )
+
+    with session_scope(eng) as session:
+        # 旧交易日 1m（应删）、新交易日 1m（应留）、旧交易日 1d（应留）、旧交易日快照（应留）
+        session.add(_row(old, "1m", "BAR", 0))
+        session.add(_row(old, "1m", "BAR", 1))
+        session.add(_row(new, "1m", "BAR", 0))
+        session.add(_row(old, "1d", "BAR", 0))
+        session.add(_row(old, "snapshot", "SNAPSHOT", 0))
+        session.commit()
+
+        before = session.query(MarketQuote).count()
+        assert before == 5
+
+        purged = quote_repo.purge_intraday_before(session, new)
+        assert purged == 2  # 仅旧交易日 1m 两条
+
+        remaining = session.query(MarketQuote).order_by(MarketQuote.timeframe, MarketQuote.trading_date).all()
+        assert len(remaining) == 3
+        assert {(r.timeframe, r.trading_date.isoformat()) for r in remaining} == {
+            ("1m", "2024-01-10"),
+            ("1d", "2024-01-09"),
+            ("snapshot", "2024-01-09"),
+        }

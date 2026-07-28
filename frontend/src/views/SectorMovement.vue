@@ -46,9 +46,9 @@ const dataDate = computed(() => (data.value?.generatedAt ? toBeijingDate(data.va
 <template>
   <div class="space-y-5">
     <div>
-      <h1 class="text-xl font-semibold tracking-tight text-slate-800">板块异动</h1>
+      <h1 class="text-xl font-semibold tracking-tight text-slate-800">题材轮动榜</h1>
       <p class="text-sm text-slate-400 mt-0.5">
-        行业/概念涨幅排名与领涨股、行业资金流入（来源：腾讯自选股）
+        行业/概念题材轮动与领涨股、行业资金流入（来源：腾讯自选股异动榜）
         <span v-if="updatedAt" class="ml-1 text-slate-400">· 更新于 {{ updatedAt }}</span>
       </p>
     </div>

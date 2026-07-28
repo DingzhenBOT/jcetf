@@ -111,6 +111,25 @@ def upsert_market_quotes(session: Session, rows: List[Dict]) -> int:
     return len(rows)
 
 
+def purge_intraday_before(session: Session, keep_date: date) -> int:
+    """清理「前一交易日」的分时数据：删除 trading_date < keep_date 的 1m 分时(BAR)行。
+
+    用于满足「每个交易日开盘抓数据，把前一个交易日的数据刷掉」——只保留当前交易日的
+    盘中分时，避免 market_quote 无限累积多日 1m 数据、且分时图 x 轴只画当日。
+    幂等：盘中多次调用只在第一天首次删除（此后无更旧行）。
+    """
+    deleted = (
+        session.query(MarketQuote)
+        .filter(
+            MarketQuote.data_kind == "BAR",
+            MarketQuote.timeframe == "1m",
+            MarketQuote.trading_date < keep_date,
+        )
+        .delete()
+    )
+    return int(deleted)
+
+
 def get_last_source_for_symbol_type(session: Session, symbol_type: str) -> Optional[str]:
     """返回该 symbol_type 最近一条行情的数据源（用于切源标记）。"""
     row = (

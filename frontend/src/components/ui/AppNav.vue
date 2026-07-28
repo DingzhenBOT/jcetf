@@ -7,7 +7,7 @@ import { riskLevelBadge } from '@/lib/tier'
 const links = [
   { to: '/', label: '总览' },
   { to: '/sectors', label: '板块' },
-  { to: '/sectors-movement', label: '板块异动' },
+  { to: '/sectors-movement', label: '题材轮动榜' },
   { to: '/etfs', label: 'ETF 列表' },
   { to: '/offexchange', label: '场外基金' },
   { to: '/portfolio', label: '持仓' },
@@ -23,7 +23,7 @@ const updatedText = computed(() => toRelative(marketState.lastUpdated))
     <div class="w-full max-w-[1400px] mx-auto px-4 h-14 flex items-center justify-between gap-4">
       <div class="flex items-center gap-6 min-w-0">
         <router-link to="/" class="font-semibold text-slate-800 tracking-tight whitespace-nowrap">
-          A股板块资金 · ETF 分析
+          韭菜ETF
         </router-link>
         <nav class="hidden sm:flex items-center gap-1">
           <router-link

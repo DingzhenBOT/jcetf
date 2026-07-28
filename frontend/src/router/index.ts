@@ -18,7 +18,7 @@ export const router = createRouter({
     { path: '/etfs', name: 'etfs', component: EtfList, meta: { title: 'ETF 列表' } },
     { path: '/etfs/:code', name: 'etf-detail', component: EtfDetail, meta: { title: 'ETF 详情' } },
     { path: '/portfolio', name: 'portfolio', component: PortfolioView, meta: { title: '持仓分析' } },
-    { path: '/sectors-movement', name: 'sectors-movement', component: SectorMovement, meta: { title: '板块异动' } },
+    { path: '/sectors-movement', name: 'sectors-movement', component: SectorMovement, meta: { title: '题材轮动榜' } },
     { path: '/offexchange', name: 'offexchange', component: OffExchange, meta: { title: '场外基金' } },
     { path: '/system', name: 'system', component: SystemStatus, meta: { title: '系统状态' } },
     { path: '/:pathMatch(.*)*', redirect: '/' },
@@ -29,4 +29,10 @@ export const router = createRouter({
     if (savedPosition) return savedPosition
     return { top: 0 }
   },
+})
+
+// 浏览器标签标题：固定品牌「韭菜ETF」+ 当前页（除首页外）。
+router.afterEach((to) => {
+  const t = (to.meta.title as string) || ''
+  document.title = t && t !== '总览' ? `韭菜ETF · ${t}` : '韭菜ETF'
 })

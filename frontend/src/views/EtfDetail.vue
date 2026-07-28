@@ -18,6 +18,13 @@ import { toBeijing, daysSinceBeijingDate } from '@/lib/time'
 const route = useRoute()
 const code = computed(() => String(route.params.code))
 
+// 当日（浏览器本地=北京时间）交易日，分时接口按此取当日数据，配合后端清理只画当日
+const today = computed(() => {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+})
+
 const etf = ref<EtfListItem | null>(null)
 const opinions = ref<Opinion[]>([])
 const history = ref<Signal[]>([])
@@ -71,7 +78,7 @@ async function loadCharts(): Promise<void> {
   try {
     const [hist, intra] = await Promise.all([
       getEtfHistory(code.value, 120),
-      getIntraday('etf', code.value),
+      getIntraday('etf', code.value, today.value),
     ])
     etfHistory.value = hist
     intraday.value = intra

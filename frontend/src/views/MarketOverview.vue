@@ -11,6 +11,7 @@ import IndexTicker from '@/components/IndexTicker.vue'
 import UsIndexTicker from '@/components/UsIndexTicker.vue'
 import IndexDrawer from '@/components/IndexDrawer.vue'
 import NewsStrip from '@/components/sections/NewsStrip.vue'
+import SectorRotationPanel from '@/components/sections/SectorRotationPanel.vue'
 import { marketState, refreshNow, secondsToRefresh } from '@/stores/market'
 import { TIER_TEXT, riskLevelBadge } from '@/lib/tier'
 import { fmtInt } from '@/lib/format'
@@ -206,6 +207,11 @@ const openCode = ref<string | null>(null)
         </Card>
       </template>
     </StatePanel>
+
+    <!-- 题材轮动榜（首页紧凑面板，实时题材轮动/资金流入 TOP） -->
+    <Card class="mt-4" title="题材轮动榜" subtitle="行业题材涨幅 / 主力资金流入 TOP（来源：腾讯自选股异动榜）">
+      <SectorRotationPanel />
+    </Card>
 
     <!-- 指数详情抽屉 -->
     <IndexDrawer :code="openCode" @close="openCode = null" />
