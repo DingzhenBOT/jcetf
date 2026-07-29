@@ -7,7 +7,7 @@
 
 背景：sina 在 CVM 返回两周前旧分时数据（C19 实测 7/15），腾讯 web.ifzq.gtimg.cn 返回当日，故切腾讯优先。
 """
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -253,6 +253,79 @@ def test_intraday_no_purge_when_all_fetch_fail(tmp_path):
         # 关键：既有分时数据必须保留（未被 purge 清掉）
         after = session.query(MarketQuote).count()
         assert after == 2, "双源失败时空数据不应被清除（先采后清）"
+
+
+def test_intraday_rows_fresh_logic():
+    """_intraday_rows_fresh：拒绝未来异常（>5min）的分钟数据，接受当日（含早前）与临近 now 的。"""
+    from app.collector.collector import _intraday_rows_fresh
+
+    NOW = datetime(2026, 7, 29, 6, 0, 0)
+    assert _intraday_rows_fresh([{"timestamp": NOW}, {"timestamp": NOW - timedelta(minutes=5)}], NOW) is True
+    assert _intraday_rows_fresh([{"timestamp": NOW - timedelta(minutes=60)}], NOW) is True  # 同日早前分钟，正常
+    assert _intraday_rows_fresh([{"timestamp": NOW + timedelta(minutes=60)}], NOW) is False  # 未来异常（陈旧错标）
+    assert _intraday_rows_fresh([], NOW) is False
+    assert _intraday_rows_fresh([{"timestamp": None}], NOW) is False
+
+
+def test_intraday_sina_stale_rejected(tmp_path, monkeypatch):
+    """gtimg 偶败降级 sina 时，若 sina 返回未来异常分时（陈旧错标到今日），守卫应拒绝注入。"""
+    from app.db.models.market import MarketQuote
+
+    s, eng = _setup(tmp_path)
+    NOW = datetime(2026, 7, 29, 6, 0, 0)  # UTC = 14:00 北京
+    monkeypatch.setattr(Collector, "_now", lambda self: NOW)
+
+    # sina 返回未来异常分时：北京 15:30（晚于 NOW 14:00 北京，属陈旧错标）
+    stale = pd.DataFrame([
+        {"day": pd.Timestamp(2026, 7, 29, 15, 30, 0), "open": 4.7, "high": 4.7, "low": 4.7, "close": 4.7, "volume": 100.0},
+        {"day": pd.Timestamp(2026, 7, 29, 15, 31, 0), "open": 4.7, "high": 4.7, "low": 4.7, "close": 4.7, "volume": 100.0},
+    ])
+    stale.attrs["__source"] = "sina"
+
+    class _StaleSina(_Provider):
+        def get_intraday_minute(self, symbol_type, code):
+            return stale
+
+    def boom(code, kind):
+        raise RuntimeError("gtimg down")
+
+    c = Collector(_StaleSina(), s, gtimg_intraday_fetcher=boom)
+    with session_scope(eng) as session:
+        res = c.collect_intraday_minute(session)
+
+    assert res["ok"] == 0 and res["failed"] == 2  # 未来异常 sina 被拒，计失败（不污染当日分时）
+    with session_scope(eng) as session:
+        assert session.query(MarketQuote).filter_by(data_source="sina", timeframe="1m").count() == 0
+
+
+def test_intraday_sina_fresh_accepted(tmp_path, monkeypatch):
+    """gtimg 偶败降级 sina 时，若 sina 返回临近 now 的当日分时，应正常入库。"""
+    from app.db.models.market import MarketQuote
+
+    s, eng = _setup(tmp_path)
+    NOW = datetime(2026, 7, 29, 6, 0, 0)  # UTC = 14:00 北京
+    monkeypatch.setattr(Collector, "_now", lambda self: NOW)
+
+    fresh = pd.DataFrame([
+        {"day": pd.Timestamp(2026, 7, 29, 14, 0, 0), "open": 4.7, "high": 4.7, "low": 4.7, "close": 4.7, "volume": 100.0},
+        {"day": pd.Timestamp(2026, 7, 29, 14, 1, 0), "open": 4.7, "high": 4.7, "low": 4.7, "close": 4.7, "volume": 100.0},
+    ])
+    fresh.attrs["__source"] = "sina"
+
+    class _FreshSina(_Provider):
+        def get_intraday_minute(self, symbol_type, code):
+            return fresh
+
+    def boom(code, kind):
+        raise RuntimeError("gtimg down")
+
+    c = Collector(_FreshSina(), s, gtimg_intraday_fetcher=boom)
+    with session_scope(eng) as session:
+        res = c.collect_intraday_minute(session)
+
+    assert res["ok"] == 2 and res["failed"] == 0
+    with session_scope(eng) as session:
+        assert session.query(MarketQuote).filter_by(data_source="sina", timeframe="1m").count() == 4  # 2 标的 x 2 行
 
 
 def test_purge_intraday_before_keeps_only_current_day(tmp_path):

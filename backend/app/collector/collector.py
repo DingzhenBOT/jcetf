@@ -30,6 +30,32 @@ def _ymd(s: str) -> date:
     return datetime.strptime(s, "%Y%m%d").date()
 
 
+# sina 降级新鲜度窗口：最新分钟若早于「当前 + 容差」之外（未来异常）即视为陈旧，拒绝注入。
+_INTRADAY_FUTURE_TOLERANCE_MINUTES = 5
+
+
+def _intraday_rows_fresh(rows: List[Dict[str, Any]], now: datetime) -> bool:
+    """拒绝明显陈旧的盘中分钟数据：最新分钟出现在「未来」（>当前 +5min）即拒绝。
+
+    仅拒绝未来异常——陈旧数据被错标到今日、覆盖到未来时刻（如旧日全段分时被错标为今日 15:00+）。
+    同日的早前分钟（含上午数据在午后查看）属正常，不拒绝；多日旧数据由 normalize 的 trading_date
+    过滤拦截。gtimg 为盘中主源且正常时不走 sina 分支；此守卫仅在 gtimg 偶败降级 sina 时保护，
+    避免陈旧 sina 分时（尤其午后）污染当日分时图。
+    """
+    if not rows:
+        return False
+    max_ts = None
+    for r in rows:
+        ts = r.get("timestamp")
+        if ts is not None and (max_ts is None or ts > max_ts):
+            max_ts = ts
+    if max_ts is None:
+        return False
+    if max_ts > now + timedelta(minutes=_INTRADAY_FUTURE_TOLERANCE_MINUTES):
+        return False
+    return True
+
+
 class Collector:
     def __init__(self, provider: BaseDataProvider, settings: Settings, gtimg_fetcher=None, us_index_fetcher=None, gtimg_intraday_fetcher=None, us_index_history_fetcher=None):
         self.provider = provider
@@ -623,6 +649,14 @@ class Collector:
                     df = self.provider.get_intraday_minute(symbol_type, code)
                     tried_source = df.attrs.get("__source") or "sina"
                     rows = normalize.normalize_intraday_minute(df, tried_source, symbol_type, code, tdate, now)
+                    # sina 降级新鲜度守卫：拒绝明显陈旧的分钟数据，避免污染当日分时（尤其午后）。
+                    # gtimg 正常时不走此分支；仅 gtimg 偶败降级 sina 时生效。
+                    if rows and not _intraday_rows_fresh(rows, now):
+                        self.log.warning(
+                            "intraday sina stale, skip upsert",
+                            extra={"symbol_type": symbol_type, "symbol": code, "rows": len(rows)},
+                        )
+                        rows = None
                 except Exception as e:  # noqa: BLE001
                     self.log.error(
                         f"collect intraday failed: {symbol_type}/{code}: {e}",

@@ -61,7 +61,7 @@ def post_collection_evaluate(
 
     for m in mappings:
         try:
-            sig = strategy_engine.evaluate_etf(session, m, version, as_of)
+            sig = strategy_engine.evaluate_etf(session, m, version, as_of, phase=phase)
 
             # --- Signal 幂等 upsert（按 trading_date+target_etf+version） ---
             existing = session.execute(

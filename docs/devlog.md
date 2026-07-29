@@ -1818,3 +1818,51 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - 新增单测 `test_db_writer_lock.py`（2 例，multiprocessing 验证跨进程互斥：持锁期间另一进程非阻塞获取被拒、阻塞获取等待释放后才拿到）。
 - **全量 `pytest` = 267 passed（0 失败）**（系统 python3.11 + pytest 9.0.2）。worker/run_evaluate 改写经导入冒烟确认。
 - 提交后推送；`db_writer.lock` 为运行时生成文件，不入库（与 `.etf_worker.lock` 同性质）。
+
+---
+
+## C20 · 盘中分时 4 项修复（午休断点 / 均价VWAP / 盘中regime实时化 / sina防脏）
+
+**用户原话（4 项）**：① x 轴错误，应从 11:30 直接跳到下午开盘（13:00），不要跨午休把上午下午连起来；② 下午数据全是错的，不知从哪来；③ 均价（黄线）依旧错误，均价是分时均价，去查同花顺黄线含义，别自己乱画（像布林中轨）；④ 盘中建议为什么还是全都是「偏弱」。
+
+**调研结论（先读代码再改，未盲动）**：
+
+| # | 现象 | 根因 | 修复 |
+|---|------|------|------|
+| ① | 午休不断开 | C19-I #107 为「午休留空槽」特意设 `connectNulls:true`，把 11:30 直连 13:00 | 插午休空槽类目 + `connectNulls:false`（价格线/均价线均在午休断开）。纯前端。 |
+| ② | 午后数据错/不知来源 | 后端分时链路正确（gtimg 注入 worker、`cum_vol`→增量、Beijing→UTC→Beijing 均对，沙箱实测 242 行下午正确）。「午后错」主因是 ① 的跨午休直线把上午末点直连下午首点，视觉上像「数据错」；辅以 sina 降级偶发陈旧（C19 已知）。 | ① 修好后视觉即正；另加 sina 降级「未来异常」守卫（见 ④）。 |
+| ③ | 均价像布林中轨 | **误判**：均价本就是 分时均价 VWAP（端点 `avg=cum_pv/cum_vol`，沙箱实测 000300 收 4600.26 / 均价 4570.61，合理）。「像 BOLL」是 ① 跨午休直线 + ② 午后数据错共同造成的错觉。 | 确认 VWAP 正确；图表改称「分时均价」并在 tooltip 标注；随 ① 午休断开后不再连成类 BOLL 直线。 |
+| ④ | 盘中建议全偏弱 | `decide_tier` 在 `market_regime∈{WEAK,BEAR}` 时强制 `MARKET_RISK_HIGH`（engine.py:204）。盘中 `evaluate_etf` 用**昨日日线**算 regime（今日日线 15:10 才写），若日线偏弱则盘中实时动量修正被压制 → 全部「市场风险大/偏弱」。这是 #110 之 #2 的同类残留（当时记为「数据恢复自动消解」，但盘中 regime 仍用陈旧日线）。 | `evaluate_etf` 透传 `phase`；盘中阶段用**实时 INDEX 1m 分时**重算 regime（指数当日上涨/平盘则抬升为 VOLATILE/TREND_UP，当日走弱保持日线 WEAK/BEAR）；`post_close` 阶段保持原日线逻辑。 |
+
+### A. 前端：午休断点 + 均价更名（IntradayChart.vue）
+- `SESSION_LABELS` 在 11:30 与 13:00 间插入空槽类目 `__LUNCH__`，`涨跌幅`/`分时均价` 两条线 `connectNulls` 由 `true` 改 `false` → 午休处断开，不再跨午休连线。
+- 均价 series `name` 由 `均价` 改 `分时均价`；tooltip 在午休空槽显示「午休」而非原始 token。
+- 底部成交量柱共用同一 x 轴类目，午休槽为 null（无柱），与价格/均价对齐。
+- `pnpm build` 通过（660 模块，0 类型错误）。
+
+### B. 后端：盘中 regime 改用实时指数（strategy_engine/engine.py + evaluation/pipeline.py）
+- `evaluate_etf` 新增 `phase: Optional[str] = None`（默认 None，backtest/历史回填不受影响）。
+- `_evaluate_market(self, session, as_of, phase=None)`：当 `phase` 为盘中（非 `post_close`）时，调用新增 `_intraday_regime(session, as_of, indices)`：取宽基指数当日 1m 分时（`get_bar_history(..., timeframe="1m", data_kind="BAR", trading_date=as_of)`），算当日涨跌幅 → `>=+0.5%` 返 `TREND_UP`、`>=-0.1%` 返 `VOLATILE`、当日走弱返 `None`（保持日线 WEAK/BEAR，不强行乐观）；无 1m 数据返 `None`（退化为日线）。
+- `pipeline.post_collection_evaluate` 把 `phase` 透传给 `evaluate_etf`。worker 盘中/盘前/收盘前评估即走实时 regime；收盘复盘（含今日已收盘日线）仍用日线。
+- **效果**：盘中若指数当日上涨，regime 不再被陈旧日线压成 WEAK，建议不再全「偏弱/市场风险大」；当日真走弱则维持谨慎（符合事实）。
+
+### C. 后端：sina 降级「未来异常」守卫（collector/collector.py）
+- 新增 `_intraday_rows_fresh(rows, now)`：仅当最新分钟时间戳晚于 `now+5min`（未来异常，即陈旧数据被错标到今日、覆盖到未来时刻）时拒绝；同日早前分钟（含上午数据在午后查看）与临近 now 的正常接受；多日旧数据已由 normalize 的 `trading_date` 过滤拦截（#106）。
+- `collect_intraday_minute` 在 sina 降级分支：normalize 后若 `_intraday_rows_fresh` 为 False，记 `intraday sina stale, skip upsert` 并置 `rows=None`（计 failed，保留既有 gtimg 数据，不污染当日分时）。gtimg 正常时不走此分支。
+- **说明**：守卫刻意只挡「未来异常」，不挡「同日早前分钟」——避免午后查看上午数据时误杀正常 sina 降级（曾因此让既有 sina 降级测试失真，已修正测试口径）。
+
+### D. 测试
+- `test_strategy_engine.py` 新增：`test_intraday_regime_method_up_flat_down`（`_intraday_regime` 上涨→TREND_UP/平→VOLATILE/跌→None/空→None）；`test_intraday_regime_overrides_stale_weak_daily`（日线 WEAK + 当日实时涨 → midday 不再 `MARKET_RISK_HIGH`，post_close 仍 `MARKET_RISK_HIGH`）。
+- `test_collector_intraday_gtimg.py` 新增：`test_intraday_rows_fresh_logic`（未来异常拒/同日早前接受/空拒）；`test_intraday_sina_stale_rejected`（未来异常 sina 被拒、保留既有）；`test_intraday_sina_fresh_accepted`（临近 now 的 sina 正常入库）。修正原 `test_intraday_falls_back_to_sina` 口径以适配守卫。
+- **全量 `pytest` = 272 passed（0 失败）**（系统 python3.11 + pytest 9.0.2）。前端 `pnpm build` 通过。
+
+### CVM 侧处置（用户执行，沙箱无法验证）
+1. `cd /workspace && git pull` → `cd frontend && pnpm build`（① 纯前端改动需重建覆盖 Nginx dist）→ `sudo systemctl restart etf-worker`（②④ 后端改动需重启 worker 生效）。
+2. 验证午休断点：盘中打开 ETF 详情 → 分时图，11:30 与 13:00 之间应出现空白断开，价格线/分时均价线均不跨午休连接。
+3. 验证均价：黄线应贴着白色价格线下方、呈「分时均价(VWAP)」平滑累计曲线（非居中笔直的 BOLL 式中轨）。
+4. 验证盘中建议：盘中（非收盘后）查看 ETF 意见，若当日指数上涨，不应再「全偏弱/市场风险大」；若当日真走弱则维持谨慎属正常。
+5. 若盘中仍见「午后数据错」：大概率是 gtimg 在 CVM 偶败降级到陈旧 sina（守卫已挡未来异常类，但需 `journalctl -u etf-worker | grep -iE 'intraday sina stale|intraday gtimg failed'` 确认是否触发降级；若频繁触发，说明 CVM→gtimg 连通性有问题，需另查网络/超时）。
+
+### 已知边界
+- ④ 的 regime 实时化只看「指数当日涨跌幅」抬升 WEAK/BEAR；若当日指数微涨但板块/个股普跌，regime 抬升但个股建议仍由 composite + 量价形态决定，不会无脑看多。
+- ② 若 CVM 上 gtimg 持续失败、sina 又返回「同日但陈旧」的非未来异常数据（理论上不应发生，因 sina 实时源最新分钟≈now），守卫不会拦截——此种极端情况需靠 #106 的 `trading_date` 过滤（多日旧数据）兜底，单日内的陈旧需后续按值校验（超出本期范围）。

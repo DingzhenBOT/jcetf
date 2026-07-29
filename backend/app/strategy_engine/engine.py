@@ -268,7 +268,7 @@ class StrategyEngine:
         return start, as_of
 
     # ---- 内部：市场环境 ----
-    def _evaluate_market(self, session: Session, as_of: date):
+    def _evaluate_market(self, session: Session, as_of: date, phase: Optional[str] = None):
         """返回 (market_score, market_regime, advance_ratio, index_available, breadth_available)。"""
         start, end = self._window(as_of)
         indices = self.settings.strategy.broad_index_codes
@@ -359,16 +359,51 @@ class StrategyEngine:
 
         score = max(0.0, min(100.0, score))
         breadth_avail = breadth is not None
+        # 盘中阶段：用实时 INDEX 1m 分时修正 regime，避免陈旧日线（昨日收盘）把盘中市场误判为 WEAK/BEAR，
+        # 进而经 decide_tier 强制 MARKET_RISK_HIGH，导致盘中建议「全偏弱」。仅当指数当日上涨/平盘时抬升
+        # regime；当日走弱则保持日线 regime（不强行乐观）。post_close 阶段（含今日已收盘日线）不改。
+        if phase and phase != "post_close":
+            live_regime = self._intraday_regime(session, as_of, indices)
+            if live_regime is not None:
+                regime = live_regime
         return score, regime, advance_ratio, idx_avail, breadth_avail
+
+    def _intraday_regime(
+        self, session: Session, as_of: date, indices: List[str]
+    ) -> Optional[str]:
+        """盘中市场环境（实时）：用宽基指数当日 1m 分时估算涨跌幅，映射到 regime。
+
+        返回 None 表示无可用实时分时（退化为日线 regime）；仅当指数当日上涨/平盘时返回
+        VOLATILE/TREND_UP（抬升可能被陈旧日线压低的 regime）；当日走弱返回 None（保持日线 WEAK/BEAR）。
+        """
+        for code in indices:
+            rows = quote_repo.get_bar_history(
+                session, "INDEX", code, as_of, as_of, timeframe="1m", data_kind="BAR"
+            )
+            if not rows:
+                continue
+            closes = [float(r.close) for r in rows if r.close is not None]
+            if len(closes) < 2:
+                continue
+            first, last = closes[0], closes[-1]
+            if first == 0:
+                continue
+            chg = (last / first - 1) * 100
+            if chg <= -0.1:
+                return None  # 当日走弱，保持日线 regime，不强行乐观
+            if chg >= 0.5:
+                return "TREND_UP"
+            return "VOLATILE"
+        return None
 
     # ---- 主入口 ----
     def evaluate_etf(
-        self, session: Session, mapping, version: str, as_of: date
+        self, session: Session, mapping, version: str, as_of: date, phase: Optional[str] = None
     ) -> Dict[str, Any]:
         start, end = self._window(as_of)
 
-        # 1) 市场环境
-        market_score, regime, advance_ratio, idx_avail, breadth_avail = self._evaluate_market(session, as_of)
+        # 1) 市场环境（盘中阶段透传 phase，用实时指数修正 regime）
+        market_score, regime, advance_ratio, idx_avail, breadth_avail = self._evaluate_market(session, as_of, phase=phase)
 
         # 2) ETF 技术
         etf_rows = quote_repo.get_bar_history(session, "ETF", mapping.etf_code, start, end)

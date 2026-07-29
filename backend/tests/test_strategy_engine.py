@@ -400,3 +400,133 @@ def test_evaluate_etf_no_intraday_on_historical_backfill(tmp_path, monkeypatch):
     assert "intraday_momentum_up" not in res["triggered_rules"]
     # 综合分应等于纯 BAR 合成的 65（无盘中修正）
     assert res["score"] is not None and abs(res["score"] - 65.0) < 1e-9
+
+
+def test_intraday_regime_method_up_flat_down(tmp_path, monkeypatch):
+    """_intraday_regime：当日指数上涨->TREND_UP，平盘->VOLATILE，下跌->None（保持日线），无数据->None。"""
+    from datetime import datetime as _dt
+
+    from app.config import get_settings
+    from app.db import init_db, make_engine, session_scope
+    from app.db.models.market import MarketQuote
+    from app.strategy_engine import engine as eng_mod
+
+    D = date(2026, 7, 29)
+    s = get_settings(force_reload=True)
+    s.paths.sqlite_path_abs = tmp_path / "etf_monitor.db"
+    s.paths.backup_dir_abs = tmp_path / "backups"
+    s.paths.log_dir_abs = tmp_path / "logs"
+    s.strategy.broad_index_codes = ["000300"]
+    eng = make_engine(s)
+    init_db(eng, s)
+    eng_obj = StrategyEngine(s)
+
+    def _set_minutes(prices):
+        with session_scope(eng) as session:
+            session.query(MarketQuote).delete()
+            session.commit()
+        with session_scope(eng) as session:
+            for i, p in enumerate(prices):
+                ts = _dt(D.year, D.month, D.day, 1, 30 + i, 0)  # 09:30+ 北京 = 01:30+ UTC
+                session.add(MarketQuote(
+                    data_source="gtimg", symbol_type="INDEX", symbol="000300", data_kind="BAR",
+                    timeframe="1m", trading_date=D, timestamp=ts,
+                    open=p, high=p, low=p, close=p, previous_close=p,
+                    volume=1e6, amount=1e9, collected_at=ts,
+                ))
+
+    _set_minutes([3400, 3420])
+    with session_scope(eng) as session:
+        assert eng_obj._intraday_regime(session, D, ["000300"]) == "TREND_UP"
+    _set_minutes([3400, 3401])
+    with session_scope(eng) as session:
+        assert eng_obj._intraday_regime(session, D, ["000300"]) == "VOLATILE"
+    _set_minutes([3420, 3400])
+    with session_scope(eng) as session:
+        assert eng_obj._intraday_regime(session, D, ["000300"]) is None
+    _set_minutes([])
+    with session_scope(eng) as session:
+        assert eng_obj._intraday_regime(session, D, ["000300"]) is None
+
+
+def test_intraday_regime_overrides_stale_weak_daily(tmp_path, monkeypatch):
+    """盘中(midday)阶段：当日实时指数上涨时，盘中 regime 抬升，不再被陈旧日线 WEAK 强制 MARKET_RISK_HIGH。
+
+    复现用户反馈「盘中建议全偏弱」：盘中 evaluate_etf 原用昨日日线算 regime（今日日线 15:10 才写），
+    若日线偏弱则 decide_tier 强制 MARKET_RISK_HIGH，盘中实时动量修正被压制。修复后盘中改用实时指数。
+    """
+    from datetime import datetime as _dt
+
+    from app.config import get_settings
+    from app.db import init_db, make_engine, session_scope
+    from app.db.models.market import MarketQuote
+    from app.strategy_engine import engine as eng_mod
+
+    D = date(2026, 7, 29)
+    _FakeTodayDate._TODAY = D
+    monkeypatch.setattr(eng_mod, "date", _FakeTodayDate)
+
+    s = get_settings(force_reload=True)
+    s.paths.sqlite_path_abs = tmp_path / "etf_monitor.db"
+    s.paths.backup_dir_abs = tmp_path / "backups"
+    s.paths.log_dir_abs = tmp_path / "logs"
+    s.strategy.broad_index_codes = ["000300"]
+    eng = make_engine(s)
+    init_db(eng, s)
+
+    with session_scope(eng) as session:
+        # 宽基指数 000300 日线：持续下行 -> 日线 regime=WEAK（昨收视角）
+        for i in range(25):
+            td = D - timedelta(days=25 - i)
+            close = 3500 - 5 * i  # 3500 -> 3380
+            session.add(MarketQuote(
+                data_source="em", symbol_type="INDEX", symbol="000300", data_kind="BAR",
+                timeframe="1d", trading_date=td,
+                timestamp=_dt(td.year, td.month, td.day, 7, 0, 0),
+                open=close, high=close, low=close, close=close, previous_close=close,
+                volume=1e8, amount=1e11, collected_at=_dt(td.year, td.month, td.day, 7, 0, 0),
+            ))
+        # 当日实时 1m：指数低开高走 +0.6% -> 盘中 regime 应抬升
+        for i, p in enumerate([3400, 3420]):
+            ts = _dt(D.year, D.month, D.day, 1, 30 + i, 0)
+            session.add(MarketQuote(
+                data_source="gtimg", symbol_type="INDEX", symbol="000300", data_kind="BAR",
+                timeframe="1m", trading_date=D, timestamp=ts,
+                open=p, high=p, low=p, close=p, previous_close=p,
+                volume=1e6, amount=1e9, collected_at=ts,
+            ))
+        # ETF 510300 日线（供 etf_rs/动量）+ 当日快照
+        for i in range(25):
+            td = D - timedelta(days=25 - i)
+            session.add(MarketQuote(
+                data_source="em", symbol_type="ETF", symbol="510300", data_kind="BAR",
+                timeframe="1d", trading_date=td,
+                timestamp=_dt(td.year, td.month, td.day, 7, 0, 0),
+                open=4.0, high=4.0, low=4.0, close=4.0, previous_close=4.0,
+                volume=1e8, amount=4e8, collected_at=_dt(td.year, td.month, td.day, 7, 0, 0),
+            ))
+        session.add(MarketQuote(
+            data_source="em", symbol_type="ETF", symbol="510300", data_kind="SNAPSHOT",
+            timeframe="snapshot", trading_date=D,
+            timestamp=_dt(D.year, D.month, D.day, 2, 0, 0),
+            open=4.0, high=4.0, low=4.0, close=4.0, previous_close=4.0,
+            change_percent=0.0, volume=1e6, amount=4e6,
+            collected_at=_dt(D.year, D.month, D.day, 2, 0, 0),
+        ))
+
+    class FakeMapping:
+        etf_code = "510300"
+        related_index_code = "000300"
+        related_sector_codes = []
+
+    engine = StrategyEngine(s)
+    with session_scope(eng) as session:
+        res_midday = engine.evaluate_etf(session, FakeMapping(), "v2.2.0-test", D, phase="midday")
+        res_post = engine.evaluate_etf(session, FakeMapping(), "v2.2.0-test", D, phase="post_close")
+
+    # 日线 regime 确为 WEAK（post_close 阶段沿用日线）
+    assert res_post["market_regime"] == "WEAK"
+    assert res_post["signal_type"] == "MARKET_RISK_HIGH"
+    # 盘中阶段：实时指数上涨 -> regime 抬升，不再强制 MARKET_RISK_HIGH
+    assert res_midday["market_regime"] != "WEAK"
+    assert res_midday["signal_type"] != "MARKET_RISK_HIGH"
