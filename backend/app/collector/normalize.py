@@ -158,6 +158,14 @@ def normalize_us_index_snapshot(df: pd.DataFrame, source: str, collected_at: dat
     return normalize_index_snapshot(df, source, collected_at, symbol_type="US_INDEX")
 
 
+def normalize_us_index_bar(df: pd.DataFrame, source: str, symbol: str, collected_at: datetime) -> List[Dict[str, Any]]:
+    """美股指数日线 BAR（akshare index_us_stock_sina，sina 源）：存为独立 symbol_type=US_INDEX。
+
+    供 #109「美股对A股影响」跨市场相关性分析使用；与 A股 INDEX 日线物理隔离（engine 只读 INDEX）。
+    """
+    return normalize_index_bar(df, source, symbol, collected_at, symbol_type="US_INDEX")
+
+
 def normalize_etf_snapshot(df: pd.DataFrame, source: str, collected_at: datetime) -> List[Dict[str, Any]]:
     """ETF 快照：fund_etf_spot_em / fund_etf_category_sina（含 换手率 列时取之）。"""
     rows: List[Dict[str, Any]] = []
@@ -358,9 +366,12 @@ def normalize_etf_bar(
 
 
 def normalize_index_bar(
-    df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
+    df: pd.DataFrame, source: str, symbol: str, collected_at: datetime, symbol_type: str = "INDEX"
 ) -> List[Dict[str, Any]]:
-    """指数日线 BAR（stock_zh_index_daily_em / _tx / sina）：date,open,high,low,close,volume（无 amount/change）。"""
+    """指数日线 BAR（stock_zh_index_daily_em / _tx / sina）：date,open,high,low,close,volume（无 amount/change）。
+
+    symbol_type 默认 "INDEX"（A股宽基）；美股指数传 "US_INDEX" 以与 A股 regime 计算隔离。
+    """
     rows: List[Dict[str, Any]] = []
     prev_close: Optional[float] = None  # 前一天收盘，作为当日昨收反算涨跌幅
     for _, r in df.iterrows():
@@ -370,7 +381,7 @@ def normalize_index_bar(
         close = _f(_col(r, "close", "收盘"))
         cp = _derive_change_percent(_f(_col(r, "change", "涨跌幅")), close, prev_close)
         prev_close = close
-        row = _bar_row(source, "INDEX", symbol, d, collected_at)
+        row = _bar_row(source, symbol_type, symbol, d, collected_at)
         row.update(
             open=_f(_col(r, "open", "开盘")),
             high=_f(_col(r, "high", "最高")),

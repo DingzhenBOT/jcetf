@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import inspect
+from datetime import date
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 
@@ -412,3 +413,34 @@ class AkShareAdapter(BaseDataProvider):
         df, src = self._call("market_breadth_raw", self._BREADTH_RAW)
         df.attrs["__source"] = src
         return df
+
+
+# 系统美股代码（腾讯财经 qt.gtimg.cn，与首页「美股大盘」展示一致）→ akshare 美股指数代码。
+# akshare.index_us_stock_sina 以 sina 源返回完整日线 OHLC（CVM 可达，优于被 JS 墙的 stooq
+# 与腾讯 fqkline 对美股仅返回单根 day 的异常行为）。
+US_INDEX_AKSHARE_SYMBOL: Dict[str, str] = {
+    "usDJI": ".DJI",
+    "usIXIC": ".IXIC",
+    "usINX": ".INX",
+}
+
+
+def get_us_index_history(symbol: str, start: date, end: date) -> pd.DataFrame:
+    """美股指数日线（akshare index_us_stock_sina，sina 源，CVM 可达）。
+
+    symbol 为 akshare 代码（如 '.DJI'/'.IXIC'/'.INX'）；返回 DataFrame
+    [date(python date), open, high, low, close, volume]，仅保留 [start, end] 区间内行。
+    任意失败直接抛出（由 Collector._collect_bar 捕获并记 FAILED 降级，不向上抛）。
+    """
+    df = ak.index_us_stock_sina(symbol=symbol)
+    if df is None or getattr(df, "empty", True):
+        raise ValueError(f"akshare index_us_stock_sina({symbol}) returned empty")
+    # akshare 偶发只读 numpy 数组，复制避免后续赋值 read-only 报错
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df = df[(df["date"] >= start) & (df["date"] <= end)]
+    if df.empty:
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+    out = df[["date", "open", "high", "low", "close", "volume"]].copy()
+    out.attrs["__source"] = "sina_us"
+    return out

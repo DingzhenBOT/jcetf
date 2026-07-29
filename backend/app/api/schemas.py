@@ -138,6 +138,34 @@ class MarketOverviewOut(BaseModel):
     signal_risk: Dict[str, Any]
 
 
+# ---- #109 美股对 A股影响 ----
+class UsImpactTransmissionPoint(BaseModel):
+    us_date: str          # 美股交易日 YYYY-MM-DD
+    us_pct: float         # 美股当日涨跌幅 %
+    ashare_date: str      # A股反应日 YYYY-MM-DD（严格晚于美股日的首个 A股交易日）
+    ashare_pct: float     # A股反应日涨跌幅 %
+
+
+class UsImpactItem(BaseModel):
+    code: str
+    name: str
+    available: bool
+    current_change_percent: Optional[float] = None
+    correlation_recent: Optional[float] = None   # 近期窗口（默认20配对）Pearson 相关
+    correlation_long: Optional[float] = None     # 长期窗口（默认60配对）Pearson 相关
+    beta: Optional[float] = None                  # A股次日收益对美股收益的回归斜率
+    pair_count: int = 0
+    recent: List[UsImpactTransmissionPoint] = []
+    note: Optional[str] = None
+
+
+class UsImpactOut(BaseModel):
+    generated_at: str
+    primary_benchmark: str
+    primary_benchmark_name: str
+    items: List[UsImpactItem]
+
+
 # ---- P6：按需持仓分析（无状态，默认不落库） ----
 class PortfolioPosition(BaseModel):
     etf_code: str = Field(..., min_length=1, max_length=32)

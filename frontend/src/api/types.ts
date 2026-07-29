@@ -233,3 +233,31 @@ export interface OffExchangeResult {
   reason?: string | null
   items: OffExchangeFund[]
 }
+
+// ---- #109 美股对A股影响 ----
+export interface UsImpactTransmissionPoint {
+  us_date: string // 美股交易日 YYYY-MM-DD
+  us_pct: number // 美股当日涨跌幅 %
+  ashare_date: string // A股反应日 YYYY-MM-DD（严格晚于美股日的首个 A股交易日）
+  ashare_pct: number // A股反应日涨跌幅 %
+}
+
+export interface UsImpactItem {
+  code: string
+  name: string
+  available: boolean
+  current_change_percent: number | null
+  correlation_recent: number | null // 近期窗口（默认20配对）Pearson 相关
+  correlation_long: number | null // 长期窗口（默认60配对）Pearson 相关
+  beta: number | null // A股次日收益对美股收益的回归斜率
+  pair_count: number
+  recent: UsImpactTransmissionPoint[]
+  note: string | null
+}
+
+export interface UsImpactOut {
+  generated_at: string
+  primary_benchmark: string
+  primary_benchmark_name: string
+  items: UsImpactItem[]
+}

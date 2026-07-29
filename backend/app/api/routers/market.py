@@ -21,6 +21,7 @@ from app.api.schemas import (
     IntradayOut,
     IntradayPoint,
     MarketOverviewOut,
+    UsImpactOut,
 )
 from datetime import date, datetime, timedelta
 
@@ -337,3 +338,16 @@ def intraday(
         read=read,
         signals=[],
     )
+
+
+@router.get("/us-impact", response_model=UsImpactOut)
+def us_impact(session: Session = Depends(get_db)):
+    """美股对 A股影响（#109）：跨市场传导相关性/β + 近期传导明细。
+
+    口径：美股隔夜涨跌 → A股次日（沪深300 等宽基）反应；相关性/β 基于配对日收益。
+    美股日线来自 US_INDEX BAR（akshare sina 源回填），A股宽基来自 INDEX BAR。
+    任一侧日线不足时该指数项 available=False（附 note），接口本身不抛 500，前端标「观察期」。
+    """
+    from app.analysis.us_impact import compute_us_impact
+
+    return compute_us_impact(session)

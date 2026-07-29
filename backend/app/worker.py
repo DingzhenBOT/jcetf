@@ -22,6 +22,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app import market_calendar, retention
 from app.collector.collector import Collector
 from app.data_provider import build_provider
+from app.data_provider import akshare_adapter
 from app.config import get_settings
 from app.db import make_engine, session_scope
 from app.evaluation.pipeline import post_collection_evaluate
@@ -54,6 +55,7 @@ def _collector() -> Collector:
             gtimg_fetcher=gtimg_client.fetch_realtime,
             us_index_fetcher=gtimg_client.fetch_us_indices,
             gtimg_intraday_fetcher=gtimg_client.fetch_intraday_minute,
+            us_index_history_fetcher=akshare_adapter.get_us_index_history,
         )
     return _COLLECTOR
 

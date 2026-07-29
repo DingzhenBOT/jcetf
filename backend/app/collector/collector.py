@@ -6,7 +6,7 @@ Collector 把「provider 取数 -> normalize 映射 -> 质量评估 -> 切源标
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -16,6 +16,7 @@ import pandas as pd
 from app.collector import normalize
 from app.collector import sector_map
 from app.config import Settings
+from app.data_provider import akshare_adapter
 from app.data_provider import eastmoney_web
 from app.data_provider.base import BaseDataProvider
 from app.data_quality.checker import assess
@@ -24,13 +25,19 @@ from app.market_calendar import is_trading_now, trading_date_for
 from app.repository import mapping_repo, quote_repo
 
 
+def _ymd(s: str) -> date:
+    """'YYYYMMDD' -> date（backfill 的 start/end 格式）。"""
+    return datetime.strptime(s, "%Y%m%d").date()
+
+
 class Collector:
-    def __init__(self, provider: BaseDataProvider, settings: Settings, gtimg_fetcher=None, us_index_fetcher=None, gtimg_intraday_fetcher=None):
+    def __init__(self, provider: BaseDataProvider, settings: Settings, gtimg_fetcher=None, us_index_fetcher=None, gtimg_intraday_fetcher=None, us_index_history_fetcher=None):
         self.provider = provider
         self.settings = settings
         self.gtimg_fetcher = gtimg_fetcher  # 腾讯财经实时行情拉取器（可注入；None=跳过）
         self.us_index_fetcher = us_index_fetcher  # 美股指数拉取器（gtimg_client.fetch_us_indices；None=跳过）
         self.gtimg_intraday_fetcher = gtimg_intraday_fetcher  # 腾讯财经当日分时拉取器（gtimg_client.fetch_intraday_minute；None=跳过，降级 sina）
+        self.us_index_history_fetcher = us_index_history_fetcher  # 美股指数日线拉取器（akshare_adapter.get_us_index_history；None=直接用 akshare）
         self.log = get_logger("etf-collector")
 
     # ---- 内部工具 ----
@@ -399,6 +406,22 @@ class Collector:
             source_hint=self.settings.data_source.preferred,
         )
 
+    def collect_us_index_history(self, session: Session, symbol: str, start: str, end: str) -> Dict[str, Any]:
+        """美股指数日线 BAR（akshare index_us_stock_sina，sina 源，CVM 可达）。
+
+        symbol 为系统美股代码（usDJI/usIXIC/usINX），内部映射到 akshare 代码（.DJI/.IXIC/.INX）。
+        存为独立 symbol_type=US_INDEX，与 A股 INDEX 物理隔离；供 #109 跨市场影响分析。
+        us_index_history_fetcher=None -> 直接用 akshare_adapter.get_us_index_history。
+        """
+        ak_symbol = akshare_adapter.US_INDEX_AKSHARE_SYMBOL.get(symbol, symbol)
+        fetcher = self.us_index_history_fetcher or akshare_adapter.get_us_index_history
+        return self._collect_bar(
+            session, "US_INDEX", symbol,
+            lambda: fetcher(ak_symbol, _ymd(start), _ymd(end)),
+            normalize.normalize_us_index_bar,
+            source_hint="sina_us",
+        )
+
     def collect_sector_history(self, session: Session, symbol: str, start: str, end: str) -> Dict[str, Any]:
         return self._collect_bar(
             session, "SECTOR", symbol,
@@ -684,6 +707,7 @@ class Collector:
             "as_of": as_of.isoformat(),
             "etf": {"ok": 0, "failed": 0},
             "index": {"ok": 0, "failed": 0},
+            "us_index": {"ok": 0, "failed": 0},
             "sector": {"ok": 0, "failed": 0},
             "sector_flow": {"ok": 0, "failed": 0},
         }
@@ -711,6 +735,15 @@ class Collector:
                 continue
             r = self.collect_index_history(session, code, start, end)
             self._tally(result["index"], r)
+
+        # 美股指数日线（usDJI/usIXIC/usINX，akshare sina 源）：供 #109「美股对A股影响」分析。
+        # 与 A股 INDEX 物理隔离（US_INDEX 类型）；每日 16:30 回填增量维护。
+        for code in sorted(self.settings.strategy.us_index_codes):
+            start = self._backfill_start(session, "US_INDEX", code, as_of, lookback_days)
+            if start is None:
+                continue
+            r = self.collect_us_index_history(session, code, start, end)
+            self._tally(result["us_index"], r)
 
         # 板块（行业/概念 BK 代码并集 + 额外 major）
         # 主源：腾讯自选股 westock-data 板块异动榜（CVM 稳定，返回板块名+涨跌幅+主力净流入）。

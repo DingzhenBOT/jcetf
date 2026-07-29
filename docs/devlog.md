@@ -1685,3 +1685,46 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - **#107 分时图午休断点**：`IntradayChart.vue` 的 `涨跌幅`/`均价` line 缺 `connectNulls`，遇 null 断线。已加 `connectNulls: true`，午休边界与盘中缺分钟处直接连上下午（同花顺式）。
 - **#109 美股仍错 + US Stock Analysis 技能**：实时抓取验证 **#102 修复正确**（道指+1.03%/纳指-0.22%/标普+0.21%，非 +52607%）。CVM 上"仍错"是因**只重启 etf-api、未重启 etf-worker**（美股指数为 worker 采集）。→ 部署动作：`sudo systemctl restart etf-worker`。技能（美股综合分析）偏个股基本面/技术面；"美股对A股影响"用跨市场相关性实现：需美股指数**日线历史**（当前 US_INDEX 仅 SNAPSHOT，无 BAR/1d）→ 待确认是否把 US_INDEX 纳入 `backfill_history`（akshare/yfinance 美股日线源，CVM 可达性待测），再算与 000300 等的相关/β/近期传导。功能方案待用户确认后再建。
 - **验证**：后端 `pytest -q` 全量通过（含 intraday 当日过滤用例）；前端 `pnpm build` 通过（658 模块）。本轮 4 文件修复已提交 `b1c69cf`（本地，未推送——旧 token 待吊销，需换发新 token 再推）。
+
+---
+
+## #109 美股对A股影响（点击美股 → 跨市场传导分析）
+
+**用户原话**："美股依旧是错误数据，用这个skills看看，并且点开之后能做出近期美股对A股的影响"。承接 C19-I 续修的 #109（此前结论：美股显示错误是部署问题——只 restart etf-api 未 restart etf-worker；功能方案待确认）。
+
+### A. 数据源选型（关键决策，已实测）
+- **目标**：US_INDEX 日线 BAR（此前 US_INDEX 仅 SNAPSHOT，无 BAR → 无法算跨市场相关性）。
+- 实测排除：
+  - 腾讯 `web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=usDJI,day,...`：**不可用**——`day` 仅返回 1 根，真实序列在 `pandata` 但 `pandata.data` 为空。腾讯 K线对美股不返回日线序列。
+  - stooq (`stooq.com/q/d/l/?s=^dji`)：**JS 反爬墙**，服务端 curl 拿不到数据。
+  - akshare `stock_us_daily(".DJI")`：**本环境 numpy read-only 报错**坏掉。
+- **采用**：`akshare.index_us_stock_sina(symbol=".DJI"/".IXIC"/".INX")`（sina 源）。实测三大指数均返回 2004→今完整日线 OHLC（各 ~5680 行），最新收盘与 gtimg 实时快照完全吻合（DJI 52747.32 / IXIC 24876.91 / INX 7428.78）。**sina 源 CVM/国内可达**，与现有 A股历史同源，风险最低。
+- 代码映射：`usDJI→.DJI / usIXIC→.IXIC / usINX→.INX`（`akshare_adapter.US_INDEX_AKSHARE_SYMBOL`）。
+
+### B. 后端实现
+- `akshare_adapter.get_us_index_history(symbol, start, end)`：调 `index_us_stock_sina` → 裁剪 [start,end] → DataFrame[date,open,high,low,close,volume]，源标签 `sina_us`。
+- `normalize.normalize_us_index_bar`（原 `normalize_index_bar` 增加 `symbol_type` 参数，默认 INDEX）→ 存 `US_INDEX` 类型，与 A股 `INDEX` 物理隔离（engine 只读 INDEX，不受影响）。
+- `Collector.collect_us_index_history` + 构造器新增 `us_index_history_fetcher`（worker 注入 `akshare_adapter.get_us_index_history`）；`backfill_history` 新增 `US_INDEX` 回填块（usDJI/usIXIC/usINX），每日 16:30 增量维护。
+- **分析模块** `analysis/us_impact.py: compute_us_impact(session)`：
+  - 口径：**美股隔夜收盘涨跌 → A股次日（沪深300 等宽基）反应**。对每个美股交易日 d，取「严格晚于 d 的最近 A股交易日」的 A股收益为配对（美股美东收盘≈北京次日凌晨，A股次日早盘反应，经济含义对齐）。
+  - 指标：近期窗口（≈20 配对）/ 长期窗口（≈60 配对）Pearson 相关 + β（A股次日收益对美股收益的回归斜率 cov/var）。
+  - 近期传导明细（最近 15 对：美股日/美股%/A股反应日/A股%/）。
+  - 优雅降级：美股或宽基日线 <30 根 → `available=False` + 观察期提示，接口不抛 500。丢弃「A股反应日=最近A股日」的配对（该日未收盘，盘中价当收益失真）。
+- `GET /api/market/us-impact`（`market.py`，lazy import `compute_us_impact`）+ schemas `UsImpactOut/UsImpactItem/UsImpactTransmissionPoint`。
+- **US Stock Analysis skill 复核**：该 skill 偏个股基本面/技术面/估值，与「指数级跨市场传导」不匹配；#109 改用量化跨市场相关/β/事件研究口径（项目方法论要求），skill 仅作个股延伸时参考。
+
+### C. 前端实现
+- `UsIndexTicker.vue`：每只美股指数改为可点击 `button`，`emit('select', code)`。
+- 新增 `UsImpactDrawer.vue`：调 `/api/market/us-impact`，展示选中指数的当前涨跌、近期/长期相关、β、口径说明、美股% vs A股次日% 对比图（BaseChart）、近期传导明细表；`available=False` 显示观察期提示。
+- `MarketOverview.vue`：`usOpenCode` 状态 + `<UsImpactDrawer :code="usOpenCode">`；`types.ts` 加 `UsImpact*`。
+
+### D. 验证
+- 后端新增单测：`test_us_impact.py`（合成「A股次日=0.5×美股前日」序列 → 断言近期相关≈1、β≈0.5、available=True、传导明细非空；空库 graceful available=False）；`test_us_index_history.py`（normalize 存 US_INDEX、collect 入库不污染 A股 INDEX、backfill 含 us_index 桶=3）；`test_api_market.py` 加端点结构+降级测试。
+- **全量 `pytest` = 260 passed（0 失败）**（系统 python3.11 + pytest 9.0.2；venv 内 pytest 因 sandbox 的 pluggy 文件权限损坏无法运行，已在系统 python 跑，CVM venv 不受影响）。
+- 前端 `pnpm build` 通过（660 模块，0 类型错误）。
+
+### E. 部署动作（用户侧，本轮未推送——旧 token 待吊销）
+1. **吊销并换发 GitHub token**（旧 `ghp_…` 已在既往会话明文暴露）。
+2. 推送本轮 + C19-I 续修本地提交（`b1c69cf`/`2fccfd1` + 本次 #109 提交）：`git push https://<NEW_TOKEN>@github.com/DingzhenBOT/jcetf.git HEAD:main`，推完恢复公开 URL。
+3. CVM：`git pull` → `systemctl restart etf-worker`（加载美股日线回填 + 此前 #102/#105/#106/#107 修复）→ 跑一次 `python3.11 -m scripts.run_evaluate --phase post_close --backfill`（累积 US_INDEX + 跟踪指数 BAR，清 etf_rs_missing）→ `cd frontend && pnpm build`（覆盖 Nginx dist 生效 #107/#109 前端）。
+4. 约 1–2 周每日回填后 US_INDEX 日线足够，首页点开美股即显示相关/β/传导明细（初期不足显示「观察期数据不足」）。

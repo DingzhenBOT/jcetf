@@ -66,6 +66,22 @@ def test_overview_no_index_bar_no_500(api_client):
     assert r.status_code == 200
 
 
+def test_us_impact_endpoint_structure_and_graceful(api_client):
+    """#109：/api/market/us-impact 返回 200 + 正确结构；US_INDEX 未播种时优雅降级。"""
+    r = api_client.get("/api/market/us-impact")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["primary_benchmark"] == "000300"
+    codes = {i["code"] for i in body["items"]}
+    assert {"usDJI", "usIXIC", "usINX"}.issubset(codes)
+    # api_client 仅播种 000300 INDEX BAR、未播种 US_INDEX → 各指数降级 available=False
+    for it in body["items"]:
+        assert it["available"] is False
+        assert it["correlation_recent"] is None
+        assert it["beta"] is None
+        assert "观察期" in (it["note"] or "")
+
+
 def test_overview_prefers_realtime_snapshot_over_bar(api_client):
     """指数应优先取更新的 SNAPSHOT（收盘后仍刷新），而非略早的日线 BAR（bug② 正例）。
 

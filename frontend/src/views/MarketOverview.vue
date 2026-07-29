@@ -10,6 +10,7 @@ import WatchBoard from '@/components/sections/WatchBoard.vue'
 import IndexTicker from '@/components/IndexTicker.vue'
 import UsIndexTicker from '@/components/UsIndexTicker.vue'
 import IndexDrawer from '@/components/IndexDrawer.vue'
+import UsImpactDrawer from '@/components/UsImpactDrawer.vue'
 import NewsStrip from '@/components/sections/NewsStrip.vue'
 import SectorRotationPanel from '@/components/sections/SectorRotationPanel.vue'
 import { marketState, refreshNow, secondsToRefresh } from '@/stores/market'
@@ -52,6 +53,7 @@ const avoidCount = computed(
 
 // 指数详情抽屉：null = 关闭
 const openCode = ref<string | null>(null)
+const usOpenCode = ref<string | null>(null)
 </script>
 
 <template>
@@ -99,7 +101,7 @@ const openCode = ref<string | null>(null)
     <!-- 顶部指数带：A股主要指数 + 美股三大指数并排（大盘指数旁），点开看 A股详情 -->
     <div class="flex flex-col gap-4 lg:flex-row lg:items-stretch">
       <div class="lg:flex-1 min-w-0"><IndexTicker @open="openCode = $event" /></div>
-      <UsIndexTicker class="lg:w-[460px] shrink-0" />
+      <UsIndexTicker class="lg:w-[460px] shrink-0" @select="usOpenCode = $event" />
     </div>
 
     <!-- 今日关注榜（结论前置，两种模式都显示） -->
@@ -215,5 +217,6 @@ const openCode = ref<string | null>(null)
 
     <!-- 指数详情抽屉 -->
     <IndexDrawer :code="openCode" @close="openCode = null" />
+    <UsImpactDrawer :code="usOpenCode" @close="usOpenCode = null" />
   </div>
 </template>
