@@ -1723,8 +1723,8 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - **全量 `pytest` = 260 passed（0 失败）**（系统 python3.11 + pytest 9.0.2；venv 内 pytest 因 sandbox 的 pluggy 文件权限损坏无法运行，已在系统 python 跑，CVM venv 不受影响）。
 - 前端 `pnpm build` 通过（660 模块，0 类型错误）。
 
-### E. 部署动作（用户侧，本轮未推送——旧 token 待吊销）
-1. **吊销并换发 GitHub token**（旧 `ghp_…` 已在既往会话明文暴露）。
-2. 推送本轮 + C19-I 续修本地提交（`b1c69cf`/`2fccfd1` + 本次 #109 提交）：`git push https://<NEW_TOKEN>@github.com/DingzhenBOT/jcetf.git HEAD:main`，推完恢复公开 URL。
-3. CVM：`git pull` → `systemctl restart etf-worker`（加载美股日线回填 + 此前 #102/#105/#106/#107 修复）→ 跑一次 `python3.11 -m scripts.run_evaluate --phase post_close --backfill`（累积 US_INDEX + 跟踪指数 BAR，清 etf_rs_missing）→ `cd frontend && pnpm build`（覆盖 Nginx dist 生效 #107/#109 前端）。
+### E. 部署动作（已推送 ✅ / CVM 侧待用户执行）
+- **2025-07-29 推送状态**：`b1c69cf`(#105/#106/#107 续修) / `2fccfd1`(记录) / `4b7d8eb`(#109) 三个本地提交已通过新 token 推送到 `origin/main`（`60d90a2..4b7d8eb`）。remote 仍为公开 URL，token 经临时 `insteadOf` 注入未落盘。
+- **token 状态**：老 token 已吊销；本轮推送用的是换发后的新 token（即此前会话误标为「暴露」的那个，用户确认其为新 token）。**新 token 仍有 `repo` 权限且已在会话明文出现，建议日后按需在 GitHub 侧轮换。**
+1. CVM：`git pull` → `systemctl restart etf-worker`（加载美股日线回填 + 此前 #102/#105/#106/#107/#109 修复）→ 跑一次 `python3.11 -m scripts.run_evaluate --phase post_close --backfill`（累积 US_INDEX + 跟踪指数 BAR，清 etf_rs_missing）→ `cd frontend && pnpm build`（覆盖 Nginx dist 生效 #107/#109 前端）。
 4. 约 1–2 周每日回填后 US_INDEX 日线足够，首页点开美股即显示相关/β/传导明细（初期不足显示「观察期数据不足」）。
