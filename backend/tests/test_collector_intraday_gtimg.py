@@ -209,6 +209,52 @@ def test_gtimg_client_parse(monkeypatch):
 
 
 
+def test_intraday_no_purge_when_all_fetch_fail(tmp_path):
+    """先采后清回归（#3a）：双源全失败时 collect_intraday_minute 不应清掉既有分时数据。
+
+    旧实现「先 purge 再 fetch」——一旦采集对指数失败即清了补不回，导致沪深300 分时消失。
+    新实现仅在本次确有新数据写入（bucket.ok>0）后才清旧日；全失败则不 purge，保留既有数据。
+    """
+    from datetime import datetime, timedelta
+
+    from app.db.models.market import MarketQuote
+
+    s, eng = _setup(tmp_path)
+
+    # 预置「更早交易日」既有分时（trading_date < 今日，若 purge 会被删）
+    old = trading_date_for() - timedelta(days=5)
+    with session_scope(eng) as session:
+        session.add(MarketQuote(
+            data_source="gtimg", symbol_type="ETF", symbol="510300",
+            data_kind="BAR", timeframe="1m", trading_date=old,
+            timestamp=datetime(old.year, old.month, old.day, 9, 30),
+            close=4.6, collected_at=datetime.utcnow(),
+        ))
+        session.add(MarketQuote(
+            data_source="gtimg", symbol_type="INDEX", symbol="000300",
+            data_kind="BAR", timeframe="1m", trading_date=old,
+            timestamp=datetime(old.year, old.month, old.day, 9, 30),
+            close=4000.0, collected_at=datetime.utcnow(),
+        ))
+        session.commit()
+        assert session.query(MarketQuote).count() == 2
+
+    class _NoSina(_Provider):
+        def get_intraday_minute(self, symbol_type, code):
+            raise RuntimeError("sina also down")
+
+    def boom(code, kind):
+        raise RuntimeError("simulated gtimg intraday outage")
+
+    c = Collector(_NoSina(), s, gtimg_intraday_fetcher=boom)
+    with session_scope(eng) as session:
+        res = c.collect_intraday_minute(session)
+        assert res["ok"] == 0 and res["failed"] == 2
+        # 关键：既有分时数据必须保留（未被 purge 清掉）
+        after = session.query(MarketQuote).count()
+        assert after == 2, "双源失败时空数据不应被清除（先采后清）"
+
+
 def test_purge_intraday_before_keeps_only_current_day(tmp_path):
     """只保留 keep_date 当日的 1m 分时；更旧交易日 1m 被删；1d/快照不受影响。"""
     from datetime import datetime, timedelta

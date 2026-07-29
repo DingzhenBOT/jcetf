@@ -596,13 +596,6 @@ class Collector:
         """
         now = self._now()
         tdate = trading_date_for()
-        # 刷掉前一交易日分时：只保留当前交易日的 1m 数据（避免多日累积、x 轴只画当日）
-        try:
-            purged = quote_repo.purge_intraday_before(session, tdate)
-            if purged:
-                self.log.info("intraday purge old days", extra={"keep_date": tdate.isoformat(), "purged": purged})
-        except Exception as e:  # noqa: BLE001
-            self.log.warning("intraday purge failed (non-fatal)", extra={"err": str(e)})
         etf_codes = [m.etf_code for m in mapping_repo.get_active_mappings(session) if self._is_on_exchange(m)]
         targets = [("ETF", c) for c in etf_codes] + [
             ("INDEX", c) for c in self.settings.strategy.broad_index_codes
@@ -647,6 +640,15 @@ class Collector:
             quote_repo.upsert_market_quotes(session, rows)
             self._record_success(session, source=tried_source, symbol_type=symbol_type, now=now, note=f"rows={len(rows)}")
             bucket["ok"] += 1
+        # 仅在本次确有新分时写入时才清旧日：避免「先清后采」在采集失败时空数据
+        # （如 worker 重启后首轮对指数源超时 -> 清了补不回，导致沪深300 分时消失）。
+        if bucket["ok"] > 0:
+            try:
+                purged = quote_repo.purge_intraday_before(session, tdate)
+                if purged:
+                    self.log.info("intraday purge old days", extra={"keep_date": tdate.isoformat(), "purged": purged})
+            except Exception as e:  # noqa: BLE001
+                self.log.warning("intraday purge failed (non-fatal)", extra={"err": str(e)})
         session.commit()
         return {"status": "done", **bucket}
 

@@ -16,6 +16,7 @@ import sys
 from app.config import get_settings
 from app.data_provider import build_provider, gtimg_client
 from app.db import init_db, make_engine, session_scope
+from app.market_calendar import is_trading_now
 from app.collector.collector import Collector
 from app.evaluation.pipeline import post_collection_evaluate
 from app.logging_conf import get_logger, setup_logging
@@ -27,6 +28,16 @@ def main() -> int:
     ap.add_argument("--backfill", action="store_true", help="评估前先回填历史 BAR（需联网）")
     ap.add_argument("--config", default=None)
     args = ap.parse_args()
+
+    # 盘中守卫（仅拦截「收盘阶段评估」；回填历史 BAR 不受限）：
+    # 无 --backfill 且为收盘阶段且盘中 -> 直接拒绝，避免无谓建库。
+    if (not args.backfill) and args.phase in ("post_close", "pre_close") and is_trading_now():
+        print(
+            f"[中止] phase={args.phase} 不能在盘中运行（当前为交易时段）。\n"
+            "收盘复盘/收盘前评估须在 15:00 之后执行，否则会基于不完整的盘中数据生成复盘记录。\n"
+            "请于收盘后（北京时间 15:10 之后）再运行，或改用 --phase midday / pre_market。"
+        )
+        return 2
 
     settings = get_settings(config_path=args.config)
     setup_logging(settings)
@@ -42,6 +53,15 @@ def main() -> int:
             bf = collector.backfill_history(session)
         log.info("backfill summary", extra=bf)
         print("backfill:", bf)
+
+    # 有 --backfill 时盘中已跑完回填；收盘阶段评估仍须等收盘后，避免生成盘中复盘。
+    if args.phase in ("post_close", "pre_close") and is_trading_now():
+        print(
+            f"[中止] phase={args.phase} 评估不能在盘中运行（当前为交易时段）。\n"
+            "回填已完成（如有 --backfill）；收盘复盘/收盘前评估请于收盘后（北京时间 15:10 之后）再运行，"
+            "或由 worker 在 15:10 自动生成。"
+        )
+        return 2
 
     with session_scope(eng) as session:
         res = post_collection_evaluate(session, settings, phase=args.phase)

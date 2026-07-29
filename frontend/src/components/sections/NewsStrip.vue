@@ -27,7 +27,7 @@ function hotBoost(n: NewsItem): number {
 // 3) 按 hotBoost 降序取前 10，作为跑马灯内容。
 interface ScoredNews {
   n: NewsItem
-  imp: ReturnType<typeof analyzeNewsImpact>
+  imp: ReturnType<typeof analyzeNewsImpact> | null
   hot: number
 }
 const scored10 = computed<ScoredNews[]>(() =>
@@ -37,8 +37,19 @@ const scored10 = computed<ScoredNews[]>(() =>
     .sort((a, b) => b.hot - a.hot)
     .slice(0, 10),
 )
+// 兜底：无可解读资讯但有原始资讯时，退化为展示最近若干条原始资讯，保证跑马灯始终滚动
+const recentRaw = computed<ScoredNews[]>(() =>
+  [...items.value]
+    .sort((a, b) => (b.time || '').localeCompare(a.time || ''))
+    .slice(0, 10)
+    .map((n) => ({ n, imp: null, hot: 0 })),
+)
+// 展示：优先可解读资讯；为空则退化为原始资讯
+const displayItems = computed<ScoredNews[]>(() =>
+  scored10.value.length ? scored10.value : recentRaw.value,
+)
 // 跑马灯需复制一份首尾衔接
-const loopScored = computed<ScoredNews[]>(() => [...scored10.value, ...scored10.value])
+const loopDisplay = computed<ScoredNews[]>(() => [...displayItems.value, ...displayItems.value])
 
 const impact = computed(() =>
   selected.value ? analyzeNewsImpact(selected.value.title, selected.value.summary) : null,
@@ -80,11 +91,11 @@ onBeforeUnmount(() => window.clearInterval(timer))
       <div v-if="loading" class="text-xs text-slate-400 py-1">加载中…</div>
       <div v-else-if="error" class="text-xs text-amber-600 py-1">{{ error }}</div>
       <div
-        v-else-if="scored10.length"
+        v-else-if="displayItems.length"
         class="marquee-track flex items-center gap-8 whitespace-nowrap will-change-transform hover:[animation-play-state:paused]"
       >
         <button
-          v-for="(s, i) in loopScored"
+          v-for="(s, i) in loopDisplay"
           :key="i"
           type="button"
           class="flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 shrink-0 text-left"
@@ -94,8 +105,9 @@ onBeforeUnmount(() => window.clearInterval(timer))
           <span
             class="inline-block h-1.5 w-1.5 rounded-full shrink-0"
             :class="{
-              'bg-emerald-500': s.imp.sentiment === '利好',
-              'bg-rose-500': s.imp.sentiment === '利空',
+              'bg-emerald-500': s.imp?.sentiment === '利好',
+              'bg-rose-500': s.imp?.sentiment === '利空',
+              'bg-slate-300': !s.imp || s.imp.sentiment === '中性',
             }"
           />
           <span class="text-slate-400 tnum mr-1">{{ hhmm(s.n.time) }}</span>{{ s.n.title }}

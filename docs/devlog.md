@@ -1726,5 +1726,52 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 ### E. 部署动作（已推送 ✅ / CVM 侧待用户执行）
 - **2025-07-29 推送状态**：`b1c69cf`(#105/#106/#107 续修) / `2fccfd1`(记录) / `4b7d8eb`(#109) 三个本地提交已通过新 token 推送到 `origin/main`（`60d90a2..4b7d8eb`）。remote 仍为公开 URL，token 经临时 `insteadOf` 注入未落盘。
 - **token 状态**：老 token 已吊销；本轮推送用的是换发后的新 token（即此前会话误标为「暴露」的那个，用户确认其为新 token）。**新 token 仍有 `repo` 权限且已在会话明文出现，建议日后按需在 GitHub 侧轮换。**
-1. CVM：`git pull` → `systemctl restart etf-worker`（加载美股日线回填 + 此前 #102/#105/#106/#107/#109 修复）→ 跑一次 `python3.11 -m scripts.run_evaluate --phase post_close --backfill`（累积 US_INDEX + 跟踪指数 BAR，清 etf_rs_missing）→ `cd frontend && pnpm build`（覆盖 Nginx dist 生效 #107/#109 前端）。
+1. CVM：`git pull` → `systemctl restart etf-worker`（加载美股日线回填 + 此前 #102/#105/#106/#107/#109 修复）→ 如需盘中累积 BAR 可跑 `python3.11 -m scripts.run_evaluate --backfill`（**不要**带 `--phase post_close` 盘中跑；收盘阶段评估须由 worker 在 15:10 自动生成，手动盘中跑会被守卫拒绝，见下「#110 线上问题修复」）→ `cd frontend && pnpm build`（覆盖 Nginx dist 生效前端）。
 4. 约 1–2 周每日回填后 US_INDEX 日线足够，首页点开美股即显示相关/β/传导明细（初期不足显示「观察期数据不足」）。
+
+---
+
+## #110 盘中误跑 post_close + 4 项线上问题修复（2026-07-29）
+
+用户部署 #109 后，在**盘中 13:40** 手动执行 `python3.11 -m scripts.run_evaluate --phase post_close --backfill`，随后报告 4 个现象。本轮回溯根因并修复（代码 + CVM 侧处置）。
+
+> 注意：该命令须进 `backend/` 目录执行（`python3.11 -m scripts.run_evaluate`）；在仓库根目录跑会报 `No module named scripts.run_evaluate`。
+
+### 根因
+| # | 现象 | 根因 |
+|---|------|------|
+| 3b | 收盘复盘模块在 13:40 出现分析 | 盘中手动跑 `post_close` 阶段，`run_evaluate` 无盘中守卫，直接生成盘中复盘记录（worker 的 `job_post_close_evaluate` 本在 15:10 才跑且只在交易日）。 |
+| 3a | 沪深300 等分时数据全没了 | 腾讯分时源实测**可用**（沙箱 curl `sh000300`/`sz159915` 均返回 code:0）；代码路径覆盖 000300（`broad_index_codes=["000300","000001","399001"]`）。嫌疑：`collect_intraday_minute` **先 `purge_intraday_before` 清旧日、再 fetch**——一旦某次采集对指数失败即「清了补不回」；叠加 worker 重启后若未真正在采，分时即空。 |
+| 2 | 始终「市场风险大，先观望」 | `MARKET_RISK_HIGH` 由 `market_regime∈{WEAK,BEAR}` 或 `high_vol` 触发（`engine.py:195`），依赖指数数据；#3a 数据缺失→默认高危。**是 #3a 的连带症状**，数据恢复后自动消解，本轮不单独改。 |
+| 1 | 实时资讯不滚动 | `NewsStrip.vue` 跑马灯 CSS 本身正确；更可能是 `scored10` 因 `analyzeNewsImpact` 过滤为空（无可解读资讯）导致跑马灯元素不渲染。 |
+| 4 | 板块意见要折叠 | 明确产品需求：`EtfDetail.vue` 的「盘中意见」(`intradayOpinions`/midday) 与「收盘后复盘」(`postCloseOpinions`/post_close) 两 Card 均渲染 `OpinionList.vue`。 |
+
+### 代码修复
+- **A. `backend/scripts/run_evaluate.py`**：`post_close`/`pre_close` 阶段盘中守卫。无 `--backfill` 且盘中→早退（不建库）；有 `--backfill` 时先跑回填、再拦截收盘阶段评估（返回 2 并提示）。backfill 历史 BAR 不受限。
+- **B. `backend/app/collector/collector.py` `collect_intraday_minute`**：「先采后清」——将 `purge_intraday_before` 从方法开头移到采集循环之后，且仅当 `bucket["ok"]>0`（确有新数据写入）才清旧日。整轮 fetch 全失败时不 purge，保留既有分时，杜绝「清了补不回」。
+- **C. `frontend/src/components/sections/NewsStrip.vue`**：跑马灯兜底——`scored10` 为空但 `items` 非空时退化为展示最近若干条原始资讯（灰点），保证有资讯就滚动；命中可解读资讯时仍优先。`ScoredNews.imp` 类型放宽为 `NewsImpact | null`。
+- **D. `frontend/src/components/sections/OpinionList.vue`**：意见折叠——按 `generated_at` 降序，只显示最新一条，其余收起；点「查看历史（N）」展开，保留「查看依据」。`<details>`。仅被 `EtfDetail.vue` 两处使用，天然覆盖 #4。
+
+### CVM 侧处置（用户执行，沙箱无法验证）
+1. **确认 worker 在跑并采集**：
+   - `systemctl status etf-worker`
+   - `journalctl -u etf-worker -n 80 --no-pager | grep -i intraday`（看有无 FAILED/超时）
+   - 若未运行：`sudo systemctl restart etf-worker`；约 60s 内盘中采集自动回填沪深300 分时。
+2. **从 CVM 验证腾讯分时可达**：`curl -s "https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=sh000300" | head -c 200`（应返回 code:0；若超时说明 CVM→gtimg 被墙，需换源）。
+3. **删除盘中误生成的复盘记录**（`opinion.generated_at` 为 naive UTC；13:40 北京=05:40 UTC，盘后 15:10 北京=07:10 UTC）：
+   ```sql
+   -- 先核对（应只命中 13:40 手动那批 post_close）
+   SELECT opinion_id, phase, trading_date, generated_at FROM opinion
+     WHERE phase='post_close' AND trading_date='2026-07-29' AND generated_at < '2026-07-29 07:10:00';
+   -- 删除盘中误生成的收盘复盘意见
+   DELETE FROM opinion
+     WHERE phase='post_close' AND trading_date='2026-07-29' AND generated_at < '2026-07-29 07:10:00';
+   ```
+   （SQLite 用 `sqlite3 <db路径>` 执行；db 路径见 settings。删除后 15:10 worker 会自动重新生成正确复盘。若 `signal` 表也有盘中误生成的 post_close，可同样按 `phase`+`trading_date`+`generated_at` 清理。）
+4. **前端重建**：`cd frontend && pnpm build`（C/D 改动需重新构建并覆盖 Nginx dist）。
+
+### 验证
+- 后端新增单测：`test_collector_intraday_gtimg.py::test_intraday_no_purge_when_all_fetch_fail`（双源全失败时不 purge、既有分时保留）；`test_run_evaluate_guard.py`（post_close/pre_close 盘中返回 2，midday 不拦截）。
+- **全量 `pytest` = 269 passed（0 失败）**（系统 python3.11 + pytest 9.0.2；venv 内 pytest 因 sandbox 损坏仍不可用，CVM venv 不受影响）。
+- 前端 `pnpm build` 通过（660 模块，0 类型错误；`NewsStrip`/`OpinionList` 改动编译通过）。
+- #2 不单独改代码，依赖 #3a 数据恢复；若恢复后仍持续「观望」，再单独查 `market_regime` 计算。
