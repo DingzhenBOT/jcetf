@@ -45,7 +45,8 @@
 - C17（2026-07-26）：① 板块异动三个 Card 副标题加数据日期；② ETF 列表/详情页加「信号时效」标识（≥2 天标「⚠ 信号 N 天前」，2-3 天 amber/≥3 天 rose），场外基金标注「场外·随大盘」避免误读成"针对该 ETF 的风险预警"；③ 非盘中页刷新 60s→5min（`market.ts` POLL_INTERVAL_MS=300_000 + NewsStrip 同步），盘中详情页(EtfDetail)新增 60s 短轮询（修正此前"分时图每60秒更新"名不副实的注释）；④ 美股三大指数(UsIndexTicker)并入大盘指数(IndexTicker)旁并排（桌面端右列 460px，移动端上下相邻）。**诊断结论**：110003 等场外基金显示「市场风险大/综合50/置信55」是设计内（无自身行情、信号纯由宽基市场环境驱动），非脏数据/算法 bug；信号停在旧日期不更新= CVM `etf-worker` 未运行（残留脏数据不会，信号按交易日 upsert）。详见 devlog C17。
 - C18（2026-07-26）：① 系统状态页 `/#/system`「轮询间隔：30 秒」写死文案改为动态引用 `POLL_INTERVAL_MS`（显示「5 分钟」），消除"逻辑没更新过"的观感；并明确「数据新鲜度/风险水平没更新」真因是 CVM `etf-worker` 停了（前端如实反映后端停滞，非前端 bug，需 `systemctl status etf-worker` 排查）。② **「最新信号」超过 2 天自动从"当前信号"中清除、历史保留**：`signal_repo.get_latest_signals` / `get_latest_signal_for_etf` 新增 `max_age_days=2` 默认过滤（子查询 `generated_at >= utcnow()-2d`），过期 ETF 在最新信号表/ETF 列表即"无当前信号"；`get_signal_history` 不动 → 历史完整保留。新增测试 `test_stale_signal_excluded_from_latest_but_kept_in_history` 验证。详见 devlog C18。
 - C19（2026-07-27 → 收尾于 C19-G）：① **盘中不采集根因修复**：`market_calendar.is_trading_day` 用 sina 历史日历不含未来交易日→误判非交易日→采集守卫静默 skip（worker 心跳正常但全天无采集）；改为"未来日回退启发式（周一~周五=True）"，新增 `calendar_last_day()` + worker 启动/守卫 skip 日志。② 修 sina 分时代码前缀 bug（`_to_sina_symbol` 对 INDEX 大写误走 ETF 分支→sz000300 无效，加 `kind.lower()`）。③ 新增 `scripts/manual_backfill_today.py`（收盘后补今日快照+日K+分时+复盘）、`scripts/diag_data.py`/`diagnose_worker.sh` 诊断。④ **分时源切腾讯 gtimg**（本轮收尾）：`gtimg_client.fetch_intraday_minute`（web.ifzq.gtimg.cn 当日分时，CVM 不封、返回当日，替代 sina 返回两周前旧数据）；`collector.collect_intraday_minute` 优先腾讯、降级 sina；`worker._collector()` 注入。⑤ **板块主源切 westock-data 异动榜（C19-G）**：CVM 实测 `push2.eastmoney.com` 批量请求被 RST（C19-F 误判可达，已纠正），push2 直连 `use_em_web=False` 默认关；westock-data 为 CVM 唯一稳定板块源，`collect_sector_from_westock` + `sector_map.resolve_sector_bk` 入库 `SECTOR/BAR/westock`，worker 定时 `sector_westock_collect`（900s）；引擎对非活跃板块 D4 降级（设计内）。详见 devlog C19 F/G。
-- 测试：backend 248 passed（C19 新增：分时源 4 例 + eastmoney_web mock 4 例 + westock 集成 6 例；`_tally` 修复使 batch 采集正确计入）；前端 pnpm build 通过。
+- C20（2026-07-27，用户 4 项盘中分时反馈）：① 午休断点（`IntradayChart.vue` 插 `__LUNCH__` 空槽 + `connectNulls:false`，11:30↔13:00 断开）；② 午后数据错（主因是①的跨午休连线视觉误导，随①修；另加 sina 降级「未来异常」守卫防陈旧污染）；③ 均价确认即 VWAP（`avg=cum_pv/cum_vol`，改名「分时均价」，非 BOLL 中轨）；④ 盘中 regime 实时化（`evaluate_etf` 透传 `phase` + 新增 `_intraday_regime` 用实时 INDEX 1m 重算，不再被陈旧日线压成全「偏弱」）。前端 `pnpm build` 通过。
+- 测试：backend 272 passed（C20 新增 5 例：strategy_engine 2 + collector 3）；前端 pnpm build 通过。
 
 【待办 / 续作（按优先级）】
 1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。~~**Task A（SNAPSHOT 切腾讯财经 qt.gtimg.cn，已落地 2026-07-25）**~~：gtimg 已注入 `collect_market` 作盘中实时快照附加源，`get_latest_snapshot_change_map` 跨源取 max(timestamp) 命中 gtimg → P1 现在 CVM 真正随实时行情更新。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。
@@ -65,14 +66,14 @@
 
 ---
 
-## 二、当前状态速览（截至 2026-07-25）
+## 二、当前状态速览（截至 2026-07-27，C20 已推送）
 
 | 项 | 状态 |
 |---|---|
-| 后端 | FastAPI + SQLite(WAL)，248 测试通过（C19-G 后） |
+| 后端 | FastAPI + SQLite(WAL)，272 测试通过（C20 后） |
 | 前端 | Vue3 + ECharts，pnpm build 通过 |
 | 数据源 | 平安已弃用；**东财 em 已于 C14 弃用（preferred=sina）**；腾讯自选股 + 盈米 + 东财新闻 + gtimg(A股+美股) + NeoData(agent侧) |
-| 远程仓库 | github.com/DingzhenBOT/jcetf.git，main（C14 已全部推送远程：**`70e61d1`** 功能提交 + 文档同步提交；原远程 `65ba8c2`→`70e61d1`，其余为文档提交。本仓库 main 即远程最新） |
+| 远程仓库 | github.com/DingzhenBOT/jcetf.git，main（最新提交 **`aec8c28`**（C20）；本仓库 main 即远程最新） |
 | DESIGN.md | 已入库，随本次推送同步 |
 
 ## 三、目录导航
@@ -156,3 +157,34 @@
   - 档位为 `MARKET_RISK_HIGH`（"市场风险大，先观望"）是因为造的弱市数据使 `regime=WEAK`——**市场偏弱时观望是算法正确的保守行为，非 bug**；市场走强后档位会分化。
 - **算法合理性评估**：复合分（market+sector+fund_flow+etf_rs）D4 缺失重归一化 + 风险否决（BEAR+缺失）+ 保守档位，模型合理。用户提到的 `@持仓监控告警`/`@基金分析` skills 本沙箱未安装，评估基于代码分析。真正的 operational gap 是日线 BAR 回填必须在 CVM 真正落库。
 - **部署动作（用户侧）**：在 CVM 跑一次 `backfill_history`（或等 16:30 定时）确认 `market_quote` 出现 `data_kind='BAR'` 行；若仍为空，按约束 8 排查 akshare/em 网络，必要时为 ETF/指数历史换 CVM 稳源（gtimg 仅支持指数/个股 K 线，不支持板块 BK）。
+
+---
+
+## II. C20 · 盘中分时 4 项修复（2026-07-27，用户 4 项反馈）
+
+> 用户原话：① x 轴错，应从 11:30 直接跳到 13:00，不要跨午休连起来；② 下午数据全是错的，不知从哪来；③ 均价（黄线）错，均价是分时均价（同花顺黄线含义），别自己乱画成布林中轨；④ 盘中建议为什么还是全「偏弱」。
+
+**4 项根因与修复（先读代码+沙箱实测验证，未盲改）**：
+
+| # | 现象 | 根因 | 修复 | 落点 |
+|---|------|------|------|------|
+| ① | 午休不断开 | C19-I #107 为「午休留空槽」特意设 `connectNulls:true`，把 11:30 直连 13:00 | 插午休空槽类目 `__LUNCH__` + `connectNulls:false`（价格/均价线午休断开）。纯前端 | `frontend/src/components/charts/IntradayChart.vue` |
+| ② | 午后数据错 | 后端分时链路正确（gtimg 注入、增量、时区、过滤均对，沙箱实测 242 行下午正确）；「午后错」主因是①跨午休直线把上午末点直连下午首点，视觉像数据错；辅以 sina 降级偶发陈旧 | ①修好即正；另加 sina 降级「未来异常」守卫 | `collector/collector.py` `_intraday_rows_fresh` |
+| ③ | 均价像 BOLL | **误判**：均价本就是 VWAP（`avg=cum_pv/cum_vol`，000300 收 4600.26/均价 4570.61 合理）。「像 BOLL」是①跨午休直线+②午后视觉错共同造成的错觉 | 确认 VWAP 正确；改名「分时均价」并在午休断开后不再连成类 BOLL 直线 | `IntradayChart.vue`（series `name`） |
+| ④ | 盘中建议全偏弱 | `decide_tier` 在 `regime∈{WEAK,BEAR}` 强制 `MARKET_RISK_HIGH`；盘中 `evaluate_etf` 用**昨日日线**算 regime（今日日线 15:10 才写），日线弱则盘中实时动量修正被压制 | `evaluate_etf` 透传 `phase`；盘中阶段用**实时 INDEX 1m** 重算 regime（指数当日涨→抬升为 VOLATILE/TREND_UP，当日走弱保持日线 WEAK/BEAR）；`post_close` 保持日线逻辑 | `strategy_engine/engine.py` `_intraday_regime` + `evaluation/pipeline.py` |
+
+**关键决策**：
+- ④ 的 regime 实时化**只看指数当日涨跌幅**抬升 WEAK/BEAR；若当日指数微涨但板块/个股普跌，regime 抬升但个股建议仍由 composite+量价形态决定，不会无脑看多。
+- ② 守卫刻意只挡「未来异常」（`max_ts > now+5min`），**不挡同日早前分钟**（避免午后看上午数据时误杀正常 sina 降级）；多日旧数据由 normalize 的 `trading_date` 过滤兜底（#106）。
+- ③ 经实证确认 VWAP 数学正确，非算法缺陷，**不改后端**，仅更名+前端断开消除视觉误导。
+
+**测试**：`backend 272 passed`（C20 新增 5 例：strategy_engine 2 + collector 3）；前端 `pnpm build` 通过（660 模块，0 类型错误）。
+
+**⚠ CVM 部署待办（用户侧，沙箱无法验证 — 下个 agent 接手前务必确认用户已做）**：
+1. `cd /workspace && git pull` → `cd frontend && pnpm build`（纯前端改动需重建覆盖 Nginx dist）→ `sudo systemctl restart etf-worker`（后端改动需重启 worker 生效）。
+2. 验证午休断点：盘中 ETF 详情→分时图，11:30 与 13:00 间应空白断开，价格线/分时均价线均不跨午休连接。
+3. 验证均价：黄线贴价格线下方呈 VWAP 平滑累计曲线（非居中笔直的 BOLL 式中轨）。
+4. 验证盘中建议：盘中（非收盘后）若当日指数上涨，不应再「全偏弱/市场风险大」；当日真走弱则维持谨慎属正常。
+5. 若仍见「午后数据错」：查 `journalctl -u etf-worker | grep -iE 'intraday sina stale|intraday gtimg failed'` 确认是否 gtimg 在 CVM 偶败降级到陈旧 sina；频繁触发说明 CVM→gtimg 连通性问题，需另查网络/超时。
+
+**已知边界**：② 若 CVM 上 gtimg 持续失败、sina 又返「同日但陈旧」非未来异常数据（理论不应发生，因 sina 实时源最新分钟≈now），守卫不拦截——靠 #106 `trading_date` 过滤兜底，单日内陈旧需后续按值校验（超出本期）。
