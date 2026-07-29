@@ -25,6 +25,7 @@ from app.data_provider import build_provider
 from app.data_provider import akshare_adapter
 from app.config import get_settings
 from app.db import make_engine, session_scope
+from app.db.lock import db_writer_lock
 from app.evaluation.pipeline import post_collection_evaluate
 from app.logging_conf import get_logger, setup_logging
 from app.data_provider import gtimg_client
@@ -95,6 +96,27 @@ def run_job(name: str, fn, *args, **kwargs) -> None:
         log.error("job failed", exc_info=e, extra={"job": name})
 
 
+def run_write_job(name: str, fn, engine, *args, **kwargs) -> None:
+    """写库任务包装（#111）：先尝试获取跨进程写锁(非阻塞)。
+
+    被手动 `run_evaluate --backfill` 占用写锁时跳过本轮、下个周期重试，绝不报
+    database is locked，也绝不因并发写而损坏数据。读库类任务不要用本包装。
+    """
+    log = get_logger("etf-worker.job")
+    try:
+        with db_writer_lock(get_settings(), blocking=False) as acquired:
+            if not acquired:
+                log.warning(
+                    "write job skipped: db_writer_lock busy (manual run_evaluate running?)",
+                    extra={"job": name},
+                )
+                return
+            with session_scope(engine) as session:
+                run_job(name, fn, session, *args, **kwargs)
+    except Exception as e:  # noqa: BLE001 - 锁文件异常等兜底，不影响调度器
+        log.error("write job wrapper failed", exc_info=e, extra={"job": name})
+
+
 def health_heartbeat() -> None:
     """每 5 分钟心跳：记录时间 + 磁盘使用率（超阈值告警，不自动删数据）。"""
     log = get_logger(__name__)
@@ -126,8 +148,7 @@ def job_collect_market() -> None:
     if not is_trading_now():
         get_logger("etf-worker.job").debug("collect_market skipped: not trading now")
         return
-    with session_scope(_engine()) as session:
-        run_job("collect_market", _collector().collect_market, session)
+    run_write_job("collect_market", _collector().collect_market, _engine())
 
 
 def job_collect_intraday_minute() -> None:
@@ -137,8 +158,7 @@ def job_collect_intraday_minute() -> None:
     if not is_trading_now():
         get_logger("etf-worker.job").debug("intraday_minute skipped: not trading now")
         return
-    with session_scope(_engine()) as session:
-        run_job("collect_intraday_minute", _collector().collect_intraday_minute, session)
+    run_write_job("collect_intraday_minute", _collector().collect_intraday_minute, _engine())
 
 
 def job_collect_sector_westock() -> None:
@@ -152,9 +172,17 @@ def job_collect_sector_westock() -> None:
         get_logger("etf-worker.job").debug("sector westock skipped: not trading now")
         return
     c = _collector()
-    with session_scope(_engine()) as session:
-        sector_codes = c._sector_codes(session, trading_date_for())
-        run_job("sector_westock", c.collect_sector_from_westock, session, sector_codes, trading_date_for())
+    # sector_codes 来自读查询，不在写锁内；写操作整体置于写锁下（被手动 run_evaluate 占用则跳过本轮）
+    with db_writer_lock(get_settings(), blocking=False) as acquired:
+        if not acquired:
+            get_logger("etf-worker.job").warning(
+                "sector_westock skipped: db_writer_lock busy (manual run_evaluate running?)",
+                extra={"job": "sector_westock"},
+            )
+            return
+        with session_scope(_engine()) as session:
+            sector_codes = c._sector_codes(session, trading_date_for())
+            run_job("sector_westock", c.collect_sector_from_westock, session, sector_codes, trading_date_for())
 
 
 def job_collect_breadth() -> None:
@@ -163,8 +191,7 @@ def job_collect_breadth() -> None:
 
     if not is_trading_day(trading_date_for()):
         return
-    with session_scope(_engine()) as session:
-        run_job("collect_breadth", _collector().collect_breadth, session)
+    run_write_job("collect_breadth", _collector().collect_breadth, _engine())
 
 
 def job_pre_market() -> None:
@@ -177,8 +204,7 @@ def job_pre_market() -> None:
         get_logger(__name__).warning("calendar refresh failed", extra={"err": str(e)})
     if not is_trading_day(trading_date_for()):
         return
-    with session_scope(_engine()) as session:
-        run_job("pre_market_prepare", _collector().collect_market, session)
+    run_write_job("pre_market_prepare", _collector().collect_market, _engine())
 
 
 def job_post_close() -> None:
@@ -188,8 +214,7 @@ def job_post_close() -> None:
     if not is_trading_day(trading_date_for()):
         get_logger("etf-worker.job").debug("post_close skipped: not trading day")
         return
-    with session_scope(_engine()) as session:
-        run_job("post_close_review", _collector().collect_all, session)
+    run_write_job("post_close_review", _collector().collect_all, _engine())
 
 
 # --------------------------------------------------------------------------- #
@@ -197,8 +222,7 @@ def job_post_close() -> None:
 # --------------------------------------------------------------------------- #
 def job_backfill_history() -> None:
     """盘后回填历史 BAR（指数/ETF/板块）。增量（按 max(timestamp)+1）；非交易时段也可跑（历史不限于盘中）。"""
-    with session_scope(_engine()) as session:
-        run_job("backfill_history", _collector().backfill_history, session)
+    run_write_job("backfill_history", _collector().backfill_history, _engine())
 
 
 def job_pre_close_evaluate() -> None:
@@ -207,8 +231,7 @@ def job_pre_close_evaluate() -> None:
 
     if not is_trading_day(trading_date_for()):
         return
-    with session_scope(_engine()) as session:
-        run_job("pre_close_evaluate", post_collection_evaluate, session, get_settings(), phase="pre_close")
+    run_write_job("pre_close_evaluate", post_collection_evaluate, _engine(), get_settings(), phase="pre_close")
 
 
 def job_post_close_evaluate() -> None:
@@ -217,8 +240,7 @@ def job_post_close_evaluate() -> None:
 
     if not is_trading_day(trading_date_for()):
         return
-    with session_scope(_engine()) as session:
-        run_job("post_close_evaluate", post_collection_evaluate, session, get_settings(), phase="post_close")
+    run_write_job("post_close_evaluate", post_collection_evaluate, _engine(), get_settings(), phase="post_close")
 
 
 def job_intraday_evaluate() -> None:
@@ -227,8 +249,7 @@ def job_intraday_evaluate() -> None:
 
     if not is_trading_day(trading_date_for()):
         return
-    with session_scope(_engine()) as session:
-        run_job("intraday_evaluate", post_collection_evaluate, session, get_settings(), phase="midday")
+    run_write_job("intraday_evaluate", post_collection_evaluate, _engine(), get_settings(), phase="midday")
 
 
 # --------------------------------------------------------------------------- #
@@ -238,8 +259,7 @@ def job_run_backtest() -> None:
     """取全部 PENDING 回测任务执行（异步，避免与采集竞争 CPU/内存，DESIGN §异步回测）。"""
     from app.backtest_engine.runner import process_pending_backtests
 
-    with session_scope(_engine()) as session:
-        run_job("run_backtest", process_pending_backtests, session, get_settings())
+    run_write_job("run_backtest", process_pending_backtests, _engine(), get_settings())
 
 
 def build_scheduler(settings) -> BlockingScheduler:

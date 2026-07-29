@@ -1775,3 +1775,46 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - **全量 `pytest` = 269 passed（0 失败）**（系统 python3.11 + pytest 9.0.2；venv 内 pytest 因 sandbox 损坏仍不可用，CVM venv 不受影响）。
 - 前端 `pnpm build` 通过（660 模块，0 类型错误；`NewsStrip`/`OpinionList` 改动编译通过）。
 - #2 不单独改代码，依赖 #3a 数据恢复；若恢复后仍持续「观望」，再单独查 `market_regime` 计算。
+
+## #111 SQLite `database is locked` 根因（worker ↔ 手动 run_evaluate 写锁争用）
+
+用户贴出 CVM `journalctl -u etf-worker`：14:56/14:59 出现 `sqlite3.OperationalError: database is locked`（旧 worker PID 3588173），15:08:50 新 worker 重启（15 jobs）。这是 #110 的 #3a（沪深300 分时消失）的**真正根因**，而非 purge 顺序。
+
+### 根因
+- 系统设计为「worker 单实例 = 唯一写者」（DESIGN §0）。但用户 13:40 手动跑 `python3.11 -m scripts.run_evaluate --phase post_close --backfill` 是**第二个独立进程**，与 worker 写同一个 SQLite 库。
+- SQLite(WAL) 只允许一个写者。`run_evaluate --backfill` 把整个回填放进**一个事务**（`collector.backfill_history` 单次 `session_scope`，collector.py:50-54），即手动进程在数分钟内一直独占 SQLite 写锁。
+- 旧的 `busy_timeout_ms=5000` 太短：worker 盘中分时采集每 1 分钟写一次，等 5s 拿不到锁即报 `database is locked`；旧「先清后采」又把它放大成数据丢失（#110 已改为先采后清作 secondary 防护）。
+- 引擎虽已在每次连接下发 `PRAGMA journal_mode=WAL` + `busy_timeout`（session.py:28-35），但 WAL 只能并发「读+单写」，无法并发「双写」——5s 超时就是双写争用的体现。
+
+### 代码修复
+- **A. `backend/app/config.py` `DatabaseConfig`**：`busy_timeout_ms` 由 `5000` → `30000`（30s 兜底，覆盖绝大多数「worker 快速写一批 → 手动进程等待后独写」的窗口）。
+- **B. 新增 `backend/app/db/lock.py`**：`db_writer_lock` 跨进程 fcntl 顾问锁（与 worker 单实例锁同模式）。
+  - `blocking=False`（worker 侧）：拿不到锁（被手动 run_evaluate 占用）就**跳过本轮**、下周期重试，绝不报 `database is locked`，也绝不并发写损坏数据。
+  - `blocking=True`（手动 run_evaluate 侧）：阻塞等待 worker 写完当前批次（通常亚秒~数秒）后独占地写；期间 worker 自动让行。
+  - 锁文件 `db_writer.lock` 与 SQLite 库文件**同目录**（`_lock_path` 优先用 `sqlite_path_abs.parent`，缺失退化 `data_dir_abs`），确保两进程指向同一把锁；进程退出/崩溃由内核自动释放，不会永久死锁。
+- **C. `backend/app/worker.py`**：新增 `run_write_job(name, fn, engine, *args)` 包装器（先非阻塞取写锁，拿到才开 `session_scope` 写；拿不到记 warning 跳过）。11 个写库 job（collect_market / intraday_minute / sector_westock / breadth / pre_market / post_close / backfill_history / pre_close_evaluate / post_close_evaluate / intraday_evaluate / run_backtest）全部改走 `run_write_job`；`sector_westock` 因先读 `sector_codes` 故内联写锁（读查询在锁外，不争用）。
+- **D. `backend/scripts/run_evaluate.py`**：回填与评估两段写库统一包进 `db_writer_lock(settings, blocking=True, timeout=120)`；超时（另一 run_evaluate 在跑）捕获 `TimeoutError` 友好退出（rc=1）。盘中守卫（post_close/pre_close 拒绝）逻辑保持不变。
+
+### 未改动（已知边界，记录在案）
+- `etf-api` 常规查询走只读引擎（`query_only=ON`，deps.build_read_engine），不参与写竞争；仅回测提交那一行走可写引擎（backtest.py:133），稀有 + 盘中已拦截重型回测，依靠 30s `busy_timeout` 兜底（与 deps.build_write_engine 文档一致）。如需 100% 锁安全，可后续把回测提交也纳入 `db_writer_lock(blocking=True, timeout=30)`，但会增加 API 请求路径阻塞，当前不急于改。
+
+### CVM 侧处置（用户执行，沙箱无法验证）
+1. **部署新代码并重启 worker**（本修复只在 worker 重启后生效）：
+   ```bash
+   cd /workspace && git pull
+   sudo systemctl restart etf-worker
+   journalctl -u etf-worker -n 30 --no-pager | grep -iE 'started|error|database is locked'
+   ```
+2. **确认 WAL 已启用**（库文件旁应有 `-wal`/`-shm`）：
+   ```bash
+   ls -la /path/to/data/   # 应见 etf_monitor.db / etf_monitor.db-wal / etf_monitor.db-shm / db_writer.lock
+   sqlite3 /path/to/data/etf_monitor.db "PRAGMA journal_mode;"
+   # 期望输出 wal
+   ```
+3. **验证修复**：盘中手动跑 `run_evaluate --backfill`（worker 在跑时），worker 日志应出现 `write job skipped: db_writer_lock busy` 而非 `database is locked`；手动进程正常完成后 worker 下一周期自动恢复采集。
+4. 前端无改动，无需 `pnpm build`。
+
+### 验证
+- 新增单测 `test_db_writer_lock.py`（2 例，multiprocessing 验证跨进程互斥：持锁期间另一进程非阻塞获取被拒、阻塞获取等待释放后才拿到）。
+- **全量 `pytest` = 267 passed（0 失败）**（系统 python3.11 + pytest 9.0.2）。worker/run_evaluate 改写经导入冒烟确认。
+- 提交后推送；`db_writer.lock` 为运行时生成文件，不入库（与 `.etf_worker.lock` 同性质）。

@@ -16,6 +16,7 @@ import sys
 from app.config import get_settings
 from app.data_provider import build_provider, gtimg_client
 from app.db import init_db, make_engine, session_scope
+from app.db.lock import db_writer_lock
 from app.market_calendar import is_trading_now
 from app.collector.collector import Collector
 from app.evaluation.pipeline import post_collection_evaluate
@@ -47,24 +48,39 @@ def main() -> int:
     eng = make_engine(settings)
     init_db(eng, settings)
 
-    if args.backfill:
-        collector = Collector(build_provider(settings), settings, gtimg_fetcher=gtimg_client.fetch_realtime)
-        with session_scope(eng) as session:
-            bf = collector.backfill_history(session)
-        log.info("backfill summary", extra=bf)
-        print("backfill:", bf)
+    # 跨进程写锁（#111）：手动评估/回填与 worker 串行，彻底避免抢 SQLite 写锁导致
+    # database is locked。blocking=True 阻塞等待 worker 写完当前批次（通常亚秒~数秒）；
+    # 超时(默认120s)说明另一 run_evaluate 正在跑，友好退出。
+    try:
+        with db_writer_lock(settings, blocking=True, timeout=120) as acquired:
+            if not acquired:
+                print("[错误] 无法获取 SQLite 写锁（可能被另一 run_evaluate 占用），请稍后重试。")
+                return 1
+            log.info("db_writer_lock acquired (manual run_evaluate); worker 写任务将暂时让行")
 
-    # 有 --backfill 时盘中已跑完回填；收盘阶段评估仍须等收盘后，避免生成盘中复盘。
-    if args.phase in ("post_close", "pre_close") and is_trading_now():
-        print(
-            f"[中止] phase={args.phase} 评估不能在盘中运行（当前为交易时段）。\n"
-            "回填已完成（如有 --backfill）；收盘复盘/收盘前评估请于收盘后（北京时间 15:10 之后）再运行，"
-            "或由 worker 在 15:10 自动生成。"
-        )
-        return 2
+            if args.backfill:
+                collector = Collector(build_provider(settings), settings, gtimg_fetcher=gtimg_client.fetch_realtime)
+                with session_scope(eng) as session:
+                    bf = collector.backfill_history(session)
+                log.info("backfill summary", extra=bf)
+                print("backfill:", bf)
 
-    with session_scope(eng) as session:
-        res = post_collection_evaluate(session, settings, phase=args.phase)
+            # 有 --backfill 时盘中已跑完回填；收盘阶段评估仍须等收盘后，避免生成盘中复盘。
+            if args.phase in ("post_close", "pre_close") and is_trading_now():
+                print(
+                    f"[中止] phase={args.phase} 评估不能在盘中运行（当前为交易时段）。\n"
+                    "回填已完成（如有 --backfill）；收盘复盘/收盘前评估请于收盘后（北京时间 15:10 之后）再运行，"
+                    "或由 worker 在 15:10 自动生成。"
+                )
+                return 2
+
+            with session_scope(eng) as session:
+                res = post_collection_evaluate(session, settings, phase=args.phase)
+    except TimeoutError as e:
+        log.error("db_writer_lock timeout: %s", e)
+        print(f"[错误] {e}")
+        return 1
+
     eng.dispose()
 
     log.info("evaluate summary", extra=res)

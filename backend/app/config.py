@@ -59,7 +59,10 @@ class LoggingConfig(BaseModel):
 class DatabaseConfig(BaseModel):
     echo: bool = False
     wal_mode: bool = True
-    busy_timeout_ms: int = 5000
+    # SQLite 写冲突等待超时。默认 30s：WAL 下只允许一个写者，手动 run_evaluate --backfill
+    # 是独立进程、会与 worker 抢写锁；5s 太短会导致盘中分时采集等待超时报 database is locked
+    # （见 devlog #111）。30s 足以覆盖绝大多数「worker 快速写一批 → 手动进程等待后独写」的窗口。
+    busy_timeout_ms: int = 30000
     pool_size: int = 1
 
 
