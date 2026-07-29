@@ -46,7 +46,8 @@
 - C18（2026-07-26）：① 系统状态页 `/#/system`「轮询间隔：30 秒」写死文案改为动态引用 `POLL_INTERVAL_MS`（显示「5 分钟」），消除"逻辑没更新过"的观感；并明确「数据新鲜度/风险水平没更新」真因是 CVM `etf-worker` 停了（前端如实反映后端停滞，非前端 bug，需 `systemctl status etf-worker` 排查）。② **「最新信号」超过 2 天自动从"当前信号"中清除、历史保留**：`signal_repo.get_latest_signals` / `get_latest_signal_for_etf` 新增 `max_age_days=2` 默认过滤（子查询 `generated_at >= utcnow()-2d`），过期 ETF 在最新信号表/ETF 列表即"无当前信号"；`get_signal_history` 不动 → 历史完整保留。新增测试 `test_stale_signal_excluded_from_latest_but_kept_in_history` 验证。详见 devlog C18。
 - C19（2026-07-27 → 收尾于 C19-G）：① **盘中不采集根因修复**：`market_calendar.is_trading_day` 用 sina 历史日历不含未来交易日→误判非交易日→采集守卫静默 skip（worker 心跳正常但全天无采集）；改为"未来日回退启发式（周一~周五=True）"，新增 `calendar_last_day()` + worker 启动/守卫 skip 日志。② 修 sina 分时代码前缀 bug（`_to_sina_symbol` 对 INDEX 大写误走 ETF 分支→sz000300 无效，加 `kind.lower()`）。③ 新增 `scripts/manual_backfill_today.py`（收盘后补今日快照+日K+分时+复盘）、`scripts/diag_data.py`/`diagnose_worker.sh` 诊断。④ **分时源切腾讯 gtimg**（本轮收尾）：`gtimg_client.fetch_intraday_minute`（web.ifzq.gtimg.cn 当日分时，CVM 不封、返回当日，替代 sina 返回两周前旧数据）；`collector.collect_intraday_minute` 优先腾讯、降级 sina；`worker._collector()` 注入。⑤ **板块主源切 westock-data 异动榜（C19-G）**：CVM 实测 `push2.eastmoney.com` 批量请求被 RST（C19-F 误判可达，已纠正），push2 直连 `use_em_web=False` 默认关；westock-data 为 CVM 唯一稳定板块源，`collect_sector_from_westock` + `sector_map.resolve_sector_bk` 入库 `SECTOR/BAR/westock`，worker 定时 `sector_westock_collect`（900s）；引擎对非活跃板块 D4 降级（设计内）。详见 devlog C19 F/G。
 - C20（2026-07-27，用户 4 项盘中分时反馈）：① 午休断点（`IntradayChart.vue` 插 `__LUNCH__` 空槽 + `connectNulls:false`，11:30↔13:00 断开）；② 午后数据错（主因是①的跨午休连线视觉误导，随①修；另加 sina 降级「未来异常」守卫防陈旧污染）；③ 均价确认即 VWAP（`avg=cum_pv/cum_vol`，改名「分时均价」，非 BOLL 中轨）；④ 盘中 regime 实时化（`evaluate_etf` 透传 `phase` + 新增 `_intraday_regime` 用实时 INDEX 1m 重算，不再被陈旧日线压成全「偏弱」）。前端 `pnpm build` 通过。
-- 测试：backend 272 passed（C20 新增 5 例：strategy_engine 2 + collector 3）；前端 pnpm build 通过。
+- C21（2026-07-29，用户复核）：① 盘中分时轴**改回连续**（回退 C20 午休断点，同花顺风格 11:30 直连 13:00，`connectNulls:true`）；② 用户称「数据依旧错」——沙箱拉今天真实 gtimg 端到端验证代码链路正确（涨跌幅/VWAP 均对），判定是 C20 午休断点视觉误导，连成后消失；为防 CVM 上 gtimg 偶败回退陈旧 sina，后端 `_intraday_rows_fresh` 新增**盘中滞后**守卫（仅盘中、落后>120min 拒，守「不误杀同日早前分钟」原则）。
+- 测试：backend 273 passed（C21 新增 1 例：collector 盘中滞后守卫）；前端 pnpm build 通过。
 
 【待办 / 续作（按优先级）】
 1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。~~**Task A（SNAPSHOT 切腾讯财经 qt.gtimg.cn，已落地 2026-07-25）**~~：gtimg 已注入 `collect_market` 作盘中实时快照附加源，`get_latest_snapshot_change_map` 跨源取 max(timestamp) 命中 gtimg → P1 现在 CVM 真正随实时行情更新。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。
@@ -70,7 +71,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 后端 | FastAPI + SQLite(WAL)，272 测试通过（C20 后） |
+| 后端 | FastAPI + SQLite(WAL)，273 测试通过（C21 后） |
 | 前端 | Vue3 + ECharts，pnpm build 通过 |
 | 数据源 | 平安已弃用；**东财 em 已于 C14 弃用（preferred=sina）**；腾讯自选股 + 盈米 + 东财新闻 + gtimg(A股+美股) + NeoData(agent侧) |
 | 远程仓库 | github.com/DingzhenBOT/jcetf.git，main（最新提交 **`aec8c28`**（C20）；本仓库 main 即远程最新） |
@@ -188,3 +189,23 @@
 5. 若仍见「午后数据错」：查 `journalctl -u etf-worker | grep -iE 'intraday sina stale|intraday gtimg failed'` 确认是否 gtimg 在 CVM 偶败降级到陈旧 sina；频繁触发说明 CVM→gtimg 连通性问题，需另查网络/超时。
 
 **已知边界**：② 若 CVM 上 gtimg 持续失败、sina 又返「同日但陈旧」非未来异常数据（理论不应发生，因 sina 实时源最新分钟≈now），守卫不拦截——靠 #106 `trading_date` 过滤兜底，单日内陈旧需后续按值校验（超出本期）。
+
+---
+
+## III. C21 · 盘中连续轴 + sina 滞后守卫（2026-07-29，用户复核）
+
+> 用户原话：①「11:30 与 13:00 间直接合并，不要断开」；②「你上午和下午的数据依旧是错的」。
+
+**关键转折**：① 与 C20 / 历史 #5 相反——用户看过同花顺后确认**同花顺午休处连续**，要求 11:30 直连 13:00。故回退 C20 午休断点，改回连续轴。
+**调研结论（沙箱拉今天真实 gtimg 端到端验证）**：代码链路（fetch→normalize→端点 VWAP/北京时间/源优先级去重）**完全正确**，涨跌幅/VWAP 均对。「数据依旧错」极大概率是 C20 午休断点视觉断裂的误判，连成连续轴后消失。若连成后仍数字错 → CVM 上 gtimg 分时抓取失败、回退陈旧 sina。
+
+**改动**：
+- 前端 `IntradayChart.vue`：移除 `__LUNCH__` 空槽，`connectNulls:true`，09:30–11:30 直连 13:00–15:00；保留「分时均价」(VWAP) 命名。
+- 后端 `collector/collector.py` `_intraday_rows_fresh`：新增**盘中滞后**守卫（仅 `is_trading_now` 时，最新分钟落后>120min 拒），守「不误杀同日早前分钟」原则；gtimg 正常不走 sina 分支。
+- 测试：backend **273 passed**（C21 +1）；前端 pnpm build 通过。
+
+**⚠ CVM 部署待办（用户侧）**：
+1. `git pull` → `cd frontend && pnpm build` → `sudo systemctl restart etf-worker`。
+2. 验证连续轴：分时图 11:30↔13:00 连续无断点。
+3. 验证数据：连成后涨跌幅/VWAP 与腾讯财经/同花顺一致 → 此前「数据错」即视觉误导，已解决。
+4. **若仍数字错**：跑 `journalctl -u etf-worker --since today | grep -iE 'intraday'` 看 `intraday gtimg failed, fallback sina` / `intraday sina stale, skip upsert`，把输出发 agent —— 据此修 gtimg 连通性或改用「由稳定 gtimg 实时快照累积 1m 分时」方案。

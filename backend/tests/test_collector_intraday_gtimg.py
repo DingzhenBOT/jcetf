@@ -267,6 +267,26 @@ def test_intraday_rows_fresh_logic():
     assert _intraday_rows_fresh([{"timestamp": None}], NOW) is False
 
 
+def test_intraday_rows_fresh_rejects_stale_lag_during_trading():
+    """盘中滞后关卡：NOW=北京14:00(UTC06:00)。
+    - 最新分钟落后>120min（如北京11:30，sina 冻结在上午）-> 拒绝；
+    - 落后<120min（如北京13:30，午后刚开始）-> 接受（不误杀同日早前分钟）；
+    - 非盘中时段不触发滞后关卡。
+    """
+    from app.collector.collector import _intraday_rows_fresh
+
+    NOW = datetime(2026, 7, 29, 6, 0, 0)  # UTC = 14:00 北京（盘中时段）
+    # 落后 150min（北京11:30）-> sina 冻结在上午，视为陈旧拒绝
+    assert _intraday_rows_fresh([{"timestamp": NOW - timedelta(minutes=150)}], NOW) is False
+    # 落后 30min（北京13:30）-> 午后刚开始，正常更新，接受
+    assert _intraday_rows_fresh([{"timestamp": NOW - timedelta(minutes=30)}], NOW) is True
+    # 落后 1min（北京13:59）-> 正常更新，接受
+    assert _intraday_rows_fresh([{"timestamp": NOW - timedelta(minutes=1)}], NOW) is True
+    # 非盘中时段（北京 20:00 = UTC 12:00）不触发滞后关卡：落后 150min 仍接受
+    OFF = datetime(2026, 7, 29, 12, 0, 0)  # UTC = 20:00 北京（盘后）
+    assert _intraday_rows_fresh([{"timestamp": OFF - timedelta(minutes=150)}], OFF) is True
+
+
 def test_intraday_sina_stale_rejected(tmp_path, monkeypatch):
     """gtimg 偶败降级 sina 时，若 sina 返回未来异常分时（陈旧错标到今日），守卫应拒绝注入。"""
     from app.db.models.market import MarketQuote

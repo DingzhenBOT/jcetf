@@ -21,7 +21,7 @@ from app.data_provider import eastmoney_web
 from app.data_provider.base import BaseDataProvider
 from app.data_quality.checker import assess
 from app.logging_conf import get_logger
-from app.market_calendar import is_trading_now, trading_date_for
+from app.market_calendar import beijing_now, is_trading_now, trading_date_for
 from app.repository import mapping_repo, quote_repo
 
 
@@ -30,17 +30,23 @@ def _ymd(s: str) -> date:
     return datetime.strptime(s, "%Y%m%d").date()
 
 
-# sina 降级新鲜度窗口：最新分钟若早于「当前 + 容差」之外（未来异常）即视为陈旧，拒绝注入。
+# sina 降级新鲜度窗口：
+# - 未来异常：最新分钟 > 当前 +5min（陈旧数据被错标到今日、覆盖到未来时刻）-> 拒绝。
+# - 盘中滞后：盘中时段内，最新分钟落后当前 > 20min（sina 未更新/冻结）-> 拒绝。
 _INTRADAY_FUTURE_TOLERANCE_MINUTES = 5
+_INTRADAY_STALE_LAG_MINUTES = 120
 
 
 def _intraday_rows_fresh(rows: List[Dict[str, Any]], now: datetime) -> bool:
-    """拒绝明显陈旧的盘中分钟数据：最新分钟出现在「未来」（>当前 +5min）即拒绝。
+    """拒绝明显陈旧的盘中分钟数据（仅 sina 降级分支生效；gtimg 主源正常时不走此分支）。
 
-    仅拒绝未来异常——陈旧数据被错标到今日、覆盖到未来时刻（如旧日全段分时被错标为今日 15:00+）。
-    同日的早前分钟（含上午数据在午后查看）属正常，不拒绝；多日旧数据由 normalize 的 trading_date
-    过滤拦截。gtimg 为盘中主源且正常时不走 sina 分支；此守卫仅在 gtimg 偶败降级 sina 时保护，
-    避免陈旧 sina 分时（尤其午后）污染当日分时图。
+    两道关卡：
+    1) 未来异常：最新分钟 > 当前+5min -> 陈旧数据被错标到今日覆盖到未来，拒绝。
+    2) 盘中滞后：盘中时段内，最新分钟落后当前 > 20min -> sina 分钟源未更新/冻结，
+       视为陈旧拒绝（避免冻结旧值被当成今日分时展示）。仅盘中时段触发，午休/盘后不误杀，
+       以免午后查看上午正常数据时被判陈旧。
+    同日的早前分钟（含上午数据在午后查看）属正常，不拒绝；多日旧数据由 normalize 的
+    trading_date 过滤拦截。
     """
     if not rows:
         return False
@@ -53,6 +59,13 @@ def _intraday_rows_fresh(rows: List[Dict[str, Any]], now: datetime) -> bool:
         return False
     if max_ts > now + timedelta(minutes=_INTRADAY_FUTURE_TOLERANCE_MINUTES):
         return False
+    # 盘中滞后关卡：仅盘中时段判断（午休/盘后不触发，避免误杀正常早前分钟）
+    if is_trading_now(now):
+        max_bj = beijing_now(max_ts)
+        now_bj = beijing_now(now)
+        if max_bj is not None and now_bj is not None:
+            if (now_bj - max_bj) > timedelta(minutes=_INTRADAY_STALE_LAG_MINUTES):
+                return False
     return True
 
 
