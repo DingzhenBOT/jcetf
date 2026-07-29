@@ -1678,3 +1678,10 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - **验证**：前端 `pnpm build` 通过（658 模块）；后端 `pytest -q` **全量 249 passed**（无回归）。test 数据（注入的 `data_source='test'` BAR）已清理。
 
 **提交/推送状态**：已推送至 `origin/main`（`422cb57..4b9ffb1`，含 `a3e369c` 五项修复 + `4b9ffb1` 本文档）。用临时 `x-access-token:<TOKEN>@github.com` URL 推送，推完立即恢复公开 URL。**该 token（ghp_…）已在对话暴露，务必到 GitHub 吊销。** **CVM 生产环境仍需确认 `backfill_history` 真正写入 `data_kind='BAR'`**，否则 #104「恒观望」在生产仍会复现（代码已修，但缺 BAR 数据）。
+
+### C19-I 续修（用户复验五项 + 美股技能）
+- **#105 etf_rs_missing 仍现（根因定位+修复）**：`backfill_history` 只回填 `broad_index_codes=["000300","000001","399001"]`，但引擎 `etf_rs` 以 `mapping.related_index_code`（跟踪指数，如 510500→000905/510050→000016/159915→399006/588000→000688）作 RS 基准；该基准日线从未回填 → `IndicatorEngine.compute` 无 `benchmark_close` → `rs_20d=None` → `etf_rs_missing`。**双修**：①回填时把每个 ETF 的 `related_index_code` 并入指数集合；②引擎 `benchmark_close` 缺失时兜底用 `broad_index_codes[0]`（000300，回填保证存在）。改后所有 ETF 的 etf_rs 均可算。
+- **#106 盘中数据非当日 / #108 均价变直（同源根因）**：沙箱实测 `collect_once --intraday` 走 sina（gtimg 在脚本未接 fetcher），sina 返回**多日旧分时**（1970 行跨多日期），`normalize_intraday_minute` 只强制 `trading_date=今日` 却保留原始时间戳 → 端点按今日捞出全部旧数据 → 图表串味、均价在乱序累计下失真变直。注：生产 worker 已接 `gtimg_intraday_fetcher`（gtimg 返回当日，CVM 不封 IP），但若 gtimg 偶败降级 sina 即复现。**修复**：`normalize_intraday_minute` 增加 `dt.date() != trading_date` 过滤，只留当日分钟；intraday 端点 `day` 缺省改 `trading_date_for()`（北京）；test mock 日期改今日。
+- **#107 分时图午休断点**：`IntradayChart.vue` 的 `涨跌幅`/`均价` line 缺 `connectNulls`，遇 null 断线。已加 `connectNulls: true`，午休边界与盘中缺分钟处直接连上下午（同花顺式）。
+- **#109 美股仍错 + US Stock Analysis 技能**：实时抓取验证 **#102 修复正确**（道指+1.03%/纳指-0.22%/标普+0.21%，非 +52607%）。CVM 上"仍错"是因**只重启 etf-api、未重启 etf-worker**（美股指数为 worker 采集）。→ 部署动作：`sudo systemctl restart etf-worker`。技能（美股综合分析）偏个股基本面/技术面；"美股对A股影响"用跨市场相关性实现：需美股指数**日线历史**（当前 US_INDEX 仅 SNAPSHOT，无 BAR/1d）→ 待确认是否把 US_INDEX 纳入 `backfill_history`（akshare/yfinance 美股日线源，CVM 可达性待测），再算与 000300 等的相关/β/近期传导。功能方案待用户确认后再建。
+- **验证**：后端 `pytest -q` 全量通过（含 intraday 当日过滤用例）；前端 `pnpm build` 通过（658 模块）。本轮 4 文件修复已提交 `b1c69cf`（本地，未推送——旧 token 待吊销，需换发新 token 再推）。
