@@ -398,6 +398,10 @@ def normalize_intraday_minute(
         dt = _parse_bj_time(_col(r, "day", "时间", "datetime", "date"))
         if dt is None:
             continue
+        # 只保留「当天」的分钟：源（如 sina）可能返回多日分时，统一以 trading_date 过滤，
+        # 避免旧日数据被强制标成今日后污染当日分时图（表现为「盘中数据不是今天的」）。
+        if dt.date() != trading_date:
+            continue
         row = _bar_row(source, symbol_type, symbol, trading_date, collected_at)
         row["timeframe"] = "1m"
         row["timestamp"] = dt

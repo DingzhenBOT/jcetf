@@ -16,14 +16,20 @@ from app.config import get_settings
 from app.collector.collector import Collector
 from app.data_provider.base import BaseDataProvider
 from app.db import init_db, make_engine, session_scope
+from app.market_calendar import trading_date_for
 from app.repository import mapping_repo
 
 
 def _intraday_df(source: str) -> pd.DataFrame:
-    """构造与 normalize.normalize_intraday_minute 期望同列名的分时 DataFrame。"""
+    """构造与 normalize.normalize_intraday_minute 期望同列名的分时 DataFrame。
+
+    日期取「今天」（trading_date_for），与 collect_intraday_minute 的 tdate 一致——
+    盘中分时本就是当日的，normalize 仅保留「当天」分钟（过滤 sina 等多日旧数据）。
+    """
+    td = trading_date_for()
     return pd.DataFrame([
-        {"day": pd.Timestamp("2026-07-27 09:30:00"), "open": 4.70, "high": 4.70, "low": 4.70, "close": 4.70, "volume": 100.0},
-        {"day": pd.Timestamp("2026-07-27 09:31:00"), "open": 4.71, "high": 4.71, "low": 4.71, "close": 4.71, "volume": 200.0},
+        {"day": pd.Timestamp(td.year, td.month, td.day, 9, 30, 0), "open": 4.70, "high": 4.70, "low": 4.70, "close": 4.70, "volume": 100.0},
+        {"day": pd.Timestamp(td.year, td.month, td.day, 9, 31, 0), "open": 4.71, "high": 4.71, "low": 4.71, "close": 4.71, "volume": 200.0},
     ])
 
 

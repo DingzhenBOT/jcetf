@@ -379,6 +379,15 @@ class StrategyEngine:
             idf = _to_df(idx_rows)
             if len(idf) > 0:
                 benchmark_close = list(idf["close"].astype("float64"))
+        # 兜底：跟踪指数（related_index_code）未回填时，用宽基指数（如 000300，回填任务保证存在）
+        # 作为 RS 基准，避免 etf_rs 因 related_index_code 缺失而误判 etf_rs_missing。
+        if benchmark_close is None and self.settings.strategy.broad_index_codes:
+            fb_rows = quote_repo.get_bar_history(
+                session, "INDEX", self.settings.strategy.broad_index_codes[0], start, end
+            )
+            fdf = _to_df(fb_rows)
+            if len(fdf) > 0:
+                benchmark_close = list(fdf["close"].astype("float64"))
         etf_ind = self.ind.compute(etf_df, benchmark_close) if len(etf_df) > 0 else {}
         # 方案B：量价关系技术分析（确定性，additive）
         vp = analyze_volume_price(etf_df) if len(etf_df) > 0 else {}

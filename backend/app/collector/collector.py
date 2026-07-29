@@ -699,8 +699,13 @@ class Collector:
             r = self.collect_etf_history(session, m.etf_code, start, end)
             self._tally(result["etf"], r)
 
-        # 宽基指数（market_regime 基准）
-        for code in self.settings.strategy.broad_index_codes:
+        # 宽基指数（market_regime 基准）+ 每个 ETF 的跟踪指数（related_index_code，作为 etf_rs 的 RS 基准）。
+        # 合并去重后回填，保证 etf_rs 能取到基准日线，避免 etf_rs_missing 误判。
+        index_codes = set(self.settings.strategy.broad_index_codes)
+        for m in mappings:
+            if m.related_index_code:
+                index_codes.add(m.related_index_code)
+        for code in sorted(index_codes):
             start = self._backfill_start(session, "INDEX", code, as_of, lookback_days)
             if start is None:
                 continue

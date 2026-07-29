@@ -26,7 +26,7 @@ from datetime import date, datetime, timedelta
 
 from app.config import get_settings
 from app.db.session import Session
-from app.market_calendar import beijing_now
+from app.market_calendar import beijing_now, trading_date_for
 from app.opinion_engine.index_read import humanize_index_read
 from app.repository import quote_repo, signal_repo
 from app.repository import mapping_repo
@@ -283,7 +283,7 @@ def intraday(
     返回当日 1m 序列（价格/均价/成交量）+ 昨收（用于着色与涨跌幅）。
     """
     symbol_type = "ETF" if type.lower() == "etf" else "INDEX"
-    trading_date = date.fromisoformat(day) if day else date.today()
+    trading_date = date.fromisoformat(day) if day else trading_date_for()
     rows = quote_repo.get_bar_history(
         session, symbol_type, code, trading_date, trading_date, timeframe="1m", data_kind="BAR"
     )
