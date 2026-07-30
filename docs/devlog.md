@@ -1903,3 +1903,37 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 4. **若连成后仍数字错**：说明 CVM 上 gtimg 分时抓取失败、回退到陈旧 sina。请跑
    `journalctl -u etf-worker --since today | grep -iE 'intraday'` 看是否有 `intraday gtimg failed, fallback sina` /
    `intraday sina stale, skip upsert`，把输出发我——据此再决定是修 gtimg 连通性还是改用「由稳定的 gtimg 实时快照累积 1m 分时」方案。
+
+## C22 · 盘中分时主源切换为 gtimg 实时快照转 1m（2026-07-30，用户日志实锤）
+
+**用户原话**：「你这就是错的啊卧槽，中间突然没合并，而且都断层了，你还说是视觉？而且人家今日涨1.42你这给人划到0了。」并附 `journalctl -u etf-worker --since today | grep intraday` 实锤：
+`collect intraday failed: INDEX/000300: intraday_minute sina sz000300 returned empty` 反复出现 + `intraday gtimg failed, fallback sina` + APScheduler `maximum number of running instances reached`。
+
+**根因（日志实锤，非视觉误导——纠正 C21 判断）**：
+- C21 把「数据错」判为午休断点视觉误导是**错的**。CVM 上 `web.ifzq.gtimg.cn`（`fetch_intraday_minute`）**超时失败**，系统回退 sina；sina 对指数 000300 用错代码 `sz000300`（应为 `sh000300`）直接返回空 → 沪深300 分时缺失/归零。
+- APScheduler `intraday_minute_collect` 间隔 60s，单轮超时(>60s)触发 `maximum number of running instances reached (1)` 跳过 → 数据空洞、断层。
+- 结论：CVM 上 web.ifzq + sina 双源均不可用 → 分时**真实错误**（归零/断层/不连续），非视觉。
+
+**修复方案（即 C21 预见的「由稳定 gtimg 实时快照累积 1m 分时」方案）**：
+主源从「web.ifzq.gtimg.cn + sina」改为 **qt.gtimg.cn 实时快照（`fetch_realtime`，CVM 稳定源）批量转 1m BAR**：
+- 每个采集周期用 `gtimg_fetcher(codes_with_kind)` 批量拉 ETF+宽基指数实时快照（`worker.py:56` 已注入 `gtimg_client.fetch_realtime`）。
+- 把「最新价」当该分钟 close；用「当日累计成交量」减「上一根 1m BAR 的 cum_volume」得**增量成交量**，构造 1m BAR 写入（timeframe=1m，source=gtimg）。
+- 增量以「上一根 BAR 的 cum_volume」为基准（**非快照差值**）→ 规避快照采集(180s，`intraday_interval_seconds`)与 1m 采样(60s，`intraday_minute_interval_seconds`)频率错配导致的**成交量漏计/重复**。旧快照差值法：快照在两次 1m 采集间从 S0 跳到 S1 时，会把 S0→S1 增量算成 0（cur 与 prev 同为最新快照）→ VWAP 偏低、cum_vol 偏少。新增 `market_quote.cum_volume` 列存当日累计量供下一根 BAR 差分。
+- 未覆盖标的（快照返回空）才回退次源 web.ifzq.gtimg.cn → sina（保留 C19/C21 的滞后守卫）。
+- `get_bar_history` 源优先级把 `gtimg` 提为最高（0）：若历史残留 sina 1m 脏数据（旧实现错码/陈旧）与 gtimg 共存，须让 gtimg 胜出，否则分时图仍显示错数据。gtimg 只写 1m 不写日线，不影响日线 K 线去重。
+
+**改动落点**：
+- `backend/app/collector/collector.py` `collect_intraday_minute`：主源改写为快照批量转 1m（增量 = cur_cum − 上一根 BAR cum_volume；守卫 cur<prev 时回落为 cur，不重复不丢）；次源仅兜底未覆盖标的（次源真分钟 BAR 也回填 cum_volume 自上一根主源累计续算，主源回切不重复计数）。
+- `backend/app/repository/quote_repo.py`：新增 `get_latest_1m_bars(session, keys, trading_date)`（取当日最新 1m BAR 含 cum_volume）；`_SOURCE_PRIORITY` 加 `"gtimg": 0`。
+- `backend/app/db/models/market.py` + `session.py`：新增 `cum_volume` 列 + `ensure_schema_columns` 幂等 ALTER 迁移（CVM 重启自动补列，不依赖 worker 先跑）。
+- `backend/app/data_provider/gtimg_client.py`：无改动（`fetch_realtime` 已稳定，沙箱实测 510300/000300/000001 均返回正确累计成交量与涨跌幅）。
+
+**沙箱端到端验证**：`fetch_realtime` 在沙箱可用 —— 510300 成交量 15,092,027 手（当日累计）、000300 248,082,357 手（当日累计）、涨跌幅正确；`normalize._f` 正确解析 → 增量算法成立。
+
+**测试**：backend **279 passed**（C22 新增 6 例：快照转1m基础字段、增量不漏计核心回归、主源覆盖ETF/次源覆盖指数、cum_volume迁移、get_latest_1m_bars、读路径优先gtimg胜sina）；前端连续轴沿用 C21，本轮无需改动。
+
+**⚠ CVM 部署待办（用户侧）**：
+1. `cd /workspace && git pull` → `cd frontend && pnpm build` → `sudo systemctl restart etf-worker`。
+2. `journalctl -u etf-worker --since today | grep -iE 'intraday'` 应只见 `intraday snapshot->1m` 类正常日志，不再有 `intraday gtimg failed, fallback sina` / `sina sz000300 returned empty` / `maximum number of running instances reached`。
+3. 验证：ETF/指数分时图应连续无断层、涨跌幅正确（如沪深300 当日 +1.42% 正确显示，不再归零），分时均价(VWAP) 平滑。
+4. 若仍有异常：把 `journalctl -u etf-worker --since today` 全文发我，重点看 `intraday gtimg snapshot->1m failed` 是否偶发（快照批量拉取超时则回退次源，属预期降级）。

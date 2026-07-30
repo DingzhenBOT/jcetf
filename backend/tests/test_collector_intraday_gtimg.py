@@ -321,10 +321,13 @@ def test_intraday_sina_stale_rejected(tmp_path, monkeypatch):
 def test_intraday_sina_fresh_accepted(tmp_path, monkeypatch):
     """gtimg 偶败降级 sina 时，若 sina 返回临近 now 的当日分时，应正常入库。"""
     from app.db.models.market import MarketQuote
+    from datetime import date as _date
 
     s, eng = _setup(tmp_path)
     NOW = datetime(2026, 7, 29, 6, 0, 0)  # UTC = 14:00 北京
     monkeypatch.setattr(Collector, "_now", lambda self: NOW)
+    # 锁定交易日与分时日期一致（避免沙箱真实日期翻滚导致 normalize 按 trading_date 过滤掉硬编码日期行）
+    monkeypatch.setattr("app.collector.collector.trading_date_for", lambda *a, **k: _date(2026, 7, 29))
 
     fresh = pd.DataFrame([
         {"day": pd.Timestamp(2026, 7, 29, 14, 0, 0), "open": 4.7, "high": 4.7, "low": 4.7, "close": 4.7, "volume": 100.0},

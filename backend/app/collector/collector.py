@@ -21,7 +21,7 @@ from app.data_provider import eastmoney_web
 from app.data_provider.base import BaseDataProvider
 from app.data_quality.checker import assess
 from app.logging_conf import get_logger
-from app.market_calendar import beijing_now, is_trading_now, trading_date_for
+from app.market_calendar import beijing_now, beijing_to_utc, is_trading_now, trading_date_for
 from app.repository import mapping_repo, quote_repo
 
 
@@ -625,13 +625,18 @@ class Collector:
         return {"status": "done", **bucket}
 
     def collect_intraday_minute(self, session: Session) -> Dict[str, Any]:
-        """盘中 1 分钟分时采集：遍历 ETF(生效映射) + 宽基指数。
+        """盘中 1 分钟分时采集（C22 重写主源）。
 
-        源优先级（C19 修复 sina 在 CVM 返回两周前旧数据）：
-        - 腾讯财经 web.ifzq.gtimg.cn（gtimg_intraday_fetcher 注入）：返回当日分时，CVM 不封 IP -> 优先。
-        - sina stock_zh_a_minute：腾讯失败时降级兜底。
-        - 单次批量；每个标的失败记 FAILED 不抛出（源偶发超时属非致命）。
-        - 幂等：同一分钟 timestamp 覆盖更新（upsert）。
+        主源：qt.gtimg.cn 实时快照（fetch_realtime，CVM 不封 IP 的可靠源）批量拉取 ETF+宽基指数，
+        把「最新价」当该分钟 close、用「当日累计成交量」减「上一根 1m BAR 的 cum_volume」得增量，
+        构造 1m BAR。增量以 BAR 自身累计量为基准，规避快照采集(180s)与 1m 采样(60s)频率错配导致的
+        成交量漏计/重复（旧实现用快照差值，会被快照中途更新漏计 -> VWAP 偏低、cum_vol 偏少）。
+
+        次源（仅主源未覆盖的标的才走，作兜底）：腾讯分时 web.ifzq.gtimg.cn -> sina。
+        CVM 实测前者超时、后者对指数用错代码 sz000300 返回空，故正常情况主源全覆盖、次源不触发。
+        次源真分钟 BAR 同样回填 cum_volume（自上一根主源 BAR 累计量续算），避免主源回切时重复计数。
+
+        幂等：同一分钟 timestamp 覆盖更新（upsert）；cum_volume 存当日累计量供下一根 BAR 差分。
         """
         now = self._now()
         tdate = trading_date_for()
@@ -640,10 +645,59 @@ class Collector:
             ("INDEX", c) for c in self.settings.strategy.broad_index_codes
         ]
         bucket: Dict[str, int] = {"ok": 0, "failed": 0}
+        rows_to_upsert: List[Dict[str, Any]] = []
+        covered: set = set()
+
+        # 上一根 1m BAR 的累计成交量（增量基准）；主源与次源共享同一起点。
+        prev_bars = quote_repo.get_latest_1m_bars(session, targets, tdate)
+
+        # ---- 主源：qt.gtimg.cn 实时快照批量转 1m BAR ----
+        if self.gtimg_fetcher is not None and targets:
+            try:
+                codes_with_kind = [(code, kind.lower()) for kind, code in targets]
+                df = self.gtimg_fetcher(codes_with_kind)
+                if df is None or (hasattr(df, "empty") and df.empty):
+                    raise ValueError("gtimg realtime returned empty")
+                ts_bj = beijing_now(now).replace(second=0, microsecond=0)
+                ts_utc = beijing_to_utc(ts_bj)
+                for symbol_type, code in targets:
+                    sub = df[df["代码"].astype(str) == str(code)]
+                    if sub.empty:
+                        continue  # 该标的未覆盖 -> 走次源
+                    r = sub.iloc[0]
+                    close = normalize._f(r.get("最新价"))
+                    cur_vol = normalize._f(r.get("成交量"))
+                    if close is None or cur_vol is None:
+                        continue
+                    prev_bar = prev_bars.get((symbol_type, code))
+                    prev_cum = float(prev_bar.cum_volume) if (prev_bar is not None and prev_bar.cum_volume is not None) else 0.0
+                    # 增量 = 当前累计 - 上一根 BAR 累计；守卫：快照回退/异常时回落为当前累计（不重复、不丢）
+                    inc_vol = cur_vol - prev_cum if cur_vol >= prev_cum else cur_vol
+                    if inc_vol < 0:
+                        inc_vol = cur_vol
+                    row = normalize._bar_row("gtimg", symbol_type, code, tdate, now)
+                    row["timeframe"] = "1m"
+                    row["timestamp"] = ts_utc
+                    row["open"] = row["high"] = row["low"] = row["close"] = close
+                    row["volume"] = inc_vol
+                    row["cum_volume"] = cur_vol
+                    row["previous_close"] = normalize._f(r.get("昨收"))
+                    row["change_percent"] = normalize._f(r.get("涨跌幅"))
+                    row["source_timestamp"] = ts_utc
+                    rows_to_upsert.append(row)
+                    covered.add((symbol_type, code))
+            except Exception as e:  # noqa: BLE001
+                self.log.warning(
+                    "intraday gtimg snapshot->1m failed, fallback secondary",
+                    extra={"err": str(e)},
+                )
+
+        # ---- 次源：web.ifzq.gtimg.cn -> sina（仅主源未覆盖标的） ----
         for symbol_type, code in targets:
+            if (symbol_type, code) in covered:
+                continue
             rows = None
             tried_source = None
-            # 优先腾讯分时（返回当日、CVM 可用）
             if self.gtimg_intraday_fetcher is not None:
                 try:
                     df = self.gtimg_intraday_fetcher(code, symbol_type)
@@ -656,14 +710,12 @@ class Collector:
                     )
                     tried_source = None
                     rows = None
-            # 降级 sina
             if rows is None:
                 try:
                     df = self.provider.get_intraday_minute(symbol_type, code)
                     tried_source = df.attrs.get("__source") or "sina"
                     rows = normalize.normalize_intraday_minute(df, tried_source, symbol_type, code, tdate, now)
                     # sina 降级新鲜度守卫：拒绝明显陈旧的分钟数据，避免污染当日分时（尤其午后）。
-                    # gtimg 正常时不走此分支；仅 gtimg 偶败降级 sina 时生效。
                     if rows and not _intraday_rows_fresh(rows, now):
                         self.log.warning(
                             "intraday sina stale, skip upsert",
@@ -682,11 +734,24 @@ class Collector:
                 self._record_failure(session, source=(tried_source or "sina"), symbol_type=symbol_type, now=now, err="no parseable intraday rows")
                 bucket["failed"] += 1
                 continue
-            # 盘中分时质量评估（#67）：OHLC 关系/跨度异常标记 ANOMALY；不校验时间新鲜度。
-            assess(rows, is_trading_now=False, now=now, cfg=self.settings.data_quality)
-            quote_repo.upsert_market_quotes(session, rows)
-            self._record_success(session, source=tried_source, symbol_type=symbol_type, now=now, note=f"rows={len(rows)}")
-            bucket["ok"] += 1
+            # 次源真分钟 BAR：回填 cum_volume（自上一根主源 BAR 累计量续算），主源回切时不重复计数。
+            prev_bar = prev_bars.get((symbol_type, code))
+            running = float(prev_bar.cum_volume) if (prev_bar is not None and prev_bar.cum_volume is not None) else 0.0
+            for r in rows:
+                inc = float(r.get("volume") or 0)
+                running += inc
+                r["cum_volume"] = running
+            rows_to_upsert.extend(rows)
+            covered.add((symbol_type, code))
+
+        # ---- 统一入库 + 质量评估（#67）：OHLC 关系/跨度异常标记 ANOMALY；不校验时间新鲜度 ----
+        if rows_to_upsert:
+            assess(rows_to_upsert, is_trading_now=False, now=now, cfg=self.settings.data_quality)
+            n = quote_repo.upsert_market_quotes(session, rows_to_upsert)
+            note = f"intraday rows={n};covered={len(covered)};primary={len(covered)}"
+            self._record_success(session, source="gtimg", symbol_type="ETF", now=now, note=note)
+            self._record_success(session, source="gtimg", symbol_type="INDEX", now=now, note=note)
+            bucket["ok"] += len(covered)
         # 仅在本次确有新分时写入时才清旧日：避免「先清后采」在采集失败时空数据
         # （如 worker 重启后首轮对指数源超时 -> 清了补不回，导致沪深300 分时消失）。
         if bucket["ok"] > 0:

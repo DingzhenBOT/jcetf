@@ -122,6 +122,10 @@ def ensure_schema_columns(engine: Engine) -> None:
     # opinion.basis_text（复盘「分析依据」专业叙述，前端「查看依据」渲染）
     add_column_if_missing("opinion", "basis_text", "TEXT")
 
+    # market_quote.cum_volume（C22：1m BAR 存当日累计成交量，增量 = 当前cum - 上一根BAR的cum，
+    # 规避快照采集 180s 与 1m 采样 60s 频率错配导致的成交量漏计/重复）
+    add_column_if_missing("market_quote", "cum_volume", "FLOAT")
+
 
 def _seed_strategy_version(engine: Engine, settings: Settings) -> None:
     from app.db.models.mapping import StrategyVersion

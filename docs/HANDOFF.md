@@ -47,7 +47,8 @@
 - C19（2026-07-27 → 收尾于 C19-G）：① **盘中不采集根因修复**：`market_calendar.is_trading_day` 用 sina 历史日历不含未来交易日→误判非交易日→采集守卫静默 skip（worker 心跳正常但全天无采集）；改为"未来日回退启发式（周一~周五=True）"，新增 `calendar_last_day()` + worker 启动/守卫 skip 日志。② 修 sina 分时代码前缀 bug（`_to_sina_symbol` 对 INDEX 大写误走 ETF 分支→sz000300 无效，加 `kind.lower()`）。③ 新增 `scripts/manual_backfill_today.py`（收盘后补今日快照+日K+分时+复盘）、`scripts/diag_data.py`/`diagnose_worker.sh` 诊断。④ **分时源切腾讯 gtimg**（本轮收尾）：`gtimg_client.fetch_intraday_minute`（web.ifzq.gtimg.cn 当日分时，CVM 不封、返回当日，替代 sina 返回两周前旧数据）；`collector.collect_intraday_minute` 优先腾讯、降级 sina；`worker._collector()` 注入。⑤ **板块主源切 westock-data 异动榜（C19-G）**：CVM 实测 `push2.eastmoney.com` 批量请求被 RST（C19-F 误判可达，已纠正），push2 直连 `use_em_web=False` 默认关；westock-data 为 CVM 唯一稳定板块源，`collect_sector_from_westock` + `sector_map.resolve_sector_bk` 入库 `SECTOR/BAR/westock`，worker 定时 `sector_westock_collect`（900s）；引擎对非活跃板块 D4 降级（设计内）。详见 devlog C19 F/G。
 - C20（2026-07-27，用户 4 项盘中分时反馈）：① 午休断点（`IntradayChart.vue` 插 `__LUNCH__` 空槽 + `connectNulls:false`，11:30↔13:00 断开）；② 午后数据错（主因是①的跨午休连线视觉误导，随①修；另加 sina 降级「未来异常」守卫防陈旧污染）；③ 均价确认即 VWAP（`avg=cum_pv/cum_vol`，改名「分时均价」，非 BOLL 中轨）；④ 盘中 regime 实时化（`evaluate_etf` 透传 `phase` + 新增 `_intraday_regime` 用实时 INDEX 1m 重算，不再被陈旧日线压成全「偏弱」）。前端 `pnpm build` 通过。
 - C21（2026-07-29，用户复核）：① 盘中分时轴**改回连续**（回退 C20 午休断点，同花顺风格 11:30 直连 13:00，`connectNulls:true`）；② 用户称「数据依旧错」——沙箱拉今天真实 gtimg 端到端验证代码链路正确（涨跌幅/VWAP 均对），判定是 C20 午休断点视觉误导，连成后消失；为防 CVM 上 gtimg 偶败回退陈旧 sina，后端 `_intraday_rows_fresh` 新增**盘中滞后**守卫（仅盘中、落后>120min 拒，守「不误杀同日早前分钟」原则）。
-- 测试：backend 273 passed（C21 新增 1 例：collector 盘中滞后守卫）；前端 pnpm build 通过。
+- C22（2026-07-30，用户日志实锤，纠正 C21「视觉误导」误判）：CVM 上 `web.ifzq.gtimg.cn` 分时接口**超时失败**、回退 sina 又对指数用错代码 `sz000300` 返回空 → 分时**真实错误**（归零/断层/不连续），非视觉。主源从「web.ifzq + sina」改为 **qt.gtimg.cn 实时快照(`fetch_realtime`，CVM 稳定)批量转 1m BAR**：最新价作 close，增量=`当日累计成交量 − 上一根1m BAR的cum_volume`（新增 `market_quote.cum_volume` 列；以 BAR 累计为基准规避快照180s/1m采样60s 频率错配的漏计）；未覆盖标的才回退 web.ifzq→sina。`get_bar_history` 源优先级 `gtimg` 提最高(0)，残留 sina 脏数据须让 gtimg 胜出。新增 `quote_repo.get_latest_1m_bars`。前端连续轴沿用 C21 无需改。
+- 测试：backend 279 passed（C21 +1、C22 +6，共 +7）；前端 pnpm build 通过（C21 已 build）。
 
 【待办 / 续作（按优先级）】
 1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。~~**Task A（SNAPSHOT 切腾讯财经 qt.gtimg.cn，已落地 2026-07-25）**~~：gtimg 已注入 `collect_market` 作盘中实时快照附加源，`get_latest_snapshot_change_map` 跨源取 max(timestamp) 命中 gtimg → P1 现在 CVM 真正随实时行情更新。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。
@@ -67,21 +68,21 @@
 
 ---
 
-## 二、当前状态速览（截至 2026-07-27，C20 已推送）
+## 二、当前状态速览（截至 2026-07-30，C22 已落地）
 
 | 项 | 状态 |
 |---|---|
-| 后端 | FastAPI + SQLite(WAL)，273 测试通过（C21 后） |
-| 前端 | Vue3 + ECharts，pnpm build 通过 |
-| 数据源 | 平安已弃用；**东财 em 已于 C14 弃用（preferred=sina）**；腾讯自选股 + 盈米 + 东财新闻 + gtimg(A股+美股) + NeoData(agent侧) |
-| 远程仓库 | github.com/DingzhenBOT/jcetf.git，main（最新提交 **`7a66300`**（C21）；本仓库 main 即远程最新） |
+| 后端 | FastAPI + SQLite(WAL)，279 测试通过（C22 后） |
+| 前端 | Vue3 + ECharts，pnpm build 通过（连续轴 C21 已 build） |
+| 数据源 | 平安已弃用；**东财 em 已于 C14 弃用（preferred=sina）**；腾讯自选股 + 盈米 + 东财新闻 + gtimg(A股+美股，盘中分时主源 C22 起为 qt.gtimg.cn 实时快照转 1m) + NeoData(agent侧) |
+| 远程仓库 | github.com/DingzhenBOT/jcetf.git，main（最新提交 **`__C22_HASH__`**（C22）；本仓库 main 即远程最新） |
 | DESIGN.md | 已入库，随本次推送同步 |
 
 ## 三、目录导航
 
 - `backend/app/services/external_data.py` —— 外部 skill 接入层（P2/P3/P5 数据源，**降级契约**所在地）
 - `backend/app/api/routers/external.py` —— `/api/external/*` 三个端点
-- `backend/app/data_provider/gtimg_client.py` —— 腾讯财经客户端：`fetch_realtime`（qt.gtimg.cn 盘中 SNAPSHOT 附加源）+ `fetch_us_indices`（C14 美股指数）+ `fetch_intraday_minute`（C19 当日 1 分钟分时，web.ifzq.gtimg.cn，替代 sina 旧数据）
+- `backend/app/data_provider/gtimg_client.py` —— 腾讯财经客户端：`fetch_realtime`（qt.gtimg.cn 盘中 SNAPSHOT 附加源；**C22 起为盘中 1m 分时主源**：批量拉 ETF+宽基指数实时快照，累计成交量转 1m BAR）+ `fetch_us_indices`（C14 美股指数）+ `fetch_intraday_minute`（C19 当日 1 分钟分时，web.ifzq.gtimg.cn，C22 起降为次源兜底；CVM 实测超时）
 - `backend/app/data_provider/eastmoney_web.py` —— **C19-F 新增、C19-G 降级为默认关闭**：东方财富 push2 直连源（CVM 批量请求实测被 RST，不可靠）。`fetch_sector_fund_flow_snapshot`（clist 全板块资金流/涨跌）、`fetch_sector_kline`（secid=90.BKxxxx 板块日K）；异常抛 RuntimeError 交由 collector `*_web` 方法降级。`settings.backfill.use_em_web=False`（默认关）。
 - `backend/app/collector/sector_map.py` —— **C19-G 新增**：`SECTOR_NAME_ALIASES`（BK→规范名+别名）+ `resolve_sector_bk(name, sector_codes)`（别名精确匹配仅限跟踪集，子串兜底；未匹配返回 None）。westock 板块名→跟踪 BK 映射。
 - `backend/app/collector/collector.py` —— `collect_realtime_gtimg`（collect_market 末尾触发，优雅降级）；`collect_us_indices`（C14，US_INDEX 写入）；`collect_sector_from_westock`（C19-G 主源，合并 westock industry/concept/fund_flow 三表入库 `SECTOR/BAR/westock`）；`_tally` 修复（batch 采集 status="done" 带 ok/failed 桶正确计入）。
@@ -99,8 +100,8 @@
 - `backend/app/data_quality/checker.py` —— `_check_ohlc_consistency`（#67 OHLC 异常检测：非正/high<low/跨度>阈值→ANOMALY）
 - `backend/app/data_provider/akshare_adapter.py` —— `_filter_kwargs`（版本漂移容错：按签名过滤 kwargs）；`get_sector_history`(period='日k')；`get_sector_fund_flow_history`(BK→东财板块名解析 + 全量历史按区间裁剪)；`_bk_to_em_fund_flow_name`/`_em_board_name_maps`
 - `backend/app/collector/collector.py` —— `_is_on_exchange(m)`（排除场外联接基金，走盈米/开放式基金源）；`backfill_history` / `collect_intraday_minute` 仅采场内 ETF
-- `backend/app/collector/collector.py` —— `_collect_bar` / `collect_intraday_minute` 采集后调 `assess`；`collect_realtime_gtimg`（盘中附加源）
-- `backend/app/repository/quote_repo.py` —— `get_bar_history` / `get_max_bar_timestamp` / `get_latest_quote` 过滤 ANOMALY
+- `backend/app/collector/collector.py` —— `_collect_bar` / `collect_intraday_minute`（**C22 主源：gtimg 实时快照批量转 1m，增量=`当日累计−上一根1m BAR的cum_volume`**；次源仅兜底未覆盖标的）采集后调 `assess`；`collect_realtime_gtimg`（盘中附加源）
+- `backend/app/repository/quote_repo.py` —— `get_bar_history`（源优先级去重，`gtimg` 最高）、`get_max_bar_timestamp` / `get_latest_quote` 过滤 ANOMALY；`get_latest_1m_bars`（C22：取当日最新 1m BAR 含 cum_volume，供算增量）、`get_latest_snapshots_batch`（gtimg 快照批量）
 - `backend/app/db/session.py` —— `_ensure_columns` 幂等 ALTER（etf_mapping.listing、signal.phase 存量回填）
 - `backend/app/evaluation/pipeline.py` —— `post_collection_evaluate` 写 Signal.phase
 - `backend/scripts/flag_ohlc_anomalies.py` —— 已入库 OHLC 脏数据改标 ANOMALY（dry-run / --apply / --symbol）
@@ -209,3 +210,37 @@
 2. 验证连续轴：分时图 11:30↔13:00 连续无断点。
 3. 验证数据：连成后涨跌幅/VWAP 与腾讯财经/同花顺一致 → 此前「数据错」即视觉误导，已解决。
 4. **若仍数字错**：跑 `journalctl -u etf-worker --since today | grep -iE 'intraday'` 看 `intraday gtimg failed, fallback sina` / `intraday sina stale, skip upsert`，把输出发 agent —— 据此修 gtimg 连通性或改用「由稳定 gtimg 实时快照累积 1m 分时」方案。
+
+---
+
+## IV. C22 · 盘中分时主源切换为 gtimg 实时快照转 1m（2026-07-30，用户日志实锤）
+
+> 用户原话：①「你这就是错的啊卧槽，中间突然没合并，而且都断层了，你还说是视觉？」②「人家今日涨1.42你这给人划到0了。」
+> 并附 `journalctl -u etf-worker --since today | grep intraday` 实锤：`collect intraday failed: INDEX/000300: intraday_minute sina sz000300 returned empty` 反复 + `intraday gtimg failed, fallback sina` + APScheduler `maximum number of running instances reached`。
+
+**纠正 C21 误判**：C21 把「数据错」归为午休断点视觉误导是**错的**。日志证明 CVM 上 `web.ifzq.gtimg.cn` 分时接口**超时失败**、回退 sina 又对指数用错代码 `sz000300`（应为 `sh000300`）返回空 → 分时**真实错误**（归零/断层/不连续）。
+
+**根因**：
+- `web.ifzq.gtimg.cn` 在 CVM 超时 → `collect_intraday_minute` 主源失败 → 降级 sina。
+- sina 对 INDEX 000300 用 `sz000300`（错码）→ 返回空 → 沪深300 分时缺失/归零。
+- 单轮采集 >60s 触发 APScheduler `maximum number of running instances reached` 跳过 → 空洞/断层。
+
+**修复（即 C21 预见的「由稳定 gtimg 实时快照累积 1m 分时」方案）**：
+- 主源改为 **qt.gtimg.cn 实时快照（`fetch_realtime`，CVM 稳定）批量转 1m BAR**：最新价作 close；`volume=当日累计成交量 − 上一根1m BAR的cum_volume`（增量）；`cum_volume=当日累计量`（新增列）。
+- 增量以「上一根 BAR 的 cum_volume」为基准（**非快照差值**）→ 规避快照采集(180s)与 1m 采样(60s)频率错配的**漏计/重复**（旧快照差值法在快照中途跳变时会把增量算成 0）。
+- 未覆盖标的（快照返回空）才回退次源 web.ifzq.gtimg.cn → sina（保留 C19/C21 滞后守卫）。
+- `get_bar_history` 源优先级 `gtimg` 提最高(0)：残留 sina 1m 脏数据须让 gtimg 胜出，否则分时图仍显示错数据；gtimg 只写 1m 不写日线，不影响日线去重。
+
+**改动落点**：
+- `backend/app/collector/collector.py` `collect_intraday_minute`：主源快照批量转 1m；次源仅兜底未覆盖标的。
+- `backend/app/repository/quote_repo.py`：新增 `get_latest_1m_bars`；`_SOURCE_PRIORITY` 加 `"gtimg": 0`。
+- `backend/app/db/models/market.py` + `session.py`：新增 `cum_volume` 列 + 幂等 ALTER 迁移（CVM 重启自动补列）。
+- `backend/app/data_provider/gtimg_client.py`：无改动（`fetch_realtime` 沙箱实测返回正确累计成交量/涨跌幅）。
+
+**测试**：backend **279 passed**（C22 新增 6 例：快照转1m字段、增量不漏计核心回归、主源覆盖ETF/次源覆盖指数、cum_volume迁移、get_latest_1m_bars、读路径优先gtimg胜sina）；前端连续轴沿用 C21。
+
+**⚠ CVM 部署待办（用户侧）**：
+1. `cd /workspace && git pull` → `cd frontend && pnpm build`（C21 已改前端，本轮无需改但 build 一遍保险）→ `sudo systemctl restart etf-worker`。
+2. `journalctl -u etf-worker --since today | grep -iE 'intraday'` 应只见 `intraday snapshot->1m` 类正常日志，不再有 `intraday gtimg failed, fallback sina` / `sina sz000300 returned empty` / `maximum number of running instances reached`。
+3. 验证：ETF/指数分时图连续无断层、涨跌幅正确（如沪深300 当日 +1.42% 正常显示，不再归零），分时均价(VWAP) 平滑。
+4. 若仍有异常：把 `journalctl -u etf-worker --since today` 全文发 agent，重点看 `intraday gtimg snapshot->1m failed` 是否偶发（快照批量超时则回退次源，属预期降级）。

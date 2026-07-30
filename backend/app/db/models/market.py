@@ -31,6 +31,7 @@ class MarketQuote(Base):
     close: Mapped[float | None] = mapped_column(Float)
     previous_close: Mapped[float | None] = mapped_column(Float)
     volume: Mapped[float | None] = mapped_column(Float)
+    cum_volume: Mapped[float | None] = mapped_column(Float)  # 当日累计成交量（1m BAR 用：dt 增量 = 当前cum - 上一根BAR的cum）
     amount: Mapped[float | None] = mapped_column(Float)
     change_percent: Mapped[float | None] = mapped_column(Float)
     turnover_rate: Mapped[float | None] = mapped_column(Float)

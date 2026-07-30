@@ -57,7 +57,10 @@ _QUOTE_UPDATE_COLS = [
 
 # 数据源优先级：与 DataSourceConfig 一致（preferred > fallback > dormant）。
 # 读路径按此优先级对同一交易日多源数据去重，避免切换主源后 K 线重影。
-_SOURCE_PRIORITY = {"sina": 1, "ths": 2, "tx": 3, "em": 4}
+# gtimg=0（最高优先级）：gtimg 只写 1m 分时（不写日线），故仅影响分时去重——
+# C22 起分时主源为 gtimg，若历史残留 sina 1m 脏数据(旧实现错码/陈旧)，须让 gtimg 胜出，
+# 否则 get_bar_history 会优先 sina 而丢弃正确的 gtimg 分时（分时图仍显示错数据）。
+_SOURCE_PRIORITY = {"gtimg": 0, "sina": 1, "ths": 2, "tx": 3, "em": 4}
 
 
 def _source_priority_case():
@@ -274,6 +277,105 @@ def get_latest_snapshot_change_map(
             )
         ).first()
         out[sym] = float(rec[0]) if rec and rec[0] is not None else None
+    return out
+
+
+def get_latest_snapshots_batch(
+    session: Session,
+    keys: List[tuple],
+) -> Dict[tuple, MarketQuote]:
+    """批量查询每个 (symbol_type, symbol) 的最新 SNAPSHOT 行（含 volume 等全字段）。
+
+    keys: [(symbol_type, symbol), ...]
+    返回 dict: (symbol_type, symbol) -> MarketQuote（无记录则不含该 key）。
+    用于把稳定的 gtimg 实时快照转成 1m 分时（需要上一刻累计成交量算增量）。
+    """
+    out: Dict[tuple, MarketQuote] = {}
+    if not keys:
+        return out
+    # 按 symbol_type 分组，减少查询次数
+    by_type: Dict[str, List[str]] = {}
+    for symbol_type, symbol in keys:
+        by_type.setdefault(symbol_type, []).append(symbol)
+
+    for symbol_type, symbols in by_type.items():
+        latest = session.execute(
+            select(MarketQuote.symbol, func.max(MarketQuote.timestamp).label("mx"))
+            .where(
+                MarketQuote.symbol_type == symbol_type,
+                MarketQuote.symbol.in_(symbols),
+                MarketQuote.data_kind == "SNAPSHOT",
+                MarketQuote.timeframe == "snapshot",
+            )
+            .group_by(MarketQuote.symbol)
+        ).all()
+        if not latest:
+            continue
+        sym_to_ts = {sym: mx for sym, mx in latest}
+        rows = session.execute(
+            select(MarketQuote).where(
+                MarketQuote.symbol_type == symbol_type,
+                MarketQuote.symbol.in_(list(sym_to_ts.keys())),
+                MarketQuote.data_kind == "SNAPSHOT",
+                MarketQuote.timeframe == "snapshot",
+                MarketQuote.timestamp.in_(list(sym_to_ts.values())),
+            )
+        ).scalars().all()
+        for r in rows:
+            key = (r.symbol_type, r.symbol)
+            if key not in out or r.timestamp > out[key].timestamp:
+                out[key] = r
+    return out
+
+
+def get_latest_1m_bars(
+    session: Session,
+    keys: List[tuple],
+    trading_date: date,
+) -> Dict[tuple, MarketQuote]:
+    """批量查询每个 (symbol_type, symbol) 当日最新 1m BAR（含 cum_volume）。
+
+    keys: [(symbol_type, symbol), ...]
+    返回 dict: (symbol_type, symbol) -> MarketQuote（当日最新 1m BAR；无则不含该 key）。
+    用于快照转 1m 时算增量成交量：inc = 当前累计量 - 上一根 BAR 的 cum_volume，
+    规避快照(180s)与 1m 采样(60s)频率错配导致的漏计（见 C22）。
+    """
+    out: Dict[tuple, MarketQuote] = {}
+    if not keys:
+        return out
+    by_type: Dict[str, List[str]] = {}
+    for symbol_type, symbol in keys:
+        by_type.setdefault(symbol_type, []).append(symbol)
+
+    for symbol_type, symbols in by_type.items():
+        latest = session.execute(
+            select(MarketQuote.symbol, func.max(MarketQuote.timestamp).label("mx"))
+            .where(
+                MarketQuote.symbol_type == symbol_type,
+                MarketQuote.symbol.in_(symbols),
+                MarketQuote.data_kind == "BAR",
+                MarketQuote.timeframe == "1m",
+                MarketQuote.trading_date == trading_date,
+            )
+            .group_by(MarketQuote.symbol)
+        ).all()
+        if not latest:
+            continue
+        sym_to_ts = {sym: mx for sym, mx in latest}
+        rows = session.execute(
+            select(MarketQuote).where(
+                MarketQuote.symbol_type == symbol_type,
+                MarketQuote.symbol.in_(list(sym_to_ts.keys())),
+                MarketQuote.data_kind == "BAR",
+                MarketQuote.timeframe == "1m",
+                MarketQuote.trading_date == trading_date,
+                MarketQuote.timestamp.in_(list(sym_to_ts.values())),
+            )
+        ).scalars().all()
+        for r in rows:
+            key = (r.symbol_type, r.symbol)
+            if key not in out or r.timestamp > out[key].timestamp:
+                out[key] = r
     return out
 
 
