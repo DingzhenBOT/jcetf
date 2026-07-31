@@ -2039,7 +2039,7 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 - 前端：`pnpm build` 通过（vue-tsc + vite，660 模块；仅 echarts chunk 体积警告）。
 
 ### ⚠ CVM 部署待办（用户侧）
-1. `cd /workspace && git pull` → `cd backend && python3 -m scripts.seed_mapping` → `python3 -m scripts.collect_once --backfill`（顺带补 515220 指数 + 场外净值）。
+1. `cd /workspace && git pull` → `cd backend && ./venv/bin/python -m scripts.seed_mapping` → `./venv/bin/python -m scripts.collect_once --backfill`（顺带补 515220 指数 + 场外净值；**必须用 backend 的 venv 解释器**，系统 `python3` 无项目依赖，会报 `No module named 'pydantic'`）。
 2. `cd frontend && pnpm build` → **同时重启双服务**：`sudo systemctl restart etf-api etf-worker`（仅 restart worker 会让 etf-api 仍是旧代码 → 场外详情/净值走势读不到新类型）。
 3. 验证：等 15:10 后 `#/offexchange` 可点进；`#/etfs/110020` 显「净值走势」+ 收盘后三档价位；515220 `etf_rs_missing` 消失；场外详情不显盘中分时/盘中意见/午盘意见（设计内 T+1）。
 4. 若某支场外 FAILED：多半 akshare 该支净值接口偶发，重跑 `--backfill` 增量补齐即可。

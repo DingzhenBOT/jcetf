@@ -341,8 +341,8 @@
 ### ⚠ CVM 部署步骤（用户侧）
 
 1. `cd /workspace && git pull`（拉取 C24 后端 + 前端 + 种子）。
-2. `cd backend && python3 -m scripts.seed_mapping`（幂等 upsert；本次 SEED 已含 110020/000008/110003 等 `listing='场外'` 场外示例 + 确保 515220 等场内映射完整）。
-3. `python3 -m scripts.collect_once --backfill`（回填 ETF/指数/板块 **+ 场外净值（OFF_FUND）**；顺带补 515220 的跟踪指数 → 消除其 `etf_rs_missing`）。akshare 东财 pingzhongdata 走独立主机，CVM 一般可达；失败仅该支场外 FAILED，不影响其余。
+2. `cd backend && ./venv/bin/python -m scripts.seed_mapping`（**必须用 backend 的 venv 解释器**，系统 `python3` 无项目依赖；幂等 upsert；本次 SEED 已含 110020/000008/110003 等 `listing='场外'` 场外示例 + 确保 515220 等场内映射完整）。
+3. `cd backend && ./venv/bin/python -m scripts.collect_once --backfill`（回填 ETF/指数/板块 **+ 场外净值（OFF_FUND）**；顺带补 515220 的跟踪指数 → 消除其 `etf_rs_missing`）。akshare 东财 pingzhongdata 走独立主机，CVM 一般可达；失败仅该支场外 FAILED，不影响其余。
 4. `cd frontend && pnpm build`，然后 **必须同时重启双服务**：`sudo systemctl restart etf-api etf-worker`（仅 restart worker 会让 etf-api 仍是旧代码 → 场外详情/净值走势读不到新类型）。
 5. 验证（等 15:10 后看最稳妥）：
    - `#/offexchange` 列表项可**点进**详情；
