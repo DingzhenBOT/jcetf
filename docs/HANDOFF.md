@@ -291,7 +291,7 @@
 
 **前端**：`types.ts` 增 `live`/`lunch` + `TradePlan`；`tier.ts` PHASE_TEXT 增；`endpoints.ts` 增 `refreshSignal`；`OpinionList.vue` 渲染 `trade_plan`；`EtfDetail.vue` 盘中强度/倾向/R1/R2 徽标 + 「重新评估」按钮 + 「午盘意见」Card。
 
-**测试**：backend **304 passed**（C22 为 279，C23 **+25**）：`test_decide_tier_market_downgrade`（降档非否决/遍历 regime×high_vol 永不 blanket/veto 优先）、`test_intraday_strength`（上涨看多/下跌看空/缺指数跳过相对因子/R1/R2 触发）、`test_levels`（三档单调+正/数据不足返回 None/下行 regime）、`test_pipeline_live_lunch_postclose`（三相位产出+幂等）、`test_api_opinions_phase`（live/lunch 200、非法 422、未知 ETF 404、trade_plan 透出、refresh 200/409）、`test_worker`（C23 调度作业对齐）、`test_strategy_engine` + `test_collector_intraday_gtimg` 适配修正。前端 `pnpm build` 通过。
+**测试**：backend **304 passed**（C22 为 279，C23 **+25**）：`test_decide_tier_market_downgrade`（降档非否决/遍历 regime×high_vol 永不 blanket/veto 优先）、`test_intraday_strength`（上涨看多/下跌看空/缺指数跳过相对因子/R1/R2 触发）、`test_levels`（三档单调+正/数据不足返回 None/下行 regime）、`test_pipeline_live_lunch_postclose`（三相位产出+幂等）、`test_api_opinions_phase`（live/lunch 200、非法 422、未知 ETF 404、trade_plan 透出、refresh 200/409）、`test_worker`（C23 调度作业对齐）、`test_strategy_engine` + `test_collector_intraday_gtimg` 适配修正。前端 `pnpm build` 于 **C23-H1 hotfix** 才真正跑通（`refreshSignal` 漏传 `apiPost` payload 导致 TS2554，已补 `{}`）。
 
 **⚠ CVM 部署待办（用户侧）**：
 1. `cd /workspace && git pull` → `cd frontend && pnpm build`（前端改动需重建覆盖 Nginx dist）→ `sudo systemctl restart etf-worker`（后端调度/评估改动需重启 worker 生效）。
@@ -299,3 +299,4 @@
 3. 验证午盘：11:40 后详情页出现「午盘意见」Card（可留历史，非覆盖）。
 4. 验证收盘后（15:10）：复盘意见含**确定性三档价位**（突破X上车 / 跌X加仓 / 跌破Y止损，价位单调 止损<加仓<突破 且 >0）+ 明日预期。
 5. 沙箱 venv 读锁备注：本沙箱 `pluggy`/`httpx` 包文件被完整性策略读锁，跑测试需 `PYTHONPATH=/tmp/pyfix`（见 devlog C23）；**CVM 不受影响**，正常 `./venv/bin/python -m pytest -q` 即可。
+6. **C23-H1 前端 build hotfix（已修，含在本批推送）**：`endpoints.ts::refreshSignal` 漏传 `apiPost` 第二参 `payload` 致 `vue-tsc` TS2554。已补 `{}`（`endpoints.ts:73`）；沙箱 `node v22.13.1 / pnpm 10.28.2` 实测 `pnpm build` 通过。用户侧 `git pull` 后重 build 即可消除该报错。

@@ -1988,3 +1988,11 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 3. 若异常：`journalctl -u etf-worker --since today | grep -iE 'intraday_signal|lunch|post_close|decide_tier'` 发我。
 
 **⚠ 环境备注（沙箱，非代码问题）**：本会话跑 pytest 时 venv 内 `pluggy` 与 `httpx` 包文件被沙箱完整性策略读锁（`Operation not permitted`，连 root 也无法 rm/lsattr），导致 import 成命名空间包。已用 `pip install --target /tmp/pyfix pluggy httpx` + `PYTHONPATH=/tmp/pyfix` 旁路验证，全量 304 passed。CVM 的 venv 不受影响，正常 `pytest` 即可。
+
+### C23-H1 · 前端 build 类型错误修复（`endpoints.ts` `refreshSignal` 漏传 payload）
+
+> 用户 CVM `pnpm build` 报错：`src/api/endpoints.ts:73` `apiPost` 期望 2 个参数但只给 1 个（`payload` 必填）。根因：C23 新增 `refreshSignal` 时只传了 path，漏传 `apiPost` 的第二个必填参数 `payload`；C23 当时前端 build 实际未真正跑通（`vue-tsc -b` 本应拦截，但沙箱未执行前端 build 步骤）。
+
+**修复**：`refreshSignal` 补传 `{}`（`apiPost<Signal>(..., {})`），与既有 `analyzePortfolio` 调用风格一致；不改公共 `apiPost` 签名（避免影响其他调用方）。后端 `POST /api/signals/{etf}/refresh` 只认 path 参数、忽略 body，空对象无副作用。
+
+**验证**：沙箱 `node v22.13.1 / pnpm 10.28.2` → `pnpm build` 通过（`vue-tsc -b` 无类型错误，660 模块，`vite build` 生成 dist）。注：C23 计划书 §4 标注「前端 pnpm build 通过」不实，实为本次 hotfix 才真正跑通——后续阶段改动前端务必在沙箱实跑 `pnpm build` 而非仅声明。
