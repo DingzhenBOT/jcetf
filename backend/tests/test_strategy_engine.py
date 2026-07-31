@@ -27,6 +27,7 @@ def test_composite_all_available_weighted():
     assert r["composite"] == 80.0
     assert r["missing"] == []
     assert r["confidence"] == 100
+    assert r["effective_weights"] == W
 
 
 def test_composite_missing_renormalized_and_lower_confidence():
@@ -37,6 +38,11 @@ def test_composite_missing_renormalized_and_lower_confidence():
     assert abs(r["composite"] - 80.0) < 1e-9
     assert r["missing"] == ["fund_flow"]
     assert r["confidence"] == 85
+    assert r["effective_weights"] == {
+        "market": 1 / 3,
+        "sector_trend": 1 / 3,
+        "etf_rs": 1 / 3,
+    }
 
 
 def test_composite_none_when_all_missing():
@@ -82,12 +88,10 @@ def test_tier_no_chase_high_priority():
 
 
 def test_tier_bear_high_vol_downgraded_not_blanket():
-    # C23 修复回归：市场 BEAR + 高波动 不再一票否决 blanket MARKET_RISK_HIGH，
-    # 而是对综合分降档（80 -> 80-18-5=57 -> 无资金/RS 支撑 -> NO_PARTICIPATE）。
-    # 核心断言：decide_tier 永不再产出 MARKET_RISK_HIGH。
-    t = decide_tier(80, "BEAR", _risk(high_vol=True), None, None, TH)
+    # BEAR 已在市场分中计入；真实高波动仅离散降一档。
+    t = decide_tier(80, "BEAR", _risk(high_vol=True, downgrade=True), None, None, TH)
     assert t != "MARKET_RISK_HIGH"
-    assert t == "NO_PARTICIPATE"
+    assert t == "OBSERVE"
     assert t in TIERS
 
 
@@ -102,10 +106,16 @@ def test_tier_veto_priority():
 
 
 def test_tier_downgrade_lowers_one_tier():
-    # 90 本可 OPPORTUNITY_ENHANCE，但 downgrade 下调一档 -> SMALL_POSITION（资金/RS 不强）
+    # 90 且资金/RS 双强本可 OPPORTUNITY_ENHANCE，风险只下调一档。
     t = decide_tier(90, "TREND_UP", _risk(downgrade=True),
-                    {"score": 50, "consecutive_positive_days": 1}, {"score": 40}, TH)
+                    {"score": 80, "consecutive_positive_days": 3}, {"score": 70}, TH)
     assert t == "SMALL_POSITION"
+
+
+def test_multiple_soft_risks_only_downgrade_once():
+    vp = {"vp_patterns": ["divergence"], "vp_state": "VOL_LOW_FLAT"}
+    t = decide_tier(80, "BEAR", _risk(downgrade=True, high_vol=True), None, None, TH, vp)
+    assert t == "OBSERVE"
 
 
 # ---- 方案B：量价形态增强（additive，不改变原权重） ----
@@ -133,11 +143,11 @@ def test_tier_vp_no_enhance_without_rs():
 
 
 def test_tier_vp_no_enhance_when_downgrade():
-    # 降级命中时量价增强被抑制
+    # 基础 SMALL_POSITION 命中风险后降为 OBSERVE，量价增强不能抵消风险。
     vp = {"vp_patterns": ["breakout_volume"]}
     t = decide_tier(90, "TREND_UP", _risk(downgrade=True),
                     {"score": 50, "consecutive_positive_days": 1}, {"score": 70}, TH, vp)
-    assert t == "SMALL_POSITION"
+    assert t == "OBSERVE"
 
 
 def test_tier_vp_none_preserves_legacy():

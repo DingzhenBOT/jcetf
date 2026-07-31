@@ -15,6 +15,8 @@ import pandas as pd
 
 from app.indicator_engine.engine import IndicatorEngine
 
+MIN_FUND_FLOW_OBSERVATIONS = 3
+
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, v))
@@ -130,18 +132,53 @@ class SectorEngine:
             if hasattr(flow_df, "sort_values")
             else pd.DataFrame(flow_df)
         )
-        # 同数据源过滤（资金口径必须一致）
-        if metric_source is not None and "metric_source" in df.columns:
-            df = df[df["metric_source"] == metric_source]
-        if len(df) == 0:
+        if "main_net_inflow" not in df.columns:
             return {"available": False, "score": None, "consecutive_positive_days": 0,
-                    "inflow_strength": None, "divergence": False, "note": "no same-source flow"}
+                    "inflow_strength": None, "divergence": False, "note": "flow metric missing"}
 
-        net = pd.Series(df["main_net_inflow"].astype("float64"))
+        df["main_net_inflow"] = pd.to_numeric(df["main_net_inflow"], errors="coerce")
+        usable = df[df["main_net_inflow"].notna()].copy()
+
+        # 未指定口径时，从“真正有资金流数值”的来源中选可用样本最多、最新的一源；
+        # 禁止用最早价格行的 source 把全空资金列误判成有效低分。
+        if metric_source is None and "metric_source" in usable.columns and len(usable) > 0:
+            candidates = []
+            for source, group in usable.groupby("metric_source", dropna=False):
+                latest = group["timestamp"].max() if "timestamp" in group.columns else len(group)
+                candidates.append((len(group), latest, source))
+            metric_source = max(candidates, key=lambda item: (item[0], item[1]))[2]
+        if metric_source is not None and "metric_source" in usable.columns:
+            usable = usable[usable["metric_source"] == metric_source]
+
+        if len(usable) < MIN_FUND_FLOW_OBSERVATIONS:
+            return {
+                "available": False,
+                "score": None,
+                "consecutive_positive_days": 0,
+                "inflow_strength": None,
+                "divergence": False,
+                "metric_source": metric_source,
+                "usable_observations": int(len(usable)),
+                "note": f"insufficient usable flow observations (<{MIN_FUND_FLOW_OBSERVATIONS})",
+            }
+
+        usable = usable.sort_values("timestamp").reset_index(drop=True)
+
+        net = pd.Series(usable["main_net_inflow"].astype("float64"))
 
         # 末端连续为正天数
         cons = 0
-        for v in reversed(net.tolist()):
+        # 若原始序列含完整 trading_date，则来源缺席某天必须中断“连续流入”。
+        if "trading_date" in df.columns and "trading_date" in usable.columns:
+            all_dates = list(pd.Series(df["trading_date"]).dropna().drop_duplicates().sort_values())
+            values_by_date = {
+                row["trading_date"]: row["main_net_inflow"]
+                for _, row in usable.drop_duplicates("trading_date", keep="last").iterrows()
+            }
+            tail_values = [values_by_date.get(day) for day in reversed(all_dates)]
+        else:
+            tail_values = list(reversed(net.tolist()))
+        for v in tail_values:
             if v is not None and v == v and v > 0:
                 cons += 1
             else:
@@ -157,8 +194,8 @@ class SectorEngine:
 
         # 净流入强度 = 净流入合计 / 成交额合计
         inflow_strength: Optional[float] = None
-        if "amount" in df.columns:
-            amount = pd.Series(df["amount"].astype("float64"))
+        if "amount" in usable.columns:
+            amount = pd.Series(usable["amount"].astype("float64"))
             denom = amount.abs().sum()
             if denom > 0:
                 inflow_strength = float(net.sum() / denom)
@@ -171,8 +208,8 @@ class SectorEngine:
 
         # 大单同向确认 / 背离
         divergence = False
-        if "large_order_inflow" in df.columns:
-            lo = pd.Series(df["large_order_inflow"].astype("float64"))
+        if "large_order_inflow" in usable.columns:
+            lo = pd.Series(usable["large_order_inflow"].astype("float64"))
             last_net = net.iloc[-1]
             last_lo = lo.iloc[-1] if not lo.empty else None
             if last_net is not None and last_net == last_net and last_lo is not None and last_lo == last_lo:
@@ -188,4 +225,6 @@ class SectorEngine:
             "consecutive_positive_days": cons,
             "inflow_strength": inflow_strength,
             "divergence": divergence,
+            "metric_source": metric_source,
+            "usable_observations": int(len(usable)),
         }

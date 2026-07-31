@@ -75,8 +75,8 @@ def mint_strategy_version(session, settings: Settings, rules: dict) -> str:
         StrategyVersion(
             version=version,
             strategy_hash=strategy_hash,
-            name="rules-v1",
-            description="DESIGN §9 rules (P3 frozen)",
+            name=f"rules-{rules.get('version', 'unknown')}",
+            description=rules.get("description", "deterministic strategy rules"),
             params_json=params,
             rules_json=rules,
         )

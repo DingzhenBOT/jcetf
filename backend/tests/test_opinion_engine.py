@@ -89,6 +89,26 @@ def test_generate_returns_basis_text():
     assert "510300" in out["basis_text"]
 
 
+def test_basis_text_explains_component_weights_and_adjustment():
+    from app.opinion_engine.templates import basis_text
+
+    text = basis_text(
+        {
+            "market_regime": "WEAK",
+            "component_scores": {"market": 35.0, "etf_rs": 72.0},
+            "effective_weights": {"market": 0.5, "etf_rs": 0.5},
+            "base_signal_type": "OBSERVE",
+            "decision_adjustments": ["risk_downgrade_one_tier"],
+        },
+        {"etf_code": "510300"},
+        "post_close",
+    )
+
+    assert "基础档位下调一档" in text
+    assert "市场35.0分，有效权重50%" in text
+    assert "ETF相对强弱72.0分，有效权重50%" in text
+
+
 def test_basis_text_offexchange_honest():
     # 场外联接基金：无场内K线/板块/资金，应诚实说明数据缺失，而非谎称中性
     from app.opinion_engine.templates import basis_text
@@ -110,7 +130,7 @@ def test_basis_text_full_data():
     from app.opinion_engine.templates import basis_text
 
     sup = {
-        "etf_rsi14": 62.0, "etf_rs_20d": 1.08, "etf_ma20_slope": 0.004, "etf_atr_pct": 1.9,
+        "etf_rsi14": 62.0, "etf_rs_20d": 1.08, "etf_ma20_slope": 0.4, "etf_atr_pct": 1.9,
         "sector_score": 68, "fund_flow_score": 72, "advance_ratio": 0.63, "market_regime": "TREND_UP",
         "vp_state_text": "价升量增", "vp_patterns": ["breakout_volume"],
     }
@@ -118,6 +138,7 @@ def test_basis_text_full_data():
     text = basis_text(sup, inp, "post_close")
     assert "RSI14=62" in text
     assert "RS=1.08" in text
+    assert "MA20 斜率 +0.4%" in text
     assert "板块趋势评分 68" in text
     assert "资金持续性 72" in text
     # 数据齐全时不应出现缺失说明

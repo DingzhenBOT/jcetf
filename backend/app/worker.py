@@ -236,7 +236,7 @@ def job_backfill_history() -> None:
 
 
 def job_pre_close_evaluate() -> None:
-    """收盘前评估（14:59）：生成 pre_close 阶段意见。非交易日跳过。"""
+    """收盘前评估（14:50）：生成 pre_close 阶段意见。非交易日跳过。"""
     from app.market_calendar import is_trading_day, trading_date_for
 
     if not is_trading_day(trading_date_for()):

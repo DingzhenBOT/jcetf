@@ -15,16 +15,17 @@ from __future__ import annotations
 from typing import Dict
 
 RULES_V1: Dict = {
-    "version": "2.6",
-    "description": "DESIGN §9 五类评分确定性规则 + 量价/盘中动量 + 数据口径修正 + 布林三档价位、交易执行与收盘日期/刷新相位修正（v2.6）",
+    "version": "3.0",
+    "description": "确定性多因子评分：市场只计一次、资金流须有真实同源样本、软风险最多降一档（v3.0）",
     "data_definitions": {
         "rs_20d": "ETF 与跟踪指数按共同 trading_date 对齐后的 20 日增长倍数之比：(etf_t/etf_t-20)/(index_t/index_t-20)",
         "etf_volume": "BAR/SNAPSHOT/1m 的 volume 与 cum_volume 统一为 shares；em/gtimg 原始手数乘100，sina原值",
         "bollinger": "20 日总体标准差布林带：mid=MA20，upper/lower=mid±2σ；用于盘后三档价位",
         "backtest_execution": "信号日后次根开盘成交；开盘涨停不买/跌停不卖；双边佣金与滑点同时计入净值和交易盈亏",
         "trade_plan_levels": "突破价取前高/布林上轨，加仓价取当前价下方最近支撑，止损价取加仓价下方最近保护位，强制 stop<add<breakout",
-        "portfolio_exit": "零仓位档位、BEAR/veto、跌破MA20或RS20<0.95触发退出；实际仓位高于建议上限触发减仓",
+        "portfolio_exit": "零仓位档位、veto、跌破MA20或RS20低于配置阈值触发退出；WEAK/BEAR 不再作为全持仓硬退出；实际仓位高于建议上限触发减仓",
         "post_close_as_of": "收盘信号锚定到场内 ETF 日线覆盖率至少80%的最新 trading_date；无合格日期则拒绝生成；非交易时段手动刷新走该口径",
+        "tier_decision": "先按最终 composite 得到基础档位，再应用硬约束与最多一次软风险离散调档；输出 base_signal_type/decision_adjustments 供审计",
     },
     "market_score": {
         "index_above_ma20_and_rising": "宽基指数站上 MA20 且上行 -> 加分",
@@ -40,11 +41,13 @@ RULES_V1: Dict = {
         "weights": {"above_ma20": 35, "ma20_rising": 20, "mom20_pos": 15, "rsi_healthy": 15, "mom5_pos": 5},
     },
     "fund_flow_score": {
+        "minimum_usable_observations": 3,
         "consecutive_positive_days_threshold": 3,
         "inflow_strength": "net_inflow / sector_amount（跨期累计）",
         "large_order_confirm": True,
         "divergence_penalty": True,
         "same_source_only": True,
+        "source_selection": "未指定来源时，仅从 main_net_inflow 非空的来源中选择可用样本最多且最新的一源；不足3个真实观测视为缺失，不得按0分参与",
         "weights": {"consecutive_3": 40, "consecutive_2": 25, "consecutive_1": 10,
                      "inflow_strong": 30, "inflow_pos": 15, "inflow_neutral": 5,
                      "large_order_same": 10, "divergence": -10},
@@ -55,19 +58,21 @@ RULES_V1: Dict = {
         "peer_rank": "同类 ETF 分位（缺数据时回退宽基指数）",
     },
     "risk_filter": {
-        "chase_high": ["rsi>80", "sector_short_surge"],
-        "market_bear_or_high_vol": True,
+        "chase_high": ["rsi>thresholds.rsi_overheat", "sector_short_surge"],
+        "high_vol": "仅 atr_pct>4.0；WEAK/BEAR 是趋势状态，不冒充波动率",
         "drawdown_from_high": True,
         "atr_pct_threshold": 4.0,
         "data_quality_abnormal": True,
         "veto": "deny_market_bear_with_missing_data",
-        "downgrade": "downgrade_on_chase_high",
+        "downgrade": "追高（受 downgrade_on_chase_high 控制）或真实 ATR 高波动",
     },
     "signal_synthesis": {
         "composite": "w1*market + w2*sector_trend + w3*fund_flow + w4*etf_rs（权重和=1，缺失项重归一化）",
-        "risk_not_deducted": True,
+        "market_counted_once": "market_regime 由 market_score 派生，档位层不再按 WEAK/BEAR 二次扣分",
+        "risk_not_deducted": "软风险不修改展示分数，统一离散降一档",
         "veto_condition": "market_regime=BEAR AND 宽基/宽度数据缺失",
-        "downgrade_condition": "chase_high OR high_vol（composite 下调一档）",
+        "hard_constraints": "risk.veto→NO_PARTICIPATE；chase_high→NO_CHASE_HIGH",
+        "downgrade_condition": "high_vol OR bearish_volume_price；多项同时命中也最多下调一档",
     },
     "tiers": [
         {"tier": "NO_PARTICIPATE", "trigger": "数据不全/刚上市/risk.veto"},
@@ -75,7 +80,6 @@ RULES_V1: Dict = {
         {"tier": "SMALL_POSITION", "trigger": "composite>=75 且 risk 未命中否决/降级"},
         {"tier": "OPPORTUNITY_ENHANCE", "trigger": "composite>=85 且 资金持续性/相对强弱双强"},
         {"tier": "NO_CHASE_HIGH", "trigger": "risk.chase_high"},
-        {"tier": "MARKET_RISK_HIGH", "trigger": "market_regime∈{WEAK,BEAR} 或 high_vol"},
     ],
     "volume_price_ta": {
         "description": "方案B 量价关系技术分析（additive，不改 composite 权重；参考 ta_signals.md）",
@@ -96,7 +100,7 @@ RULES_V1: Dict = {
             "anomaly": "量比>2.5 或 单日涨跌幅>5%",
         },
         "tier_enhance": "strong_breakout(breakout_volume|segment_up) 且 etf_rs>=60 且 非降级 -> OBSERVE→SMALL_POSITION / SMALL_POSITION→OPPORTUNITY_ENHANCE",
-        "tier_downgrade": "看空量价形态驱动下调一档（与 tier_enhance 互斥，看空优先）：divergence 或 (anomaly 且下跌方向) 或 VOL_UP_FALL -> OBSERVE→NO_PARTICIPATE / SMALL_POSITION→OBSERVE / OPPORTUNITY_ENHANCE→SMALL_POSITION；已在 NO_PARTICIPATE 不降。",
+        "tier_downgrade": "看空量价形态触发软降档；与 ATR/追高降档合并，合计最多一次：OBSERVE→NO_PARTICIPATE / SMALL_POSITION→OBSERVE / OPPORTUNITY_ENHANCE→SMALL_POSITION。",
         "strength_score": "量价配合 + 趋势位置(MA20) + 形态，基准50，clamp[0,100]",
     },
     "intraday_momentum": {

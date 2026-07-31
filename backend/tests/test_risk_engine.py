@@ -45,14 +45,28 @@ def test_downgrade_disabled_keeps_no_downgrade():
     assert r["downgrade"] is False  # 但降级被开关关闭
 
 
+def test_downgrade_switch_does_not_disable_real_high_vol_risk():
+    r = _engine(downgrade=False).evaluate({"atr_pct": 6.0})
+    assert r["high_vol"] is True
+    assert r["downgrade"] is True
+
+
+def test_rsi_overheat_threshold_is_configurable():
+    engine = RiskEngine({"downgrade_on_chase_high": True}, rsi_overheat=90)
+    assert engine.evaluate({"rsi14": 85})["chase_high"] is False
+    assert engine.evaluate({"rsi14": 91})["chase_high"] is True
+
+
 def test_high_vol_from_atr():
     r = _engine().evaluate({"atr_pct": 6.0})
     assert r["high_vol"] is True
 
 
-def test_high_vol_from_weak_regime():
+def test_weak_regime_is_not_mislabeled_as_high_vol():
     r = _engine().evaluate({"market_regime": "WEAK"})
-    assert r["high_vol"] is True
+    assert r["high_vol"] is False
+    assert r["downgrade"] is False
+    assert "market_regime=WEAK" in r["reasons"]
 
 
 def test_clean_metrics_no_flags():

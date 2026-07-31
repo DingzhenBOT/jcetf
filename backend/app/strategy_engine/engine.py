@@ -85,6 +85,7 @@ def compute_composite(
     available = {k: v for k, v in scores.items() if v is not None}
     missing = [k for k in weights if k not in available]
     total_w = sum(weights[k] for k in available)
+    norm: Dict[str, float] = {}
     if not available or total_w <= 0:
         composite = None
     else:
@@ -94,6 +95,7 @@ def compute_composite(
     return {
         "composite": composite,
         "available": available,
+        "effective_weights": norm,
         "missing": missing,
         "confidence": confidence,
     }
@@ -188,38 +190,28 @@ def decide_tier(
     thresholds: Dict[str, Any],
     vp: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """档位决策（§9 + D4 决策优先级，C23 修正：市场弱为降档修正而非硬闸门）。
+    """档位决策：市场只在 composite 中计一次，软风险最多离散降一档。"""
+    return decide_tier_details(
+        composite, market_regime, risk, fund_flow, etf_rs, thresholds, vp
+    )[0]
 
-    1) risk.veto -> NO_PARTICIPATE（仅「大盘 BEAR 且 数据缺失」）
-    2) risk.chase_high -> NO_CHASE_HIGH
-    3) 市场弱/高波动 -> 综合分降档修正 + 记 caution，不再 blanket MARKET_RISK_HIGH：
-       - WEAK：综合分 -10；BEAR：综合分 -18；high_vol：综合分 -5（可叠加）。
-       目的：弱势市场下，强势个股仍可给出 SMALL_POSITION / OBSERVE（带控仓提示），
-       而非全市场一律「先观望」，丢弃个股层面的 RSI / 相对强弱 / 板块 / 资金流 / 量价分析。
-    4) 否则按 composite（命中降级则先下调一档）映射到 OPPORTUNITY_ENHANCE / SMALL_POSITION / OBSERVE / NO_PARTICIPATE
-    5) 方案B：量价形态增强（扩展而非覆盖原权重）——仅在量价强势突破 + 相对强弱确认时上调一档。
-       vp=None 时退化为原逻辑，保持历史测试不变。
 
-    注：MARKET_RISK_HIGH 档位枚举保留（向后兼容模板），但 C23 起不再由本函数产出；
-    caution 通过 supporting_metrics 的 market_caution / high_vol_caution 透传给前端提示。
+def decide_tier_details(
+    composite: Optional[float],
+    market_regime: Optional[str],
+    risk: Dict[str, Any],
+    fund_flow: Optional[Dict[str, Any]],
+    etf_rs: Optional[Dict[str, Any]],
+    thresholds: Dict[str, Any],
+    vp: Optional[Dict[str, Any]] = None,
+) -> tuple[str, Dict[str, Any]]:
+    """返回最终档位和可解释决策上下文。
+
+    market_regime 已通过 market_score 进入 composite，不再另扣分；veto/追高是硬约束，
+    ATR/追高降级与看空量价属于软风险，合计最多降一档，避免同一风险重复计数。
     """
-    if risk.get("veto"):
-        return "NO_PARTICIPATE"
-    if risk.get("chase_high"):
-        return "NO_CHASE_HIGH"
-
+    _ = market_regime  # 保留兼容签名；方向不在本层二次计分。
     c = composite if composite is not None else 0.0
-    # C23：市场弱 / 高波动 -> 降档修正（不再一票否决 MARKET_RISK_HIGH）
-    if market_regime == "BEAR":
-        c = max(0.0, c - 18)
-    elif market_regime == "WEAK":
-        c = max(0.0, c - 10)
-    if risk.get("high_vol"):
-        c = max(0.0, c - 5)
-
-    if risk.get("downgrade"):
-        c = max(0.0, c - 15)
-
     opp = float(thresholds.get("opportunity_enhance", 85))
     small = float(thresholds.get("small_position", 75))
     obs = float(thresholds.get("join_observe", 60))
@@ -245,25 +237,43 @@ def decide_tier(
     else:
         base = "NO_PARTICIPATE"
 
-    # 方案B+：量价形态驱动档位（扩展而非覆盖原权重）
-    # 看空形态优先降档（与上调互斥，保护本金）；否则强势突破上调一档
+    context: Dict[str, Any] = {
+        "base_tier": base,
+        "decision_score": c,
+        "adjustments": [],
+    }
+    if risk.get("veto"):
+        context["adjustments"].append("risk_veto")
+        return "NO_PARTICIPATE", context
+    if risk.get("chase_high"):
+        context["adjustments"].append("no_chase_high")
+        return "NO_CHASE_HIGH", context
+
+    down = {
+        "OPPORTUNITY_ENHANCE": "SMALL_POSITION",
+        "SMALL_POSITION": "OBSERVE",
+        "OBSERVE": "NO_PARTICIPATE",
+    }
+    bearish_vp = bool(vp and _vp_bearish(vp))
+    if risk.get("downgrade") or bearish_vp:
+        if risk.get("downgrade"):
+            context["adjustments"].append("risk_downgrade_one_tier")
+        if bearish_vp:
+            context["adjustments"].append("vp_bearish_downgrade")
+        return down.get(base, base), context
+
     if vp:
-        if _vp_bearish(vp) and base != "NO_PARTICIPATE":
-            _down = {
-                "OPPORTUNITY_ENHANCE": "SMALL_POSITION",
-                "SMALL_POSITION": "OBSERVE",
-                "OBSERVE": "NO_PARTICIPATE",
-            }
-            return _down.get(base, base)
         if not risk.get("downgrade"):
             bullish = set(vp.get("vp_patterns", []))
             strong_breakout = "breakout_volume" in bullish or "segment_up" in bullish
             if strong_breakout and etf_rs_strong:
                 if base == "SMALL_POSITION":
-                    return "OPPORTUNITY_ENHANCE"
+                    context["adjustments"].append("vp_bullish_enhance")
+                    return "OPPORTUNITY_ENHANCE", context
                 if base == "OBSERVE":
-                    return "SMALL_POSITION"
-    return base
+                    context["adjustments"].append("vp_bullish_enhance")
+                    return "SMALL_POSITION", context
+    return base, context
 
 
 class StrategyEngine:
@@ -271,7 +281,10 @@ class StrategyEngine:
         self.settings = settings
         self.ind = IndicatorEngine()
         self.sector = SectorEngine()
-        self.risk = RiskEngine(settings.strategy.risk_filter)
+        self.risk = RiskEngine(
+            settings.strategy.risk_filter,
+            rsi_overheat=settings.strategy.thresholds.get("rsi_overheat", 80),
+        )
 
     # ---- 内部：窗口边界 ----
     def _window(self, as_of: date):
@@ -394,8 +407,8 @@ class StrategyEngine:
 
         score = max(0.0, min(100.0, score))
         breadth_avail = breadth is not None
-        # 盘中阶段：用实时 INDEX 1m 分时修正 regime，避免陈旧日线（昨日收盘）把盘中市场误判为 WEAK/BEAR，
-        # 进而经 decide_tier 强制 MARKET_RISK_HIGH，导致盘中建议「全偏弱」。仅当指数当日上涨/平盘时抬升
+        # 盘中阶段：用实时 INDEX 1m 分时修正 regime，避免陈旧日线（昨日收盘）让盘中市场分失真。
+        # 仅当指数当日上涨/平盘时抬升
         # regime；当日走弱则保持日线 regime（不强行乐观）。post_close 阶段（含今日已收盘日线）不改。
         if phase and phase != "post_close":
             live_regime = self._intraday_regime(session, as_of, indices)
@@ -480,8 +493,7 @@ class StrategyEngine:
         if sector_code is not None:
             f_rows = quote_repo.get_bar_history(session, "SECTOR", sector_code, start, end)
             f_df = _to_df(f_rows)
-            metric_source = f_df["metric_source"].iloc[0] if len(f_df) > 0 else None
-            fund_flow = self.sector.evaluate_fund_flow(f_df, metric_source)
+            fund_flow = self.sector.evaluate_fund_flow(f_df, None)
 
         # 5) ETF 相对强弱评分
         etf_rs_score = None
@@ -585,7 +597,7 @@ class StrategyEngine:
         )
 
         # 8) 档位
-        tier = decide_tier(
+        tier, decision_context = decide_tier_details(
             composite_final,
             regime,
             risk,
@@ -614,11 +626,20 @@ class StrategyEngine:
             "etf_vol_ratio": etf_ind.get("vol_ratio"),
             "sector_score": sector_trend["score"] if sector_trend and sector_trend.get("available") else None,
             "fund_flow_score": fund_flow["score"] if fund_flow and fund_flow.get("available") else None,
+            "fund_flow_source": fund_flow.get("metric_source") if fund_flow else None,
+            "fund_flow_observations": fund_flow.get("usable_observations") if fund_flow else 0,
+            "fund_flow_note": fund_flow.get("note") if fund_flow else None,
             "advance_ratio": advance_ratio,
             "market_regime": regime,
+            "component_scores": comp["available"],
+            "effective_weights": comp["effective_weights"],
+            "missing_components": comp["missing"],
             # C23：市场弱/高波动降档提示（不再一票否决，前端据此显示「控仓」而非 blanket 观望）
             "market_caution": regime in ("WEAK", "BEAR"),
             "high_vol_caution": bool(risk.get("high_vol")),
+            "base_signal_type": decision_context["base_tier"],
+            "decision_score": decision_context["decision_score"],
+            "decision_adjustments": decision_context["adjustments"],
             # P1 盘中动量修正（随实时行情变化）
             "intraday_change_percent": intraday_change,
             "intraday_adjust": intraday_adj,
@@ -679,8 +700,10 @@ class StrategyEngine:
                 and len(etf_df) > 0
                 and float(etf_df["close"].iloc[-1]) < etf_ind["ma20"]
             ),
-            "market_regime_bear": regime == "BEAR",
-            "rsi_overheat_gt_80": bool(etf_ind.get("rsi14") is not None and etf_ind["rsi14"] > 80),
+            "rsi_overheat": bool(
+                etf_ind.get("rsi14") is not None
+                and etf_ind["rsi14"] > self.risk.rsi_overheat
+            ),
             "data_incomplete": len(comp["missing"]) > 0,
         }
 

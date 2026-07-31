@@ -2,7 +2,7 @@
 import { useRouter } from 'vue-router'
 import type { EtfListItem } from '@/api/types'
 import Badge from '@/components/ui/Badge.vue'
-import { TIER_BADGE, regimeText, listingBadge } from '@/lib/tier'
+import { TIER_BADGE, listingBadge } from '@/lib/tier'
 import { fmtScore } from '@/lib/format'
 import { daysSinceBeijingDate } from '@/lib/time'
 
@@ -28,7 +28,6 @@ function staleDays(sig: EtfListItem['latest_signal']): number | null {
           <th class="px-4 py-2 font-medium">最新信号</th>
           <th class="px-4 py-2 font-medium">综合分</th>
           <th class="px-4 py-2 font-medium text-right">当日涨幅</th>
-          <th class="px-4 py-2 font-medium">市场环境</th>
         </tr>
       </thead>
       <tbody>
@@ -92,9 +91,6 @@ function staleDays(sig: EtfListItem['latest_signal']): number | null {
           >
             <span v-if="e.change_percent != null">{{ e.change_percent >= 0 ? '+' : '' }}{{ e.change_percent.toFixed(2) }}%</span>
             <span v-else class="text-slate-300">--</span>
-          </td>
-          <td class="px-4 py-2 text-slate-500">
-            {{ e.latest_signal ? regimeText(e.latest_signal.market_regime) : '--' }}
           </td>
         </tr>
       </tbody>

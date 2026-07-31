@@ -2,7 +2,7 @@
 
 > 用途：把后端**所有写死（hard-coded）的交易方法论 / 交易逻辑**按「模块 + 方法论」整理，供人工审核。
 > 范围：仅含确定性规则（无 LLM / 无外部推断）。每条标注 `file:line` 与精确常量，方便定位与回归。
-> 最后核对：基于 `main` 分支 `057c1dd`（C24 场外基金方案B）后代码逐文件复核。
+> 最后核对：策略规则 v3.0。历史行号可能随实现变化，规则真值以当前测试与 `rules.py` 哈希版本为准。
 > 配套：审计发现见文末 `A1–A10`（含严重性、影响、修复建议）；审核清单见最后。
 
 ---
@@ -50,7 +50,7 @@
 ```
 etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 ```
-> ⚠️ 因 `rolling_rs` 实现缺陷（A2），`rs_20d ≈ 0` → `etf_rs_score` 恒为 **0**。
+`rolling_rs` 使用共同交易日对齐后的 `n+1` 个收盘价计算增长倍数之比，停牌或数据源缺日不会按位置错配。
 
 ### M1.4 盘中动量加性修正 `intraday_momentum_adjustment` (engine.py:109-126)
 常量（engine.py:103-106）：
@@ -69,31 +69,24 @@ etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 - `live` 权重 `w = 0.35`，`lunch` 权重 `w = 0.20` (engine.py:558)。
 - `composite_final = clamp( (1-w)*c_base + w*intraday_strength_score )`。`post_close` 不混入。
 
-### M1.6 档位决策 `decide_tier` (engine.py:182-266)
-**优先级（C23：市场弱改为降档修正，不再一票否决）：**
-1. `risk.veto` → `NO_PARTICIPATE`（仅「大盘 BEAR 且数据缺失」）。
-2. `risk.chase_high` → `NO_CHASE_HIGH`。
-3. **降档修正**（可叠加，engine.py:213-221）：
-
-| 条件 | 综合分扣减 |
-|---|---|
-| `market_regime == BEAR` | −18 |
-| `market_regime == WEAK` | −10 |
-| `risk.high_vol` | −5 |
-| `risk.downgrade` | −15 |
-
-   最坏叠加 = −(18+10+5+15) = **−38**（实际 BEAR+downgrade+high_vol 同时出现时）。
-4. 阈值（engine.py:223-225，来自 `thresholds` 配置）：`opportunity_enhance=85` / `small_position=75` / `join_observe=60`。
-5. 强约束门控（engine.py:227-237）：
+### M1.6 档位决策 `decide_tier`
+**优先级（v3.0）：**
+1. 用最终 `composite` 直接映射基础档位。市场趋势已经通过 `market_score` 进入综合分，`WEAK/BEAR` 不再在档位层二次扣分。
+2. `risk.veto` → `NO_PARTICIPATE`（仅「大盘 BEAR 且宽基/宽度数据缺失」）。
+3. `risk.chase_high` → `NO_CHASE_HIGH`。
+4. ATR 高波动和看空量价属于软风险；即使同时命中，合计最多把基础档位下调一档，不修改展示的综合分。
+5. 阈值（来自 `thresholds` 配置）：`opportunity_enhance=85` / `small_position=75` / `join_observe=60`。
+6. 强约束门控：
    - `fund_flow_strong`：`score ≥ 70` **且** `consecutive_positive_days ≥ 3`。
-   - `etf_rs_strong`：`score ≥ 60`（因 A2 实际恒不满足 → 见影响）。
+   - `etf_rs_strong`：`score ≥ 60`。
    - `OPPORTUNITY_ENHANCE` 需 `c ≥ 85 且 fund_flow_strong 且 etf_rs_strong`。
-6. 档位映射（engine.py:239-266）：`≥85 & 双强→OPPORTUNITY_ENHANCE` / `≥75→SMALL_POSITION` / `≥60→OBSERVE` / `else→NO_PARTICIPATE`。
-7. 方案B 量价增强（engine.py:250-266）：看空形态优先降一档（`_vp_bearish`，divergence / (anomaly 且下跌方向) / VOL_UP_FALL）；否则强势突破（breakout_volume 或 segment_up 且 etf_rs_strong）上调一档。
+7. 档位映射：`≥85 & 双强→OPPORTUNITY_ENHANCE` / `≥75→SMALL_POSITION` / `≥60→OBSERVE` / `else→NO_PARTICIPATE`。
+8. 强势突破（breakout_volume 或 segment_up 且 etf_rs_strong）可上调一档；与任何软降档互斥。
+9. `supporting_metrics` 保存 `base_signal_type / decision_score / decision_adjustments`，解释展示分数、基础档位和最终档位之间的关系。
 
 ### M1.7 仓位区间 & 失效条件
 - `POSITION_RANGE` (engine.py:40-47)：`NO_PARTICIPATE/OBSERVE=[0,0]/[0,10]`、`SMALL_POSITION=[10,25]`、`OPPORTUNITY_ENHANCE=[25,50]`、`NO_CHASE_HIGH/MARKET_RISK_HIGH=[0,0]`。
-- `invalidation_conditions`（engine.py:676-685）：`close_below_ma20` / `market_regime_bear` / `rsi_overheat_gt_80`（**硬编码** `rsi14 > 80`，非读配置，见 A3）/ `data_incomplete`。
+- `invalidation_conditions`：`close_below_ma20` / `rsi_overheat`（读取配置阈值）/ `data_incomplete`。市场方向已计入综合分，不再单独让每只 ETF 的信号失效。
 
 ---
 
@@ -116,7 +109,6 @@ etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 ### M2.2 R1 / R2 持仓告警 `check_r1_r2` (intraday_strength.py:127-190)
 - **R1 补仓看多**：收盘站上 MA20 **且** 连续站上 ≥ 2 天，且（资金可用且为正 或 资金不可用）（intraday_strength.py:167-169）。
 - **R2 超跌抄底**：`near_lower`（收盘 ≤ 布林下轨 × 1.02）**且** `vol_ratio > 1.5` **且** `RSI(6) < 20`（intraday_strength.py:176-184）。
-  > ⚠️ `boll_lower` 由 `etf_ind.get("boll_lower")` 读取，而 `IndicatorEngine` **从不产出**该值（A1）→ `near_lower` 恒 False → **R2 永不触发**。
 
 ---
 
@@ -126,22 +118,20 @@ etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 
 | 价位 | 计算（levels.py 行） | 说明 |
 |---|---|---|
-| 突破价 `breakout_price` | `max(recent_high, boll_upper, last_close*1.005)` (78-81) | 布林上轨恒 None（A1）→ 仅 `max(前高, 现价*1.005)` |
-| 加仓价 `add_price` | `min(ma20, boll_mid, recent_low 中 < 现价者)` (86-89) | 布林中轨恒 None → 仅 MA20 / 前低 |
-| 止损价 `stop_price` | `min(recent_low, boll_lower, last_close*(1-1.5·atr%))` (92-104) | 布林下轨恒 None；单调关系保护 `stop < add < breakout` |
+| 突破价 `breakout_price` | `max(recent_high, boll_upper, last_close*1.005)` | 前高与布林上轨共同约束 |
+| 加仓价 `add_price` | 当前价下方 `ma20/boll_mid/recent_low` 中最近的有效支撑 | 回踩支撑才加仓 |
+| 止损价 `stop_price` | 加仓价下方 `recent_low/boll_lower/1.5ATR` 中最近的有效保护位 | 单调关系保护 `stop < add < breakout` |
 | 明日预期 | `±1 ATR`（价格换算）；无 ATR 回退近 5 日波动 sd，再无则兜底 **2.0%** (108-119) | |
 | 明日倾向 | `regime_tomorrow` ∈ {偏多, 偏弱, 震荡}（按 last_close vs MA20 / MA20 斜率）(122-127) | |
 
-> ⚠️ A1 影响：三档价全部退化为「前高 / 前低 / MA20 / ATR」，**布林带三值完全不参与**（尽管代码已正确读取，只差指标层产出）。
-> ⚠️ A10：加仓价回退分支（levels.py:101-103）改写了 `add_price` 后，`stop` 仍基于旧 `add` 计算，未重算，可能破坏 `stop < add` 单调关系。
+布林带由指标层统一产出；止损候选在最终加仓价确定后计算，保证三档价单调。
 
 ---
 
 ## M4. 指标引擎 — `backend/app/indicator_engine/`
 
 ### M4.1 `IndicatorEngine.compute` (indicator_engine/engine.py:18-54)
-产出字段：`ma20, ma20_slope, rsi14, macd, mom_5, mom_10, mom_20, vol_ratio, atr_pct, rs_20d`。
-> ⚠️ **不产出 `boll_upper / boll_mid / boll_lower`** —— 这是 A1 的根因。
+产出字段：`ma20, ma20_slope, rsi14, macd, mom_5, mom_10, mom_20, vol_ratio, atr_pct, rs_20d, boll_upper, boll_mid, boll_lower`。
 
 ### M4.2 纯指标 (indicator_engine/indicators.py)
 | 指标 | 公式 / 参数 | 行 |
@@ -153,9 +143,7 @@ etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 | `atr(n=14)` | Wilder ATR | 122-135 |
 | `atr_pct` | `atr / close * 100` | 138-147 |
 | `ma_slope_pct(n=20, lookback=5)` | `(MA_now/MA_prev - 1) * 100`（已是百分比） | 31-41 |
-| `rolling_rs(n=20)` | **见 A2：代码算 `Π r_t / Π r_b`，docstring 写 `Π(1+r_t)/Π(1+r_b)`** | 150-163 |
-
-> ⚠️ A2：`rolling_rs` 当前 `t_ret = (t/t.shift(1) - 1)` 再 `.prod()` = 日收益率连乘（对小幅收益≈0）；正确应为 `t_ret = t/t.shift(1)` 再 `.prod()`（= 累计收益比 = `close_n/close_0`）。
+| `rolling_rs(n=20)` | 共同交易日对齐后，`(target_t/target_t-20)/(base_t/base_t-20)` | — |
 > ⚠️ A6：`macd`、`mom_10` 被计算但**从未被任何策略/意见/持仓逻辑读取**（死计算）。
 
 ---
@@ -177,8 +165,8 @@ etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 
 降级路径 `_evaluate_sector_trend_from_change`（仅 change_percent，无收盘价的源）：`avg5>0→+40`、`up_ratio≥0.6→+25`、加速→+10、近 3 日均涨>5%→过热（sector_engine/engine.py:85-118）。
 
-### M5.2 资金持续性 `evaluate_fund_flow` (sector_engine/engine.py:120-191)
-**仅同源**（`metric_source` 过滤，sector_engine/engine.py:134-138）。最高 **80**：
+### M5.2 资金持续性 `evaluate_fund_flow`
+**仅同源且至少 3 个真实观测**。`main_net_inflow` 为空的价格行不能充当资金流样本；未指定来源时，从真实非空样本中选择观测最多、日期最新的一源。不足 3 个观测返回缺失，由综合评分重归一化并下调置信度，不能按 0 分拖低综合分。最高 **80**：
 
 | 条件 | +分 | 行 |
 |---|---|---|
@@ -199,13 +187,13 @@ etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 
 | 触发 | 动作 | 行 |
 |---|---|---|
-| `rsi14 > 80` | `chase_high + downgrade`（reason `rsi_overheat>80`）| 43-46 |
+| `rsi14 > thresholds.rsi_overheat` | `chase_high + downgrade` | — |
 | `sector_surge`（板块/ETF 短期涨幅过大，mom_5>0.15）| `chase_high + downgrade` | 48-51 |
-| `market_regime ∈ {WEAK, BEAR}` | `high_vol` | 54-56 |
+| `market_regime ∈ {WEAK, BEAR}` | 仅记录市场趋势原因，不置 `high_vol`/`downgrade` | — |
 | `atr_pct > 4.0` | `high_vol + downgrade` | 59-62 |
 | `drawdown_pct < -15.0` | **仅 append reason `drawdown_from_high`，不置任何 flag** | 65-66 |
 | 否决 `veto` | `regime==BEAR 且 missing_data`（受 `deny_market_bear_with_missing_data` 开关）| 69-75 |
-| `downgrade` 总开关 | 受 `downgrade_on_chase_high` 约束（关闭则不降级）| 78-79 |
+| `downgrade_on_chase_high` | 仅控制追高相关降级；不能关闭真实 ATR 高波动风险 | — |
 
 > ⚠️ A8：回撤 `> -15%` 仅记 reason，对档位/否决无任何影响（纯装饰）。
 
@@ -219,7 +207,7 @@ etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 | `thresholds.join_observe` | 60 | 146 |
 | `thresholds.small_position` | 75 | 147 |
 | `thresholds.opportunity_enhance` | 85 | 148 |
-| `thresholds.rsi_overheat` | 80（**未被读取**，见 A3）| 149 |
+| `thresholds.rsi_overheat` | 80（风险判断与失效条件共同读取）| 149 |
 | `risk_filter.deny_market_bear_with_missing_data` | True | 154 |
 | `risk_filter.downgrade_on_chase_high` | True | 155 |
 | `broad_index_codes` | `000300, 000001, 399001` | 128-130 |
@@ -233,11 +221,11 @@ etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 
 ## M8. 规则冻结与版本化 — `backend/app/strategy_engine/rules.py` + `backend/app/strategy_versioning.py`
 
-- `RULES_V1`（rules.py:17）：纯文本规则字典，版本字符串 **"2.2"**，含 market_score / sector_trend_score / fund_flow_score / etf_rs_score / risk_filter / signal_synthesis / tiers / volume_price_ta / intraday_momentum。其 `weights` 段与 M5/M1 引擎常量**一致**（便于审计）。
+- `RULES_V1`：纯文本规则字典，版本字符串 **"3.0"**，含 market_score / sector_trend_score / fund_flow_score / etf_rs_score / risk_filter / signal_synthesis / tiers / volume_price_ta / intraday_momentum。规则变化参与策略哈希，旧信号版本保持不变。
 - `compute_strategy_hash(params, rules)`（strategy_versioning.py:16-24）：`SHA256(canonical JSON of {params, rules})`。
 - `build_version_string`（strategy_versioning.py:27-29）：`f"{base}-{hash[:6]}"`。
 - 参与哈希的 `params`（strategy_versioning.py:37-41、57-61）：**仅** `composite_weights / thresholds / risk_filter` 三个 config 字典；`rules` 在 `current_strategy_version` 传 `{}`，在 `mint_strategy_version` 传 `RULES_V1`。
-  > ⚠️ A9：数十个**引擎内硬编码常量**（M1±35/−18、M2 因子分、M3 价位、M5/M6 评分）**不参与哈希**。改动它们不会生成新 `strategy_version`，旧 Signal 仍标旧版本号但行为已变，审计/回放失真。
+  > 治理要求：纯代码常量本身不自动进入哈希；关键行为变更必须同步更新 `RULES_V1`，从而生成新 `strategy_version`。
 
 ---
 
@@ -247,7 +235,7 @@ etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 - 模板：`TEMPLATE_V1` / `TEMPLATE_LIVE` / `TEMPLATE_LUNCH`（templates.py:45-61）。
 - `key_metrics_text`（templates.py:122-184）：阈值化人话（RSI>70 超买 / <30 超卖；rs>1.05 强于大盘等）。
 - `basis_text`（templates.py:187-304）：专业「分析依据」叙述。
-  > ⚠️ A5：`MA20 斜率 {slope * 100:+.1f}%`（templates.py:256）。`slope` 来自 `ma_slope_pct` **已是百分比**（如 2.0 表示 2%），再 ×100 → 显示 **200.0%**，放大 100 倍。
+  `MA20 斜率` 直接按 `ma_slope_pct` 的百分比值展示，不再二次缩放。
 
 ---
 
@@ -259,12 +247,12 @@ etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 
 | 动作 | 触发条件 |
 |---|---|
-| `EXIT` | `veto` 或 `regime==BEAR` 或 `etf_rs_20d < 1.0`（跑输基准）或 `close_below_ma20` | 69 |
-| `REDUCE` | `downgrade` 或 综合分下降 `≥ 5` 或 `signal_type==NO_CHASE_HIGH` | 73-79 |
-| `RECONFIRM` | `NO_PARTICIPATE/OBSERVE` 或 有 failed_rules 或 `regime==WEAK` 或 信号过期 `> 5 天` | 83-88 |
+| `EXIT` | 零仓位档位、`veto`、`etf_rs_20d` 低于配置阈值或 `close_below_ma20` |
+| `REDUCE` | 实际仓位高于建议上限、`downgrade`、综合分下降达到配置阈值或 `NO_CHASE_HIGH` |
+| `RECONFIRM` | `OBSERVE`、有 failed_rules 或信号过期 |
 | `HOLD` | 其余 | 91 |
 
-`rs_negative`：`etf_rs_20d < 1.0`（analyzer.py:46-51）。
+`WEAK/BEAR` 不再直接让所有持仓 RECONFIRM/EXIT；市场方向已进入公共信号分数。`rs_negative` 阈值默认 `0.95`，可配置。
 
 ---
 
@@ -277,33 +265,29 @@ etf_rs_score = clamp(0,100, 50 + (rs_20d - 1) * 100)
 | `pre_close_evaluate` | **14:50** | pre_close | 348 |
 | `post_close_evaluate` | 15:10 | post_close | — |
 
-> ⚠️ A7：`job_pre_close_evaluate` docstring 写 "14:59"（worker.py:229），实际 Cron `minute=50`（worker.py:348）。
-
 ---
 
-## 审计发现汇总（A1–A10）
+## 当前审计状态
 
 | 编号 | 严重度 | 模块 | 问题 | 影响 | 建议 |
 |---|---|---|---|---|---|
-| **A1** | 高 | M3/M4 | `IndicatorEngine` 不产出 `boll_upper/mid/lower`，`levels.py` 与 `check_r1_r2` 恒读到 None | R2 抄底信号**永不触发**；三档价布林带三值**全部失效**（仅用前高/前低/MA20/ATR）| 在 `compute()` 增加 `boll_upper/mid/lower`（Bollinger(20,2)）；`levels.py` 已正确读取，补产出即可 |
-| **A2** | 高 | M1/M4 | `rolling_rs` 算 `Π r_t / Π r_b`（日收益率连乘≈0），docstring 意图是 `Π(1+r_t)/Π(1+r_b)`（累计收益比）| `rs_20d ≈ 0` → `etf_rs_score` 恒 0 → `etf_rs` 组件恒失效、`etf_rs_strong` 永不真 → `OPPORTUNITY_ENHANCE` 档位几乎无法触发 | 改为 `t_ret = t / t.shift(1)`（去掉 `-1`）后 `.prod()`；补单测断言 `rs_20d ≈ close_n/close_0` |
-| **A3** | 中 | M1/M7 | 配置 `thresholds.rsi_overheat=80` 从未被读取；`rsi>80` 硬编码于 engine.py:683、risk_engine:43 | 配置项形同虚设，改 YAML 不生效，易误导 | 用 `thresholds.get("rsi_overheat", 80)` 读取，或删除该配置项 |
-| **A4** | 中 | M8/M1 | `rules.py` 的 `tiers` 仍把 `MARKET_RISK_HIGH` 列为「market_regime∈{WEAK,BEAR} 或 high_vol」产出档位，但 C23 起引擎已改为降档、不再产出该档位 | 规则文本与实现偏离，审计误读 | 更新 `rules.py` 注释/段，标注「C23 起不再产出，降级透传 caution」|
-| **A5** | 中 | M9 | `basis_text` 对已是百分比的 `slope` 再 `×100`，显示放大 100 倍（2%→"200.0%"）| 前端「分析依据」中 MA20 斜率数值严重失真 | 去掉 `×100`，直接用 `{slope:+.1f}%` |
-| **A6** | 低 | M4 | `macd`、`mom_10` 被计算但从未被任何逻辑读取 | 浪费算力（每只 ETF 每相位），且 `macd` 有量化价值却闲置 | 接入量价/背离逻辑，或移除以减负 |
-| **A7** | 低 | M11 | `pre_close_evaluate` docstring 写 "14:59"，实际 Cron 14:50 | 文档/注释不一致 | docstring 改为 14:50 |
-| **A8** | 中 | M6 | `drawdown_pct < -15%` 仅 append reason，不置 veto/downgrade/high_vol | 15% 回撤风险阈值纯装饰，对档位无影响 | 明确是否要据回撤降档；若要，接入 `downgrade`；否则文档注明「仅提示」|
-| **A9** | 高(治理) | M8 | 策略版本哈希仅含 3 个 config 字典；引擎内数十个硬编码常量改动不生成新版本 | 改代码逻辑不会 bump version，旧 Signal 标旧版本号但行为已变，审计/回放失真 | 把关键方法论常量（或 `rules.py` 全文 + 常量表）纳入哈希；或在改动时手动 bump `StrategyConfig.version` |
-| **A10** | 低 | M3 | `levels.py` 加仓价回退分支改写 `add_price` 后未重算 `stop`，可能破坏 `stop < add` 单调关系 | 极端样本下止损价可能高于加仓价 | 回退后重算 `stop`（复用 monotonic 保护逻辑）|
+| **A1（已修复）** | — | M3/M4 | 指标层已产出三条布林带并接入 R2/三档价 | 布林分支恢复 | 已完成 |
+| **A2（已修复）** | — | M1/M4 | RS 已按共同交易日的 20 日增长倍数计算 | 相对强弱恢复 | 已完成 |
+| **A3（已修复）** | — | M1/M7 | RSI 过热阈值读取 `thresholds.rsi_overheat` | 配置与执行一致 | 已完成 |
+| **A4（已修复）** | — | M8/M1 | v3.0 已从活动规则中移除 `MARKET_RISK_HIGH`；枚举仅为读取历史存量数据保留 | 规则文本与当前实现一致 | 已完成 |
+| **A5（已修复）** | — | M9 | MA20 斜率按指标原始百分比展示，不再乘 100 | 展示与计算一致 | 已完成 |
+| **A6（非阻塞）** | 低 | M4 | `macd`、`mom_10` 为预计算指标，尚未进入评分 | 少量计算开销 | 接入前先定义可回测规则，不能临时加权 |
+| **A7（已修复）** | — | M11 | docstring 与 Cron 均为 14:50 | 文档一致 | 已完成 |
+| **A8（设计选择）** | — | M6 | 深度回撤仅写风险原因，不自动降档 | 避免把趋势破坏和超跌混为一谈 | 保持提示 |
+| **A9（部分缓解）** | 中(治理) | M8 | 规则字典与配置参与哈希；纯代码常量仍需同步进规则字典 | 漏同步会影响审计 | 关键行为改动必须 bump `RULES_V1` |
+| **A10（已修复）** | — | M3 | 止损在最终加仓价确定后计算 | 保证 `stop < add < breakout` | 已完成 |
 
 ---
 
 ## 审核要点清单（给 reviewer）
 
-1. **A2 是否优先修？** 它让 ETF 相对强弱维度（占权重 25%）实际恒为 0，并锁死 `OPPORTUNITY_ENHANCE` 档位——对建议质量影响最大。
-2. **A1 是否修？** 修法极简（指标层补 3 个布林值），但会同时激活 R2 抄底信号与三档价的布林分支——需确认 R2 在实盘是否过频繁。
-3. **A9 版本治理**：在动手改 A1/A2/A5 之前，是否先把关键常量纳入哈希，避免「改了行为却没新版本」？
-4. **A8 回撤阈值**：产品上是要「仅提示」还是「据此降档」？决定代码方向。
-5. **A3/A4/A5/A6/A7/A10**：低/中危，可随主修一并清理，但属「文档与显示失真」/「死代码」，不阻塞建议正确性。
-
-> 所有 `file:line` 基于 `main @ 057c1dd`；后续改动后请重新核对本表。
+1. 核对同一市场方向是否只通过 `market_score` 进入一次，档位层和持仓层不得再次按 WEAK/BEAR 扣分或一刀切。
+2. 核对资金流是否至少有 3 个真实、同源观测；空值不能视作 0 分。
+3. 核对展示分、基础档位、调档原因和最终档位是否能由 `supporting_metrics` 完整复算。
+4. 关键行为变化必须更新 `RULES_V1`，确保策略哈希变化；纯展示文案变更可不改变交易规则版本。
+5. 新增指标必须先给出可回测规则与样本外验证，不能为了增加信号数量临时降低阈值或堆叠因子。

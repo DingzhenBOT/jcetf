@@ -24,12 +24,18 @@ DRAWDOWN_RISK_PCT = 15.0
 
 
 class RiskEngine:
-    def __init__(self, risk_filter: Dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        risk_filter: Dict[str, Any] | None = None,
+        *,
+        rsi_overheat: float = 80.0,
+    ) -> None:
         # 默认开启两项（与 StrategyConfig 默认一致）
         self.risk_filter = risk_filter or {
             "deny_market_bear_with_missing_data": True,
             "downgrade_on_chase_high": True,
         }
+        self.rsi_overheat = float(rsi_overheat)
 
     def evaluate(self, metrics: Dict[str, Any]) -> Dict[str, Any]:
         veto = False
@@ -40,10 +46,10 @@ class RiskEngine:
         flags: Dict[str, Any] = {}
 
         rsi = metrics.get("rsi14")
-        if rsi is not None and rsi == rsi and rsi > 80:
+        if rsi is not None and rsi == rsi and rsi > self.rsi_overheat:
             chase_high = True
             downgrade = True
-            reasons.append("rsi_overheat>80")
+            reasons.append(f"rsi_overheat>{self.rsi_overheat:g}")
 
         if metrics.get("sector_surge"):
             chase_high = True
@@ -52,7 +58,7 @@ class RiskEngine:
 
         regime = metrics.get("market_regime")
         if regime in ("WEAK", "BEAR"):
-            high_vol = True
+            # 趋势方向已进入 market_score；不能把“走弱”冒充“高波动”再重复处罚。
             reasons.append(f"market_regime={regime}")
 
         atr_pct = metrics.get("atr_pct")
@@ -74,8 +80,12 @@ class RiskEngine:
             veto = True
             reasons.append("deny_market_bear_with_missing_data")
 
-        # 降级：追高/高波动（受开关约束）
-        if not self.risk_filter.get("downgrade_on_chase_high"):
+        # 配置项只控制追高降级；真实 ATR 高波动仍必须降级。
+        if (
+            not self.risk_filter.get("downgrade_on_chase_high")
+            and chase_high
+            and not high_vol
+        ):
             downgrade = False
 
         flags["deny_market_bear_with_missing_data"] = veto

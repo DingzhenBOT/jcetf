@@ -20,33 +20,33 @@ def _risk(**kw):
     return base
 
 
-def test_weak_downgrades_strong_etf_to_small_position():
-    # 强势 ETF（c=90）在 WEAK 下 -10 -> 80，仍达 SMALL_POSITION（带 market_caution）。
+def test_weak_does_not_double_penalize_strong_etf():
+    # 市场分已计入 composite；regime 仅作解释，不在档位层再次扣分。
     t = decide_tier(90, "WEAK", _risk(), STRONG_FUND, STRONG_RS, TH)
-    assert t == "SMALL_POSITION"
+    assert t == "OPPORTUNITY_ENHANCE"
     assert t in POSITION_RANGE
 
 
-def test_weak_downgrades_small_to_observe():
-    # c=78 无 WEAK 时为 SMALL_POSITION；WEAK -10 -> 68 -> OBSERVE（明确降一档）。
+def test_weak_keeps_same_tier_as_trend_for_same_composite():
     base = decide_tier(78, "TREND_UP", _risk(), WEAK_FUND, WEAK_RS, TH)
     weak = decide_tier(78, "WEAK", _risk(), WEAK_FUND, WEAK_RS, TH)
     assert base == "SMALL_POSITION"
-    assert weak == "OBSERVE"
+    assert weak == base
 
 
-def test_bear_downgrades_strong_etf_not_blanket():
-    # 强势 ETF（c=80）在 BEAR 下 -18 -> 62，仅降档为 OBSERVE，不再 blanket。
-    # 无资金/RS 支撑时不强行拉高，但个股分析被保留（非一律先观望）。
+def test_bear_does_not_double_penalize_strong_etf():
+    # 相同 composite 与个体证据应得到相同档位，BEAR 已体现在 market_score 中。
     t = decide_tier(80, "BEAR", _risk(), STRONG_FUND, STRONG_RS, TH)
     assert t != "MARKET_RISK_HIGH"
-    assert t == "OBSERVE"
+    assert t == "SMALL_POSITION"
 
 
 def test_high_vol_downgrades_small_to_observe():
-    # c=76 无 high_vol 时为 SMALL_POSITION；high_vol -5 -> 71 -> OBSERVE。
+    # 真实 ATR 高波动是独立风险，采用可解释的离散一档降级。
     base = decide_tier(76, "TREND_UP", _risk(), WEAK_FUND, WEAK_RS, TH)
-    hv = decide_tier(76, "TREND_UP", _risk(high_vol=True), WEAK_FUND, WEAK_RS, TH)
+    hv = decide_tier(
+        76, "TREND_UP", _risk(high_vol=True, downgrade=True), WEAK_FUND, WEAK_RS, TH
+    )
     assert base == "SMALL_POSITION"
     assert hv == "OBSERVE"
 

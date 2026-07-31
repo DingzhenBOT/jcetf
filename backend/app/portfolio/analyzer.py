@@ -33,8 +33,10 @@ def _invalidation_texts(inv: Optional[Dict[str, Any]]) -> List[str]:
         return []
     labels = {
         "close_below_ma20": "价格跌破 MA20",
-        "market_regime_bear": "市场环境转为空头(BEAR)",
-        "rsi_overheat_gt_80": "RSI 过热(>80)",
+        "rsi_overheat": "RSI 超过策略配置的过热阈值",
+        # 兼容旧信号字段；v3.0 起市场趋势不再单独作为个体信号失效条件。
+        "market_regime_bear": "历史信号：市场环境转为空头(BEAR)",
+        "rsi_overheat_gt_80": "历史信号：RSI 过热(>80)",
         "data_incomplete": "数据不完整，信号可靠性下降",
     }
     return [labels[k] for k, v in inv.items() if v]
@@ -64,8 +66,9 @@ def _decide_action(
     regime = signal.market_regime
     inv = signal.invalidation_conditions or {}
 
-    # EXIT（触发退出条件）：硬否决 / 市场转空 / 相对强弱转负 / 跌破短期趋势线
-    if rf.get("veto") or regime == "BEAR" or rs_negative or inv.get("close_below_ma20"):
+    # EXIT：只看该 ETF 的硬否决、相对强弱与趋势失效；市场方向已进入公共信号分数，
+    # 不能再用全局 BEAR 让所有持仓无差别退出。
+    if rf.get("veto") or rs_negative or inv.get("close_below_ma20"):
         return "EXIT"
 
     suggested = signal.suggested_position_range or [0, 0]
@@ -89,11 +92,10 @@ def _decide_action(
     ):
         return "REDUCE"
 
-    # RECONFIRM（等待重新确认）：信号模糊 / 数据不完整 / 弱势市场 / 信号过期
+    # RECONFIRM（等待重新确认）：信号模糊 / 数据不完整 / 信号过期。
     if (
         signal.signal_type in ("NO_PARTICIPATE", "OBSERVE")
         or (signal.failed_rules and len(signal.failed_rules) > 0)
-        or regime == "WEAK"
         or (_days_since(signal.generated_at) or 0.0) > cfg.stale_threshold_days
     ):
         return "RECONFIRM"
@@ -112,7 +114,7 @@ def _reason_risk(action: str, signal: Optional[Signal], rs_negative: bool) -> Tu
     reason_map = {
         "HOLD": f"市场环境{regime}，ETF相对强弱仍{rs_word}，当前公共建议为「{tier_text}」",
         "REDUCE": f"综合评分下降或触发降级条件，公共建议为「{tier_text}」",
-        "EXIT": f"触发退出条件（市场环境{regime}或相对强弱{rs_word}），公共建议为「{tier_text}」",
+        "EXIT": f"触发该 ETF 的退出条件（硬否决、趋势失效或相对强弱{rs_word}），公共建议为「{tier_text}」",
         "RECONFIRM": f"信号模糊或数据不完整（公共建议「{tier_text}」），需等待重新确认",
     }
     risk_map = {

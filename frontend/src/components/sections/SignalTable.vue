@@ -2,7 +2,7 @@
 import { onMounted } from 'vue'
 import type { Signal } from '@/api/types'
 import Badge from '@/components/ui/Badge.vue'
-import { TIER_BADGE, regimeText, listingBadge } from '@/lib/tier'
+import { TIER_BADGE, listingBadge } from '@/lib/tier'
 import { fmtScore, fmtConfidence } from '@/lib/format'
 import { toBeijing } from '@/lib/time'
 import { ensureEtfNames, etfName, etfListing } from '@/composables/etfNames'
@@ -27,7 +27,6 @@ onMounted(() => {
           <th class="px-4 py-2 font-medium">档位</th>
           <th class="px-4 py-2 font-medium">综合分</th>
           <th class="px-4 py-2 font-medium">置信</th>
-          <th class="px-4 py-2 font-medium">市场环境</th>
           <th class="px-4 py-2 font-medium">建议仓位</th>
           <th class="px-4 py-2 font-medium">生成时间</th>
         </tr>
@@ -61,7 +60,6 @@ onMounted(() => {
           </td>
           <td class="px-4 py-2 tnum text-slate-700">{{ fmtScore(s.score) }}</td>
           <td class="px-4 py-2 tnum text-slate-500">{{ fmtConfidence(s.confidence) }}</td>
-          <td class="px-4 py-2 text-slate-600">{{ regimeText(s.market_regime) }}</td>
           <td class="px-4 py-2 text-slate-600">{{ s.position_text }}</td>
           <td class="px-4 py-2 tnum text-slate-400 whitespace-nowrap">{{ toBeijing(s.generated_at) }}</td>
         </tr>

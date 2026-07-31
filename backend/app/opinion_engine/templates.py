@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from app.indicator_engine.ta_volume_price import VP_PATTERN_TEXT
+from app.risk_engine.engine import ATR_PCT_HIGH_VOL
 
 # signal_type（英文档位码，D2） -> 中文展示（直白口语，避免术语）
 TIER_TEXT: Dict[str, str] = {
@@ -233,6 +234,44 @@ def basis_text(
     lead += f"，当前市场环境「{env_s}」；{width_s}。"
     parts.append(lead)
 
+    # 0.5) 明示基础档位与调档原因，避免“展示分数够、最终档位却更低”的黑箱感。
+    base_tier = supporting.get("base_signal_type")
+    adjustments = supporting.get("decision_adjustments") or []
+    if base_tier:
+        base_text = TIER_TEXT.get(base_tier, base_tier)
+        adjustment_text = {
+            "risk_veto": "数据不完整叠加极弱市场，触发硬性回避",
+            "no_chase_high": "指标过热，触发不追高",
+            "risk_downgrade_one_tier": "真实波动风险，基础档位下调一档",
+            "vp_bearish_downgrade": "看空量价形态，基础档位下调一档",
+            "vp_bullish_enhance": "放量突破且相对强势，基础档位上调一档",
+        }
+        if adjustments:
+            reasons = "；".join(
+                adjustment_text.get(item, item) for item in adjustments
+            )
+            parts.append(f"档位推导：按综合分得到「{base_text}」，随后{reasons}。")
+        else:
+            parts.append(f"档位推导：按综合分得到「{base_text}」，未触发额外调档。")
+
+    components = supporting.get("component_scores") or {}
+    effective_weights = supporting.get("effective_weights") or {}
+    if components:
+        component_labels = {
+            "market": "市场",
+            "sector_trend": "板块趋势",
+            "fund_flow": "资金持续性",
+            "etf_rs": "ETF相对强弱",
+        }
+        detail = []
+        for key, value in components.items():
+            weight = effective_weights.get(key)
+            weight_text = f"，有效权重{weight * 100:.0f}%" if weight is not None else ""
+            detail.append(
+                f"{component_labels.get(key, key)}{float(value):.1f}分{weight_text}"
+            )
+        parts.append("综合评分构成：" + "；".join(detail) + "。")
+
     # 1) ETF 技术面（RSI / 相对强弱 / MA20 斜率 / ATR 波动）
     rsi = supporting.get("etf_rsi14")
     rs = supporting.get("etf_rs_20d")
@@ -253,9 +292,9 @@ def basis_text(
                 + "；"
             )
         if slope is not None:
-            tech += f"MA20 斜率 {slope * 100:+.1f}%（" + ("向上，短期趋势偏强" if slope > 0 else "向下，短期趋势偏弱") + "）；"
+            tech += f"MA20 斜率 {slope:+.1f}%（" + ("向上，短期趋势偏强" if slope > 0 else "向下，短期趋势偏弱") + "）；"
         if atr is not None:
-            tech += f"ATR 波动率 {atr:.1f}%（" + ("波动较大，仓位需控风险" if atr > 3 else "波动温和") + "）。"
+            tech += f"ATR 波动率 {atr:.1f}%（" + ("波动较大，仓位需控风险" if atr > ATR_PCT_HIGH_VOL else "波动温和") + "）。"
         parts.append(tech)
     else:
         parts.append("ETF 技术面：未获取到该标的场内日 K 线（如场外联接基金无场内行情），无法计算 RSI / 相对强弱 / 均线 / 波动率，技术信号不参与评分。")
