@@ -143,6 +143,9 @@ def post_collection_evaluate(
                 result["opinions_written"] += 1
 
         except Exception as e:  # noqa: BLE001 - 单支映射异常不中断其余
+            # 回滚，复位事务状态：避免单支 ETF 的 DB 级异常（如缺列/坏查询）污染 session，
+            # 导致后续 ETF 评估与循环结束后的查询连锁失败（表现为顶层 500）。worker 周期重试会补齐。
+            session.rollback()
             result["errors"].append({"etf_code": m.etf_code, "error": str(e)})
 
     return result

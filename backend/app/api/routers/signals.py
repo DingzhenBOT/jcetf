@@ -14,7 +14,7 @@ from app.api.deps import get_db
 from app.api.schemas import SignalHistoryPage, SignalOut
 from app.api.serializers import signal_to_dict
 from app.db.session import Session
-from app.errors import ConflictError, NotFoundError
+from app.errors import AppError, ConflictError, NotFoundError
 from app.repository import mapping_repo, signal_repo
 
 router = APIRouter(prefix="/api/signals", tags=["signals"])
@@ -78,7 +78,13 @@ def signal_refresh(etf: str = Path(..., description="ETF 代码，如 510300"), 
     with db_writer_lock(settings, blocking=False) as acquired:
         if not acquired:
             raise ConflictError("worker 正在写库，请稍后重试刷新")
-        post_collection_evaluate(session, settings, phase="live")
+        try:
+            post_collection_evaluate(session, settings, phase="live")
+            session.commit()
+        except Exception as e:  # 顶层异常（版本铸造/映射/引擎构造/某支 ETF 未捕获的 DB 错误）
+            # 回滚，避免坏事务污染后续查询；抛出带真实错误信息的 500 便于定位
+            session.rollback()
+            raise AppError(f"refresh 评估失败：{e}") from e
 
     sig = signal_repo.get_latest_signal_for_etf(session, etf)
     if sig is None:
