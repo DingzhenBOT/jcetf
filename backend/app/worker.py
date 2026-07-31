@@ -243,13 +243,23 @@ def job_post_close_evaluate() -> None:
     run_write_job("post_close_evaluate", post_collection_evaluate, _engine(), get_settings(), phase="post_close")
 
 
-def job_intraday_evaluate() -> None:
-    """盘中每小时观望评估（整点触发）：生成 midday 阶段意见。非交易日跳过。"""
+def job_intraday_signal() -> None:
+    """盘中实时信号（每 5 分钟）：生成 live 阶段意见（即「最新信号」盘中即时判断）。非交易时段跳过。"""
+    from app.market_calendar import is_trading_now
+
+    if not is_trading_now():
+        get_logger("etf-worker.job").debug("intraday_signal skipped: not trading now")
+        return
+    run_write_job("intraday_signal", post_collection_evaluate, _engine(), get_settings(), phase="live")
+
+
+def job_lunch_opinion() -> None:
+    """午盘意见（11:40）：午休后生成 lunch 阶段意见（上午分时+量能+板块）。非交易日跳过。"""
     from app.market_calendar import is_trading_day, trading_date_for
 
     if not is_trading_day(trading_date_for()):
         return
-    run_write_job("intraday_evaluate", post_collection_evaluate, _engine(), get_settings(), phase="midday")
+    run_write_job("lunch_opinion", post_collection_evaluate, _engine(), get_settings(), phase="lunch")
 
 
 # --------------------------------------------------------------------------- #
@@ -318,10 +328,15 @@ def build_scheduler(settings) -> BlockingScheduler:
         id="post_close_review", replace_existing=True, max_instances=1, coalesce=True,
     )
     # ---- P3 评估任务 ----
-    # 盘中每小时观望评估（交易时段整点 10/11/13/14，midday 阶段意见）
+    # 盘中实时信号（每 5 分钟，is_trading_now 守卫 -> live 阶段 = 「最新信号」盘中即时判断，C23）
     scheduler.add_job(
-        job_intraday_evaluate, CronTrigger(hour="10,11,13,14", minute=0),
-        id="intraday_evaluate", replace_existing=True, max_instances=1, coalesce=True,
+        job_intraday_signal, "interval", seconds=settings.scheduler.intraday_signal_interval_seconds,
+        id="intraday_signal", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    # 午盘意见（11:40，午休后 -> lunch 阶段，可留历史，C23）
+    scheduler.add_job(
+        job_lunch_opinion, CronTrigger(hour=11, minute=40),
+        id="lunch_opinion", replace_existing=True, max_instances=1, coalesce=True,
     )
     # 历史 BAR 回填 16:30（增量；em-only 板块历史失败非致命）
     scheduler.add_job(

@@ -18,7 +18,7 @@ from app.repository import mapping_repo, signal_repo
 
 router = APIRouter(prefix="/api/opinions", tags=["opinions"])
 
-_VALID_PHASES = {"pre_market", "midday", "pre_close", "post_close"}
+_VALID_PHASES = {"pre_market", "midday", "pre_close", "post_close", "live", "lunch"}
 
 
 @router.get("/{etf}", response_model=OpinionsForEtf)

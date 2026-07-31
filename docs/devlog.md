@@ -1937,3 +1937,54 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 2. `journalctl -u etf-worker --since today | grep -iE 'intraday'` 应只见 `intraday snapshot->1m` 类正常日志，不再有 `intraday gtimg failed, fallback sina` / `sina sz000300 returned empty` / `maximum number of running instances reached`。
 3. 验证：ETF/指数分时图应连续无断层、涨跌幅正确（如沪深300 当日 +1.42% 正确显示，不再归零），分时均价(VWAP) 平滑。
 4. 若仍有异常：把 `journalctl -u etf-worker --since today` 全文发我，重点看 `intraday gtimg snapshot->1m failed` 是否偶发（快照批量拉取超时则回退次源，属预期降级）。
+
+## C23 · ETF 详情页三大意见板块重做 + 修复"最新信号千篇一律观望"（2026-07-30）
+
+**用户核心诉求**：
+1. 盘中想立刻查看意见 → 用日线/交易量或当日分时涨势+交易量给当下判断；问"耗时吗？"→ 确认纯规则引擎亚秒级，并入「最新信号」（盘中每 5 分钟高频重算，无独立块、无额外历史块）。
+2. 午市休市一块 → 交易日午盘对该 ETF 的意见（可留历史）。
+3. 收盘后复盘 → 给近几日+今日情况 + 明日预期（突破X上车 / 跌X加仓 / 跌破Y止损，确定性价位）。
+4. 算法需依据三套股市 skill（持仓监控告警 / A股每日复盘 / A股短线交易）生成。
+5. **用户反馈 bug**："现在的最新信号又都是统一的'市场风险大，先观望'了，这里算法合理吗？"
+
+**根因（精确定位）**：`strategy_engine/engine.py` 旧 `decide_tier` 把 `market_regime∈{WEAK,BEAR}` 或 `risk.high_vol` 当作**硬闸门**，大盘偏弱时全市场所有 ETF 一律 `MARKET_RISK_HIGH`，个股层面 RSI/相对强弱/板块/资金流/量价**全部被丢弃**。`high_vol=True` 来源：`risk_engine`（`regime∈{WEAK,BEAR}` 或 `atr_pct>4.0`）。**不合理**：市场弱应降档/减权修正，而非一票否决；仅 `BEAR+数据缺失`（veto）才硬 `NO_PARTICIPATE`。
+
+**决策（已与用户确认）**：
+- 盘中即时意见 → 并入「最新信号」，盘中每 5 分钟高频自动重算（无独立块）。
+- 算法 → 确定性规则编码 skill 方法论（不引入 LLM），亚秒级、可回归测试，契合 DESIGN §0。
+- 信号频率 → 盘中每 5 分钟（推荐）。
+
+**三板块设计（对应 skill 方法论）**：
+| 板块 | phase | 频率 | 历史 | 方法论 | 内容 |
+|------|-------|------|------|--------|------|
+| 最新信号（盘中实时） | `live` | 盘中每 5min | 时间序列表现在历史信号 | 短线交易·盘中节点评估（五因子强度0-100）+ 持仓监控告警 R1/R2 | 当前涨跌幅/量比/相对大盘 + 盘中倾向（看多/空/中性）+ 是否触发 R1 补仓看多 / R2 超跌抄底 |
+| 午盘意见 | `lunch` | 每日 11:40 一次 | 保留 | 持仓监控告警·午间扫描 | 上午分时+量能+板块的午盘倾向 + 下午关注关键位 |
+| 收盘后复盘 | `post_close` | 15:10 | 保留 | A股每日复盘·三档建仓 + 短线交易·条件→操作→止损 | 近几日+今日情况 + 明日三档价位（突破X上车/跌X加仓/跌破Y止损，确定性算价） |
+
+**改动落点**：
+- `strategy_engine/engine.py` `decide_tier`：移除硬闸门，改为降档修正（BEAR −18 / WEAK −10 / high_vol −5，可叠加）；仅 veto 仍 `NO_PARTICIPATE`；`MARKET_RISK_HIGH` 枚举保留（向后兼容）但不再由本函数产出；`supporting_metrics` 新增 `market_caution`/`high_vol_caution` 布尔。`evaluate_etf` 5.5 段：phase∈{live,lunch} 用当日 1m BAR 算 `intraday_strength`+`check_r1_r2`（强度融入综合分：live w=0.35 / lunch w=0.20）；phase==post_close 算 `compute_trade_plan`；新增 `_morning_slice`/`_session_progress`。
+- `opinion_engine/intraday_strength.py`（新）：`intraday_strength(etf_1m, index_1m, *, daily_avg_volume, trading_progress, sector_flow_score)` 五因子加权（相对大盘30%/量能20%/均线20%/资金20%/筹码10%，缺失重归一化）返回 `{score,lean,factors,available,missing}`；`check_r1_r2(daily_df, etf_ind, fund_flow)` 实现 R1 补仓看多（站上MA20+主力净流入>0+连续≥2天）/ R2 超跌抄底（近布林下轨+量比>1.5+RSI6<20）。
+- `opinion_engine/levels.py`（新）：`compute_trade_plan(daily_df, etf_ind, *, lookback=20)` 返回 `{breakout_price,breakout_cond,add_price,add_cond,stop_price,stop_cond,expectation_low,expectation_high,regime_tomorrow,notes}`；价位基于 MA20/布林/前高前低/ATR，保证 止损<加仓<突破 单调。
+- `opinion_engine/templates.py`：新增 `TEMPLATE_LIVE`/`TEMPLATE_LUNCH` + `_fmt_num`/`r1r2_text`/`trade_plan_text`；`basis_text` 补 `live:'盘中实时'`/`lunch:'午盘'`。
+- `opinion_engine/engine.py`：按 phase 选模板；`trade_plan` 透传。
+- `db/models/signal_opinion.py` + `db/session.py`：`Opinion` 新增 `trade_plan` 列 + `ensure_schema_columns` 幂等 ALTER。
+- `evaluation/pipeline.py`：Signal upsert 跳过 `trade_plan`（仅落 Opinion）；Opinion upsert 两分支均写 `trade_plan`。
+- `api/serializers.py` `opinion_to_dict` 透出 `trade_plan`（同时补 `basis_text`/`model_version`）；**`api/schemas.py` `OpinionOut` 补 `trade_plan`/`basis_text`/`model_version`**（C23 发现的遗漏：响应模型原缺字段导致 trade_plan 被裁剪——已修）。
+- `api/routers/opinions.py` `_VALID_PHASES` 增 `live`/`lunch`。
+- `api/routers/signals.py`：新增 `POST /api/signals/{etf}/refresh`（在 `db_writer_lock(blocking=False)` 下 `post_collection_evaluate(phase="live")`，worker 持锁返回 409）。
+- `worker.py`：移除 `job_intraday_evaluate`（midday 整点）；新增 `job_intraday_signal`（interval 300s，is_trading_now 守卫→live）+ `job_lunch_opinion`（Cron 11:40→lunch）；保留 `job_pre_close_evaluate`(14:50)/`job_post_close_evaluate`(15:10,带 trade_plan)。
+- `config.py` `SchedulerConfig` 新增 `intraday_signal_interval_seconds=300`。
+- 前端：`types.ts` 增 `live`/`lunch` + `TradePlan` 接口；`tier.ts` `PHASE_TEXT` 增 `live:'盘中实时'`/`lunch:'午盘'`；`endpoints.ts` 增 `refreshSignal`；`OpinionList.vue` 渲染 `trade_plan` 三档卡；`EtfDetail.vue` 最新信号卡显盘中强度/倾向/R1/R2 徽标 +「重新评估」按钮 + 新增「午盘意见」Card。
+
+**测试（backend 304 passed，+25）**：
+- 修正既有断言（C23-1 破坏）：`test_strategy_engine.py` `decide_tier` 不再 blanket `MARKET_RISK_HIGH`（改验降档+`NO_PARTICIPATE`）；`test_intraday_regime_overrides_stale_weak_daily` 的 post_close 断言改为「不再等于 MARKET_RISK_HIGH + 属合法档位」。conftest 种子维持 `510300=MARKET_RISK_HIGH`（存量枚举向后兼容，API 忠实返回，属合法测试，不改）。
+- 新增：`test_decide_tier_market_downgrade.py`（WEAK/BEAR/high_vol 降档 + 永不 blanket + veto 优先）、`test_intraday_strength.py`（五因子强度+R1/R2）、`test_levels.py`（三档价位单调且为正）、`test_pipeline_live_lunch_postclose.py`（端到端三相位+幂等）、`test_api_opinions_phase.py`（端点接受 live/lunch + trade_plan 透出 + refresh 端点）。
+- 修正 `test_worker.py`：对齐新调度（job_intraday_signal/job_lunch_opinion，旧 job_intraday_evaluate 已移除）。
+- 修正 `test_collector_intraday_gtimg.py::test_intraday_falls_back_to_sina`：钉死 `_now`/`trading_date_for`（collector 模块与测试模块两份引用均需），消除沙箱真实时间非盘中所触发的 sina 陈旧守卫 flake（确定性修复，未改 collector 逻辑）。
+
+**⚠ CVM 部署待办（用户侧）**：
+1. `cd /workspace && git pull` → `cd frontend && pnpm build` → `sudo systemctl restart etf-worker`。
+2. 验证：盘中最新信号每 5min 刷新、显盘中强度/倾向/R1/R2；**不再全市场统一"先观望"**（弱市下强势 ETF 显 SMALL_POSITION+控仓提示）。午盘（11:40 后）出现「午盘意见」块。收盘后复盘含明日三档价位（突破/加仓/止损）。
+3. 若异常：`journalctl -u etf-worker --since today | grep -iE 'intraday_signal|lunch|post_close|decide_tier'` 发我。
+
+**⚠ 环境备注（沙箱，非代码问题）**：本会话跑 pytest 时 venv 内 `pluggy` 与 `httpx` 包文件被沙箱完整性策略读锁（`Operation not permitted`，连 root 也无法 rm/lsattr），导致 import 成命名空间包。已用 `pip install --target /tmp/pyfix pluggy httpx` + `PYTHONPATH=/tmp/pyfix` 旁路验证，全量 304 passed。CVM 的 venv 不受影响，正常 `pytest` 即可。

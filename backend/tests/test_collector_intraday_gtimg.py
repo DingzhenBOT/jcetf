@@ -121,8 +121,21 @@ def test_intraday_prefers_gtimg(tmp_path):
         assert etf[0].close == 4.70
 
 
-def test_intraday_falls_back_to_sina(tmp_path):
+def test_intraday_falls_back_to_sina(tmp_path, monkeypatch):
     s, eng = _setup(tmp_path)
+    # 钉死时钟与交易日，避免沙箱真实时间非盘中触发 sina 陈旧守卫（确定性，与
+    # test_intraday_sina_fresh_accepted 一致）。sina 数据在 09:30/09:31 北京时，
+    # 故把 now 钉成 ~09:35 北京时（UTC 01:35），落后约 4 分钟通过新鲜度守卫。
+    # 注意：trading_date_for 在 collector 模块与测试模块（`_intraday_df` 所用）各引用一份，
+    # 需同时钉死，否则 sina 数据按真实日期 2026-07-30 生成、被 normalize 按 2026-07-29 过滤为空。
+    import sys
+    from datetime import date as _date
+
+    TD = _date(2026, 7, 29)
+    NOW = datetime(2026, 7, 29, 1, 35, 0)  # UTC = 09:35 北京（盘中，贴近 sina 数据时刻）
+    monkeypatch.setattr(Collector, "_now", lambda self: NOW)
+    monkeypatch.setattr("app.collector.collector.trading_date_for", lambda *a, **k: TD)
+    monkeypatch.setattr(sys.modules[__name__], "trading_date_for", lambda *a, **k: TD)
 
     def boom(code, kind):
         raise RuntimeError("simulated gtimg intraday outage")

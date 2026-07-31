@@ -44,8 +44,12 @@ class OpinionOut(BaseModel):
     phase: Optional[str] = None
     title: Optional[str] = None
     content: Optional[str] = None
+    basis_text: Optional[str] = None
     input_summary: Optional[Dict[str, Any]] = None
     template_version: Optional[str] = None
+    model_version: Optional[str] = None
+    # C23：收盘后三档价位（突破/加仓/止损 + 明日预期）随意见透出
+    trade_plan: Optional[Dict[str, Any]] = None
 
 
 class EtfListItem(BaseModel):

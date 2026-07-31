@@ -48,7 +48,66 @@ TEMPLATE_V1: str = (
     "因此建议{position_text}；下次复核：{review_time}。"
 )
 
+# 盘中实时（live）：突出盘中强度/倾向，与「最新信号」合并展示（C23）
+TEMPLATE_LIVE: str = (
+    "{etf}｜盘中实时（强度 {strength}/100 · {lean}）。"
+    "{key_metrics}{r1r2}因此建议{position_text}；下次复核：{review_time}。"
+)
+
+# 午盘观点（lunch）：上午强度 + 下午关注
+TEMPLATE_LUNCH: str = (
+    "{etf}｜午盘观点（上午强度 {strength}/100 · {lean}）。"
+    "{key_metrics}{r1r2}下午关注关键位得失；建议{position_text}。"
+)
+
 TEMPLATE_VERSION = "template-v2"
+
+
+def _fmt_num(x, digits: int = 3) -> str:
+    if x is None:
+        return "—"
+    try:
+        return f"{float(x):.{digits}f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def r1r2_text(supporting: Dict) -> str:
+    """盘中 R1/R2 触发提示（确定性）。"""
+    parts = []
+    if supporting.get("r1_signal"):
+        parts.append("触发 R1 补仓看多信号")
+    if supporting.get("r2_signal"):
+        parts.append("触发 R2 超跌抄底信号")
+    if not parts:
+        return ""
+    return "。".join(parts) + "。"
+
+
+def trade_plan_text(plan: Dict | None) -> str:
+    """收盘后三档价位文案（突破/加仓/止损 + 明日预期）。"""
+    if not plan:
+        return ""
+    segs = []
+    if plan.get("breakout_price") is not None:
+        segs.append(
+            f"明日三档参考：突破 {_fmt_num(plan['breakout_price'])} 上车（{plan.get('breakout_cond', '')}）"
+        )
+    if plan.get("add_price") is not None:
+        segs.append(
+            f"回踩 {_fmt_num(plan['add_price'])} 加仓（{plan.get('add_cond', '')}）"
+        )
+    if plan.get("stop_price") is not None:
+        segs.append(
+            f"跌破 {_fmt_num(plan['stop_price'])} 止损（{plan.get('stop_cond', '')}）"
+        )
+    if plan.get("expectation_low") is not None and plan.get("expectation_high") is not None:
+        segs.append(
+            f"明日预期区间约 {_fmt_num(plan['expectation_low'])}~{_fmt_num(plan['expectation_high'])}（{plan.get('regime_tomorrow', '震荡')}）"
+        )
+    if not segs:
+        return ""
+    return " " + "；".join(segs) + "。"
 
 
 def position_text_of(tier: str, position_range: List[float] | None = None) -> str:
@@ -148,6 +207,8 @@ def basis_text(
         "pre_market": "盘前",
         "midday": "盘中",
         "pre_close": "收盘前",
+        "live": "盘中实时",
+        "lunch": "午盘",
         "post_close": "收盘复盘",
     }.get(phase or "", "")
 

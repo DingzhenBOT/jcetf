@@ -9,7 +9,7 @@ import OpinionList from '@/components/sections/OpinionList.vue'
 import CandlestickChart from '@/components/charts/CandlestickChart.vue'
 import IntradayChart from '@/components/charts/IntradayChart.vue'
 import GaugeChart from '@/components/charts/GaugeChart.vue'
-import { getEtfs, getOpinions, getSignalsHistory, getEtfHistory, getIntraday } from '@/api/endpoints'
+import { getEtfs, getOpinions, getSignalsHistory, getEtfHistory, getIntraday, refreshSignal } from '@/api/endpoints'
 import type { EtfHistory, EtfListItem, Intraday, Opinion, Signal } from '@/api/types'
 import { TIER_BADGE, TIER_BORDER, regimeText, phaseText, isIntradayPhase } from '@/lib/tier'
 import { fmtConfidence, confidenceLevel } from '@/lib/format'
@@ -109,6 +109,41 @@ const intradayOpinions = computed<Opinion[]>(() =>
 const postCloseOpinions = computed<Opinion[]>(() =>
   opinions.value.filter((o) => o.phase === 'post_close'),
 )
+// 午盘意见（lunch 阶段，C23）
+const lunchOpinions = computed<Opinion[]>(() =>
+  opinions.value.filter((o) => o.phase === 'lunch'),
+)
+
+// 最新信号（live）的盘中强度/倾向（来自 Signal.supporting_metrics，C23）
+const liveStrength = computed(() => {
+  const sm = etf.value?.latest_signal?.supporting_metrics as Record<string, any> | undefined
+  if (!sm) return null
+  const score = sm.intraday_strength
+  const lean = sm.intraday_lean
+  if (score == null && !lean) return null
+  return {
+    score: typeof score === 'number' ? score : null,
+    lean: typeof lean === 'string' ? lean : null,
+    r1: !!sm.r1_signal,
+    r2: !!sm.r2_signal,
+  }
+})
+
+// 「重新评估」按钮：按需重算盘中实时信号（C23）
+const refreshing = ref(false)
+const refreshError = ref<string | null>(null)
+async function onRefresh(): Promise<void> {
+  refreshing.value = true
+  refreshError.value = null
+  try {
+    await refreshSignal(code.value)
+    await fetchCore()
+  } catch (e) {
+    refreshError.value = e instanceof Error ? e.message : '刷新失败'
+  } finally {
+    refreshing.value = false
+  }
+}
 // 主建议：优先最新盘中意见；若无盘中意见则回退到任意最新意见（可能已是收盘后）。
 const primaryOpinion = computed<Opinion | null>(() => {
   if (intradayOpinions.value.length) return intradayOpinions.value[0]
@@ -304,12 +339,32 @@ const signalStaleText = computed(() => {
           <div v-if="etf.latest_signal.suggested_action" class="mt-3 text-sm text-slate-600">
             {{ etf.latest_signal.suggested_action }}
           </div>
+          <!-- 盘中强度/倾向（C23：live 相位信号带出） -->
+          <div v-if="liveStrength" class="mt-3 flex flex-wrap items-center gap-2 text-xs">
+            <span class="rounded-full bg-indigo-50 px-2 py-0.5 text-indigo-600">盘中强度 {{ liveStrength.score ?? '—' }}/100</span>
+            <span v-if="liveStrength.lean" class="rounded-full bg-slate-100 px-2 py-0.5 text-slate-600">倾向：{{ liveStrength.lean }}</span>
+            <span v-if="liveStrength.r1" class="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-600">R1 补仓看多</span>
+            <span v-if="liveStrength.r2" class="rounded-full bg-sky-50 px-2 py-0.5 text-sky-600">R2 超跌抄底</span>
+          </div>
           <!-- 数据不足提示 -->
           <div
             v-if="missingRules.length"
             class="mt-3 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2"
           >
             部分数据缺失（{{ missingRules.join('、') }}），当前为观察期数据，信号置信度已降级。
+          </div>
+          <!-- 重新评估（C23：盘中即时按需重算） -->
+          <div class="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              :disabled="refreshing"
+              class="text-xs px-2.5 py-1 rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              @click="onRefresh"
+            >
+              {{ refreshing ? '评估中…' : '重新评估' }}
+            </button>
+            <span v-if="refreshError" class="text-xs text-rose-500">{{ refreshError }}</span>
+            <span v-else class="text-xs text-slate-400">盘中每 5 分钟自动更新</span>
           </div>
         </Card>
         <div v-else class="text-sm text-slate-400 py-4">该 ETF 暂无信号。</div>
@@ -323,6 +378,18 @@ const signalStaleText = computed(() => {
             empty-text="暂无盘中意见"
           >
             <OpinionList :opinions="intradayOpinions" />
+          </StatePanel>
+        </Card>
+
+        <!-- 午盘意见（lunch 阶段，C23：午休后生成，可留历史） -->
+        <Card class="mt-4" :title="`午盘意见（${lunchOpinions.length}）`">
+          <StatePanel
+            :loading="false"
+            :error="null"
+            :empty="lunchOpinions.length === 0"
+            empty-text="暂无午盘意见（交易日 11:40 后生成）"
+          >
+            <OpinionList :opinions="lunchOpinions" />
           </StatePanel>
         </Card>
 

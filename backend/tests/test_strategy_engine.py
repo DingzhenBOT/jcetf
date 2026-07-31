@@ -81,9 +81,14 @@ def test_tier_no_chase_high_priority():
     assert t == "NO_CHASE_HIGH"
 
 
-def test_tier_market_risk_high():
+def test_tier_bear_high_vol_downgraded_not_blanket():
+    # C23 修复回归：市场 BEAR + 高波动 不再一票否决 blanket MARKET_RISK_HIGH，
+    # 而是对综合分降档（80 -> 80-18-5=57 -> 无资金/RS 支撑 -> NO_PARTICIPATE）。
+    # 核心断言：decide_tier 永不再产出 MARKET_RISK_HIGH。
     t = decide_tier(80, "BEAR", _risk(high_vol=True), None, None, TH)
-    assert t == "MARKET_RISK_HIGH"
+    assert t != "MARKET_RISK_HIGH"
+    assert t == "NO_PARTICIPATE"
+    assert t in TIERS
 
 
 def test_tier_veto_priority():
@@ -526,7 +531,10 @@ def test_intraday_regime_overrides_stale_weak_daily(tmp_path, monkeypatch):
 
     # 日线 regime 确为 WEAK（post_close 阶段沿用日线）
     assert res_post["market_regime"] == "WEAK"
-    assert res_post["signal_type"] == "MARKET_RISK_HIGH"
+    # C23 修复回归：弱市下不再 blanket MARKET_RISK_HIGH，而是降档到合理档位
+    # （个股层面分析不被丢弃）。核心：signal_type 不再等于 MARKET_RISK_HIGH。
+    assert res_post["signal_type"] != "MARKET_RISK_HIGH"
+    assert res_post["signal_type"] in POSITION_RANGE
     # 盘中阶段：实时指数上涨 -> regime 抬升，不再强制 MARKET_RISK_HIGH
     assert res_midday["market_regime"] != "WEAK"
     assert res_midday["signal_type"] != "MARKET_RISK_HIGH"

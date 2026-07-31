@@ -59,6 +59,7 @@ class Opinion(Base):
     basis_text: Mapped[str | None] = mapped_column(Text)  # 专业「分析依据」叙述（由 supporting_metrics 算法生成，前端「查看依据」渲染）
     template_version: Mapped[str | None] = mapped_column(String(32), default="template-v1")
     model_version: Mapped[str | None] = mapped_column(String(32))  # 预留（真实 LLM 时填）
+    trade_plan: Mapped[dict | None] = mapped_column(JSON)  # 收盘后三档价位（C23）：突破/加仓/止损 + 明日预期
 
     __table_args__ = (
         Index("idx_opinion_time", "generated_at"),

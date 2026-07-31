@@ -74,7 +74,7 @@ def post_collection_evaluate(
             if existing:
                 s = existing[0]
                 for k, v in sig.items():
-                    if k.startswith("_"):
+                    if k.startswith("_") or k == "trade_plan":  # trade_plan 仅落 Opinion，不入 Signal
                         continue
                     setattr(s, k, v)
                 s.generated_at = utcnow()
@@ -90,7 +90,7 @@ def post_collection_evaluate(
                     trading_date=as_of,
                     target_etf=m.etf_code,
                     phase=phase,
-                    **{k: v for k, v in sig.items() if not k.startswith("_")},
+                    **{k: v for k, v in sig.items() if not k.startswith("_") and k != "trade_plan"},
                 )
                 session.add(s)
                 result["signals_written"] += 1
@@ -122,6 +122,7 @@ def post_collection_evaluate(
                 o.input_summary = input_summary
                 o.template_version = opin["template_version"]
                 o.model_version = opin["model_version"]
+                o.trade_plan = opin.get("trade_plan")
                 result["opinions_updated"] += 1
             else:
                 o = Opinion(
@@ -136,6 +137,7 @@ def post_collection_evaluate(
                     input_summary=input_summary,
                     template_version=opin["template_version"],
                     model_version=opin["model_version"],
+                    trade_plan=opin.get("trade_plan"),
                 )
                 session.add(o)
                 result["opinions_written"] += 1

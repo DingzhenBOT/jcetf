@@ -61,6 +61,7 @@ def opinion_to_dict(o: Opinion) -> Dict[str, Any]:
         "basis_text": o.basis_text,
         "input_summary": o.input_summary,
         "template_version": o.template_version,
+        "trade_plan": o.trade_plan,
     }
 
 

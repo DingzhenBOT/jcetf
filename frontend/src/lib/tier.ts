@@ -85,6 +85,8 @@ export const PHASE_TEXT: Record<string, string> = {
   pre_market: '盘前',
   midday: '午间',
   pre_close: '收盘前',
+  live: '盘中实时',
+  lunch: '午盘',
   post_close: '收盘复盘',
 }
 

@@ -32,6 +32,11 @@ function summaryLines(o: Opinion): string[] {
     return `${k}：${val}`
   })
 }
+
+function fmtPrice(x: number | null | undefined): string {
+  if (x == null) return '—'
+  return x.toFixed(3)
+}
 </script>
 
 <template>
@@ -52,6 +57,40 @@ function summaryLines(o: Opinion): string[] {
         <p class="mt-1 whitespace-pre-line text-sm leading-relaxed text-slate-600">
           {{ o.content ?? '（无内容）' }}
         </p>
+        <!-- 收盘后三档价位（C23）：突破/加仓/止损 + 明日预期 -->
+        <div v-if="o.trade_plan" class="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2.5">
+          <div class="mb-1.5 text-xs font-medium text-slate-500">明日三档操作参考</div>
+          <div class="grid grid-cols-1 gap-1.5 text-xs">
+            <div v-if="o.trade_plan.breakout_price != null" class="flex items-center justify-between gap-2">
+              <span class="shrink-0 text-rose-600">突破上车</span>
+              <span class="tnum text-right font-semibold text-slate-700">
+                {{ fmtPrice(o.trade_plan.breakout_price) }}
+                <span class="font-normal text-slate-400">· {{ o.trade_plan.breakout_cond }}</span>
+              </span>
+            </div>
+            <div v-if="o.trade_plan.add_price != null" class="flex items-center justify-between gap-2">
+              <span class="shrink-0 text-emerald-600">回踩加仓</span>
+              <span class="tnum text-right font-semibold text-slate-700">
+                {{ fmtPrice(o.trade_plan.add_price) }}
+                <span class="font-normal text-slate-400">· {{ o.trade_plan.add_cond }}</span>
+              </span>
+            </div>
+            <div v-if="o.trade_plan.stop_price != null" class="flex items-center justify-between gap-2">
+              <span class="shrink-0 text-amber-600">跌破止损</span>
+              <span class="tnum text-right font-semibold text-slate-700">
+                {{ fmtPrice(o.trade_plan.stop_price) }}
+                <span class="font-normal text-slate-400">· {{ o.trade_plan.stop_cond }}</span>
+              </span>
+            </div>
+            <div v-if="o.trade_plan.expectation_low != null && o.trade_plan.expectation_high != null" class="flex items-center justify-between gap-2">
+              <span class="shrink-0 text-slate-500">明日预期区间</span>
+              <span class="tnum text-right text-slate-700">
+                {{ fmtPrice(o.trade_plan.expectation_low) }} ~ {{ fmtPrice(o.trade_plan.expectation_high) }}
+                <span class="font-normal text-slate-400">· {{ o.trade_plan.regime_tomorrow }}</span>
+              </span>
+            </div>
+          </div>
+        </div>
         <details v-if="o.basis_text || summaryLines(o).length" class="group mt-2">
           <summary class="cursor-pointer text-xs text-slate-400 hover:text-slate-600">查看依据</summary>
           <p v-if="o.basis_text" class="mt-1.5 whitespace-pre-line border-l border-slate-200 pl-3 text-xs leading-relaxed text-slate-600">

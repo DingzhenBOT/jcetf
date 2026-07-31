@@ -126,6 +126,9 @@ def ensure_schema_columns(engine: Engine) -> None:
     # 规避快照采集 180s 与 1m 采样 60s 频率错配导致的成交量漏计/重复）
     add_column_if_missing("market_quote", "cum_volume", "FLOAT")
 
+    # opinion.trade_plan（C23：收盘后三档价位突破/加仓/止损 + 明日预期，JSON）
+    add_column_if_missing("opinion", "trade_plan", "TEXT")
+
 
 def _seed_strategy_version(engine: Engine, settings: Settings) -> None:
     from app.db.models.mapping import StrategyVersion

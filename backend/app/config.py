@@ -103,6 +103,7 @@ class SchedulerConfig(BaseModel):
     enabled: bool = True
     intraday_interval_seconds: int = 180
     intraday_minute_interval_seconds: int = 60  # 盘中分时(1分钟)采集间隔
+    intraday_signal_interval_seconds: int = 300  # 盘中实时信号(最新信号)重算间隔（C23：每 5 分钟）
     pre_close_interval_seconds: int = 60
     # 板块异动（腾讯自选股 westock-data，npx 较慢）低频采集间隔；is_trading_now 守卫。
     sector_westock_interval_seconds: int = 900

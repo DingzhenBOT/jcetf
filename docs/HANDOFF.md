@@ -49,6 +49,7 @@
 - C21（2026-07-29，用户复核）：① 盘中分时轴**改回连续**（回退 C20 午休断点，同花顺风格 11:30 直连 13:00，`connectNulls:true`）；② 用户称「数据依旧错」——沙箱拉今天真实 gtimg 端到端验证代码链路正确（涨跌幅/VWAP 均对），判定是 C20 午休断点视觉误导，连成后消失；为防 CVM 上 gtimg 偶败回退陈旧 sina，后端 `_intraday_rows_fresh` 新增**盘中滞后**守卫（仅盘中、落后>120min 拒，守「不误杀同日早前分钟」原则）。
 - C22（2026-07-30，用户日志实锤，纠正 C21「视觉误导」误判）：CVM 上 `web.ifzq.gtimg.cn` 分时接口**超时失败**、回退 sina 又对指数用错代码 `sz000300` 返回空 → 分时**真实错误**（归零/断层/不连续），非视觉。主源从「web.ifzq + sina」改为 **qt.gtimg.cn 实时快照(`fetch_realtime`，CVM 稳定)批量转 1m BAR**：最新价作 close，增量=`当日累计成交量 − 上一根1m BAR的cum_volume`（新增 `market_quote.cum_volume` 列；以 BAR 累计为基准规避快照180s/1m采样60s 频率错配的漏计）；未覆盖标的才回退 web.ifzq→sina。`get_bar_history` 源优先级 `gtimg` 提最高(0)，残留 sina 脏数据须让 gtimg 胜出。新增 `quote_repo.get_latest_1m_bars`。前端连续轴沿用 C21 无需改。
 - 测试：backend 279 passed（C21 +1、C22 +6，共 +7）；前端 pnpm build 通过（C21 已 build）。
+- C23（2026-07-30，用户三大意见板块重做 + 修复"最新信号千篇一律先观望"）：`decide_tier` 移除硬闸门（市场弱降档而非一票否决，仅 `BEAR+缺失` veto 仍 `NO_PARTICIPATE`）；盘中意见并入「最新信号」（每 5min，`live` 相位，五因子盘中强度 + R1/R2）；新增午盘意见（`lunch`，11:40）；收盘后复盘（`post_close`，确定性三档价位 突破/加仓/止损 + 明日预期）。算法确定性编码三套 skill 方法论（持仓监控告警 / A股每日复盘 / A股短线交易），无 LLM。新增 `intraday_strength.py`/`levels.py`；`Opinion.trade_plan` 列；`POST /api/signals/{etf}/refresh` 按需重算。详见 devlog C23。**backend 304 passed（C23 +25）**。
 
 【待办 / 续作（按优先级）】
 1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。~~**Task A（SNAPSHOT 切腾讯财经 qt.gtimg.cn，已落地 2026-07-25）**~~：gtimg 已注入 `collect_market` 作盘中实时快照附加源，`get_latest_snapshot_change_map` 跨源取 max(timestamp) 命中 gtimg → P1 现在 CVM 真正随实时行情更新。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。
@@ -72,7 +73,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 后端 | FastAPI + SQLite(WAL)，279 测试通过（C22 后） |
+| 后端 | FastAPI + SQLite(WAL)，304 测试通过（C23 后） |
 | 前端 | Vue3 + ECharts，pnpm build 通过（连续轴 C21 已 build） |
 | 数据源 | 平安已弃用；**东财 em 已于 C14 弃用（preferred=sina）**；腾讯自选股 + 盈米 + 东财新闻 + gtimg(A股+美股，盘中分时主源 C22 起为 qt.gtimg.cn 实时快照转 1m) + NeoData(agent侧) |
 | 远程仓库 | github.com/DingzhenBOT/jcetf.git，main（最新提交 **`13ce497`**（C22）；本仓库 main 即远程最新） |
@@ -108,7 +109,22 @@
 - `frontend/src/components/IndexDrawer.vue` —— 大盘抽屉「当日分时 / 日K线」Tab（默认分时）
 - `frontend/src/views/EtfDetail.vue` —— 结论 Hero 盘中优先 + 阶段/时间标注；意见拆「盘中意见」/「收盘后复盘」
 - `frontend/src/lib/tier.ts` —— `phaseText` / `isIntradayPhase`
-- `docs/devlog.md` —— 全量开发日志（C0–C12 章节）
+- `docs/devlog.md` —— 全量开发日志（C0–C23 章节）
+
+### 三(续). C23 关键文件（三大意见板块重做 + 修复千篇一律观望）
+- `backend/app/strategy_engine/engine.py` —— **`decide_tier` 降档修正（C23 核心）**：`BEAR`−18 / `WEAK`−10 / `high_vol`−5（可叠加），仅 `BEAR+缺失` veto 仍 `NO_PARTICIPATE`；`MARKET_RISK_HIGH` 枚举保留向后兼容但不再产出；`evaluate_etf` 5.5 段接入 `intraday_strength`/`check_r1_r2`/`compute_trade_plan`，`supporting_metrics` 增盘中强度/R1/R2，`trade_plan` 透出。
+- `backend/app/opinion_engine/intraday_strength.py` —— **（新）** `intraday_strength(etf_1m, index_1m, …)` 五因子盘中强度 0–100（相对大盘30%/量能20%/均线20%/资金20%/筹码10%，含 lean/factors/missing）+ `check_r1_r2(daily_df, etf_ind, fund_flow)`（R1 补仓看多 / R2 超跌抄底）。
+- `backend/app/opinion_engine/levels.py` —— **（新）** `compute_trade_plan(daily_df, etf_ind, lookback=20)` 确定性三档价位（突破/加仓/止损 单调且 >0）+ 明日预期 regime。
+- `backend/app/opinion_engine/templates.py` —— `TEMPLATE_LIVE` / `TEMPLATE_LUNCH` + `_fmt_num` / `r1r2_text` / `trade_plan_text`；`basis_text` 补 `live:'盘中实时'` / `lunch:'午盘'`。
+- `backend/app/opinion_engine/engine.py` —— 按 `phase` 选模板；`trade_plan` 透传。
+- `backend/app/db/models/signal_opinion.py` + `db/session.py` —— `Opinion.trade_plan` 列 + 幂等 ALTER 补列。
+- `backend/app/evaluation/pipeline.py` —— Signal upsert 跳过 `trade_plan`；Opinion upsert 双分支写 `trade_plan`。
+- `backend/app/api/routers/schemas.py` + `serializers.py` —— `OpinionOut` 补 `trade_plan`/`basis_text`/`model_version`（修复响应裁剪）。
+- `backend/app/api/routers/signals.py` —— **`POST /api/signals/{etf}/refresh`**（db_writer_lock 下 `post_collection_evaluate(phase="live")`，持锁返回 409），供前端「重新评估」按需重算盘中信号。
+- `backend/app/api/routers/opinions.py` —— `_VALID_PHASES` 增 `live` / `lunch`。
+- `backend/app/worker.py` —— 移除旧 `job_intraday_evaluate`；新增 `job_intraday_signal`（IntervalTrigger 300s，`is_trading_now` 守卫→`live`）+ `job_lunch_opinion`（Cron 11:40→`lunch`）；`build_scheduler` 注册。
+- `backend/app/config.py` —— `SchedulerConfig.intraday_signal_interval_seconds: int = 300`。
+- `frontend/src/components/sections/OpinionList.vue` —— 渲染 `trade_plan`；`frontend/src/views/EtfDetail.vue` 盘中强度/倾向/R1/R2 徽标 + 「重新评估」按钮 + 「午盘意见」Card；`frontend/src/api/{types,endpoints}.ts` 增 `live`/`lunch`+`TradePlan`/`refreshSignal`。
 - `DESIGN.md` —— 设计系统规范（9 章节）
 
 ## 四、关键约束提醒（踩坑经验）
@@ -244,3 +260,42 @@
 2. `journalctl -u etf-worker --since today | grep -iE 'intraday'` 应只见 `intraday snapshot->1m` 类正常日志，不再有 `intraday gtimg failed, fallback sina` / `sina sz000300 returned empty` / `maximum number of running instances reached`。
 3. 验证：ETF/指数分时图连续无断层、涨跌幅正确（如沪深300 当日 +1.42% 正常显示，不再归零），分时均价(VWAP) 平滑。
 4. 若仍有异常：把 `journalctl -u etf-worker --since today` 全文发 agent，重点看 `intraday gtimg snapshot->1m failed` 是否偶发（快照批量超时则回退次源，属预期降级）。
+
+---
+
+## V. C23 · ETF 详情页三大意见板块重做 + 修复"最新信号千篇一律先观望"（2026-07-30）
+
+> 用户核心诉求：ETF 详情页三大意见板块重做，并修复"最新信号又都是统一的'市场风险大，先观望'"的算法缺陷。
+> 决策（已确认）：① 盘中即时意见**并入「最新信号」**（盘中每 5min 高频自动重算，无独立块）；② 午盘意见每日 11:40 一块，可留历史；③ 收盘后复盘给近几日+今日情况 + 明日预期（突破X上车/跌X加仓/跌破Y止损，确定性价位）；④ 算法用**确定性规则编码三套股市 skill 方法论（持仓监控告警 / A股每日复盘 / A股短线交易），无 LLM**。
+
+**根因（决定性，C23 核心修复）**：`strategy_engine/engine.py::decide_tier` 存在**硬闸门缺陷**——当 `regime ∈ {WEAK, BEAR}` 时一律强制 `MARKET_RISK_HIGH`（"市场风险大，先观望"），等于一票否决所有细分信号。结合 C16/P4 落地后，绝大多数 ETF 在某档市场环境下都被压成同一个"先观望"，与用户看到的"千篇一律"完全吻合。
+
+**修复（decide_tier 降档而非否决）**：
+- `BEAR` 综合分 −18、`WEAK` −10、`high_vol` −5（可叠加），把市场偏弱从"否决"改为"降档"。
+- 仅 `veto`（`BEAR` + 数据缺失）仍 `NO_PARTICIPATE`，保留真正的风控底线。
+- 枚举 `MARKET_RISK_HIGH` 保留**向后兼容**（`strategy_engine/engine.py:46` POSITION_RANGE + `templates.py` 文案），但 `decide_tier` 不再产出它（存量数据是持久化旧值，API 忠实返回属合法）。
+
+**三板块相位模型 + 确定性算法落点**：
+
+| 板块 | 相位 phase | 触发 | 核心算法 | 落点 |
+|---|---|---|---|---|
+| 盘中即时意见（并入最新信号） | `live` | 盘中每 5min 高频重算 | 五因子盘中强度（相对大盘30%/量能20%/均线20%/资金20%/筹码10%，0–100）+ R1补仓看多/R2超跌抄底 | `opinion_engine/intraday_strength.py` (`intraday_strength` + `check_r1_r2`) |
+| 午盘意见 | `lunch` | 每日 11:40 一块，留历史 | 午盘快照 + 日线形态 | `worker.py::job_lunch_opinion` (Cron 11:40) + `templates.py::TEMPLATE_LUNCH` |
+| 收盘后复盘 | `post_close` | 15:10 | 确定性三档价位 突破/加仓/止损 + 明日预期（regime 判定） | `opinion_engine/levels.py` (`compute_trade_plan`) |
+
+- 三档价位**单调约束**：止损 < 加仓 < 突破，且均 >0（`test_levels.py` 回归守护）。
+- `evaluate_etf` 5.5 段接入 `intraday_strength` / `check_r1_r2` / `compute_trade_plan`；`supporting_metrics` 增 `market_caution` / `high_vol_caution` / `intraday_strength` / `intraday_lean` / `intraday_factors` / `r1_signal` / `r2_signal`；返回 dict 增 `trade_plan`。
+- `Opinion.trade_plan` 新增列（`db/models/signal_opinion.py` + `db/session.py` 幂等 ALTER）；`pipeline.py` Signal upsert 跳过该列、Opinion upsert 双分支写入；`schemas.py::OpinionOut` 补 `trade_plan` / `basis_text` / `model_version`（修复 `KeyError: 'trade_plan'` 响应被裁剪）。
+- `POST /api/signals/{etf}/refresh`（`api/routers/signals.py`，`db_writer_lock` 下 `post_collection_evaluate(phase="live")`，持锁返回 409）供前端「重新评估」按钮按需重算盘中信号。
+- 调度：`worker.py` 移除旧 `job_intraday_evaluate`，新增 `job_intraday_signal`（IntervalTrigger 300s，仅 `is_trading_now` 守卫→`live`）+ `job_lunch_opinion`（Cron 11:40→`lunch`）；`config.py::SchedulerConfig.intraday_signal_interval_seconds=300`。
+
+**前端**：`types.ts` 增 `live`/`lunch` + `TradePlan`；`tier.ts` PHASE_TEXT 增；`endpoints.ts` 增 `refreshSignal`；`OpinionList.vue` 渲染 `trade_plan`；`EtfDetail.vue` 盘中强度/倾向/R1/R2 徽标 + 「重新评估」按钮 + 「午盘意见」Card。
+
+**测试**：backend **304 passed**（C22 为 279，C23 **+25**）：`test_decide_tier_market_downgrade`（降档非否决/遍历 regime×high_vol 永不 blanket/veto 优先）、`test_intraday_strength`（上涨看多/下跌看空/缺指数跳过相对因子/R1/R2 触发）、`test_levels`（三档单调+正/数据不足返回 None/下行 regime）、`test_pipeline_live_lunch_postclose`（三相位产出+幂等）、`test_api_opinions_phase`（live/lunch 200、非法 422、未知 ETF 404、trade_plan 透出、refresh 200/409）、`test_worker`（C23 调度作业对齐）、`test_strategy_engine` + `test_collector_intraday_gtimg` 适配修正。前端 `pnpm build` 通过。
+
+**⚠ CVM 部署待办（用户侧）**：
+1. `cd /workspace && git pull` → `cd frontend && pnpm build`（前端改动需重建覆盖 Nginx dist）→ `sudo systemctl restart etf-worker`（后端调度/评估改动需重启 worker 生效）。
+2. 验证盘中（每 5min）：ETF 详情页「最新信号」应随盘中强度分化（看多/看空/中性各不相同），**不再全场统一"先观望"**；强度徽标 + R1/R2 标识按实时行情变化。
+3. 验证午盘：11:40 后详情页出现「午盘意见」Card（可留历史，非覆盖）。
+4. 验证收盘后（15:10）：复盘意见含**确定性三档价位**（突破X上车 / 跌X加仓 / 跌破Y止损，价位单调 止损<加仓<突破 且 >0）+ 明日预期。
+5. 沙箱 venv 读锁备注：本沙箱 `pluggy`/`httpx` 包文件被完整性策略读锁，跑测试需 `PYTHONPATH=/tmp/pyfix`（见 devlog C23）；**CVM 不受影响**，正常 `./venv/bin/python -m pytest -q` 即可。

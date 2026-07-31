@@ -25,6 +25,8 @@ export type OpinionPhase =
   | 'midday'
   | 'pre_close'
   | 'post_close'
+  | 'live' // 盘中实时（最新信号，C23）
+  | 'lunch' // 午盘意见（C23）
   | null
 
 export interface IndexSnapshot {
@@ -144,6 +146,20 @@ export interface SignalHistoryPage {
   offset: number
 }
 
+// 收盘后三档价位（C23）：突破/加仓/止损 + 明日预期
+export interface TradePlan {
+  breakout_price?: number | null
+  breakout_cond?: string
+  add_price?: number | null
+  add_cond?: string
+  stop_price?: number | null
+  stop_cond?: string
+  expectation_low?: number | null
+  expectation_high?: number | null
+  regime_tomorrow?: string
+  notes?: string[]
+}
+
 export interface Opinion {
   opinion_id: string
   signal_id?: string | null
@@ -155,6 +171,7 @@ export interface Opinion {
   basis_text?: string | null
   input_summary?: Record<string, unknown> | null
   template_version?: string | null
+  trade_plan?: TradePlan | null
 }
 
 export interface OpinionsForEtf {

@@ -1,74 +1,102 @@
-"""worker 调度测试：盘中每小时 midday 评估 + 收盘前 14:50（替代 14:59）。
+"""worker 调度测试（P3，C23 调度模型）。
 
-- build_scheduler 注册 intraday_evaluate（hour=10,11,13,14 / minute=0）与 pre_close_evaluate（14:50）。
-- job_intraday_evaluate 在非交易日跳过、交易日调用 post_collection_evaluate(phase="midday")。
+C23 调度：
+- job_intraday_signal（interval 300s，is_trading_now 守卫 -> phase="live"，即「最新信号」盘中即时判断）。
+- job_lunch_opinion（Cron 11:40，is_trading_day 守卫 -> phase="lunch"，午盘意见，可留历史）。
+- job_pre_close_evaluate（Cron 14:50 -> pre_close）、job_post_close_evaluate（Cron 15:10 -> post_close）。
+- 旧 job_intraday_evaluate（midday 整点）已移除，由 job_intraday_signal 取代。
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
 from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 
-@contextmanager
-def _fake_scope(eng):
-    yield MagicMock()
-
-
-def test_build_scheduler_intraday_and_preclose_times():
+def test_build_scheduler_registers_c23_jobs():
     from app.config import get_settings
     from app.worker import build_scheduler
 
     sched = build_scheduler(get_settings())
-    jobs = {j.id: j for j in sched.get_jobs()}
-    assert "intraday_evaluate" in jobs
-    assert "pre_close_evaluate" in jobs
+    ids = {j.id for j in sched.get_jobs()}
+    for jid in ("intraday_signal", "lunch_opinion", "pre_close_evaluate", "post_close_evaluate"):
+        assert jid in ids, jid
 
-    intraday = repr(jobs["intraday_evaluate"].trigger)
-    assert "hour='10,11,13,14'" in intraday
-    assert "minute='0'" in intraday
+    # 盘中实时信号：interval 300s（5 分钟）
+    intraday = sched.get_job("intraday_signal")
+    assert isinstance(intraday.trigger, IntervalTrigger)
+    assert "seconds=300" in repr(intraday.trigger)
 
-    preclose = repr(jobs["pre_close_evaluate"].trigger)
-    assert "hour='14'" in preclose
-    assert "minute='50'" in preclose
+    # 午盘意见：Cron 11:40
+    lunch = sched.get_job("lunch_opinion")
+    assert isinstance(lunch.trigger, CronTrigger)
+    assert "hour='11'" in repr(lunch.trigger)
+    assert "minute='40'" in repr(lunch.trigger)
+
+    # 收盘前/收盘后评估
+    pre = sched.get_job("pre_close_evaluate")
+    assert isinstance(pre.trigger, CronTrigger)
+    assert "hour='14'" in repr(pre.trigger) and "minute='50'" in repr(pre.trigger)
+    post = sched.get_job("post_close_evaluate")
+    assert isinstance(post.trigger, CronTrigger)
+    assert "hour='15'" in repr(post.trigger)
 
 
-def test_job_intraday_evaluate_calls_pipeline_midday(monkeypatch):
+def _patch_run(monkeypatch, w, captured):
+    """绕过写锁/真实 session：直接以 mock session 调用 pipeline，并记录 phase。"""
+    def _wrap(session, settings, *, phase, as_of=None):
+        captured["phase"] = phase
+        return {"phase": phase}
+    monkeypatch.setattr(w, "post_collection_evaluate", _wrap)
+    monkeypatch.setattr(
+        w, "run_write_job",
+        lambda name, fn, engine, *a, **k: fn(MagicMock(), *a, **k),
+    )
+
+
+def test_job_intraday_signal_calls_pipeline_live(monkeypatch):
     import app.market_calendar as mc
     import app.worker as w
 
     captured = {}
+    _patch_run(monkeypatch, w, captured)
+    monkeypatch.setattr(mc, "is_trading_now", lambda: True)
 
-    def fake_pipeline(session, settings, *, phase, as_of=None):
-        captured["phase"] = phase
-        return {"phase": phase}
-
-    monkeypatch.setattr(w, "post_collection_evaluate", fake_pipeline)
-    monkeypatch.setattr(w, "session_scope", _fake_scope)
-    monkeypatch.setattr(w, "_engine", lambda: None)
-    monkeypatch.setattr(mc, "is_trading_day", lambda td: True)
-    monkeypatch.setattr(mc, "trading_date_for", lambda: date(2025, 7, 18))
-
-    w.job_intraday_evaluate()
-    assert captured.get("phase") == "midday"
+    w.job_intraday_signal()
+    assert captured.get("phase") == "live"
 
 
-def test_job_intraday_evaluate_skips_non_trading_day(monkeypatch):
+def test_job_intraday_signal_skips_non_trading_time(monkeypatch):
     import app.market_calendar as mc
     import app.worker as w
 
     called = {"n": 0}
 
-    def fake_pipeline(session, settings, *, phase, as_of=None):
+    def _wrap(session, settings, *, phase, as_of=None):
         called["n"] += 1
         return {"phase": phase}
+    monkeypatch.setattr(w, "post_collection_evaluate", _wrap)
+    monkeypatch.setattr(
+        w, "run_write_job",
+        lambda name, fn, engine, *a, **k: fn(MagicMock(), *a, **k),
+    )
+    monkeypatch.setattr(mc, "is_trading_now", lambda: False)
 
-    monkeypatch.setattr(w, "post_collection_evaluate", fake_pipeline)
-    monkeypatch.setattr(w, "session_scope", _fake_scope)
-    monkeypatch.setattr(w, "_engine", lambda: None)
-    monkeypatch.setattr(mc, "is_trading_day", lambda td: False)
-
-    w.job_intraday_evaluate()
+    w.job_intraday_signal()
     assert called["n"] == 0
+
+
+def test_job_lunch_opinion_calls_pipeline_lunch(monkeypatch):
+    import app.market_calendar as mc
+    import app.worker as w
+
+    captured = {}
+    _patch_run(monkeypatch, w, captured)
+    monkeypatch.setattr(mc, "is_trading_day", lambda td: True)
+    monkeypatch.setattr(mc, "trading_date_for", lambda: date(2025, 7, 18))
+
+    w.job_lunch_opinion()
+    assert captured.get("phase") == "lunch"

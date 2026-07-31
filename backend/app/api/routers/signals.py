@@ -8,12 +8,13 @@ from __future__ import annotations
 from datetime import date
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Path, Query
 
 from app.api.deps import get_db
 from app.api.schemas import SignalHistoryPage, SignalOut
 from app.api.serializers import signal_to_dict
 from app.db.session import Session
+from app.errors import ConflictError, NotFoundError
 from app.repository import mapping_repo, signal_repo
 
 router = APIRouter(prefix="/api/signals", tags=["signals"])
@@ -56,3 +57,30 @@ def signals_history(
         limit=limit,
         offset=offset,
     )
+
+
+@router.post("/{etf}/refresh", response_model=SignalOut)
+def signal_refresh(etf: str = Path(..., description="ETF 代码，如 510300"), session: Session = Depends(get_db)):
+    """按需重算该 ETF 的盘中实时信号（phase=live），亚秒级；呼应「想立刻查看意见就能」。
+
+    全程在跨进程写锁下执行（非阻塞）：worker 正在写库时返回 409，前端稍后重试。
+    为简化，重算作用于全部生效映射（数量少、耗时低），随后返回本 ETF 最新信号。
+    """
+    active = {m.etf_code for m in mapping_repo.get_active_mappings(session)}
+    if etf not in active:
+        raise NotFoundError(f"etf not found or not active: {etf}")
+
+    from app.config import get_settings
+    from app.db.lock import db_writer_lock
+    from app.evaluation.pipeline import post_collection_evaluate
+
+    settings = get_settings()
+    with db_writer_lock(settings, blocking=False) as acquired:
+        if not acquired:
+            raise ConflictError("worker 正在写库，请稍后重试刷新")
+        post_collection_evaluate(session, settings, phase="live")
+
+    sig = signal_repo.get_latest_signal_for_etf(session, etf)
+    if sig is None:
+        raise NotFoundError(f"refresh 后仍未生成信号: {etf}")
+    return signal_to_dict(sig)

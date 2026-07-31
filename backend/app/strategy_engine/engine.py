@@ -188,23 +188,35 @@ def decide_tier(
     thresholds: Dict[str, Any],
     vp: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """档位决策（§9 + D4 决策优先级）。
+    """档位决策（§9 + D4 决策优先级，C23 修正：市场弱为降档修正而非硬闸门）。
 
-    1) risk.veto -> NO_PARTICIPATE
+    1) risk.veto -> NO_PARTICIPATE（仅「大盘 BEAR 且 数据缺失」）
     2) risk.chase_high -> NO_CHASE_HIGH
-    3) market_regime∈{WEAK,BEAR} 或 high_vol -> MARKET_RISK_HIGH
+    3) 市场弱/高波动 -> 综合分降档修正 + 记 caution，不再 blanket MARKET_RISK_HIGH：
+       - WEAK：综合分 -10；BEAR：综合分 -18；high_vol：综合分 -5（可叠加）。
+       目的：弱势市场下，强势个股仍可给出 SMALL_POSITION / OBSERVE（带控仓提示），
+       而非全市场一律「先观望」，丢弃个股层面的 RSI / 相对强弱 / 板块 / 资金流 / 量价分析。
     4) 否则按 composite（命中降级则先下调一档）映射到 OPPORTUNITY_ENHANCE / SMALL_POSITION / OBSERVE / NO_PARTICIPATE
     5) 方案B：量价形态增强（扩展而非覆盖原权重）——仅在量价强势突破 + 相对强弱确认时上调一档。
        vp=None 时退化为原逻辑，保持历史测试不变。
+
+    注：MARKET_RISK_HIGH 档位枚举保留（向后兼容模板），但 C23 起不再由本函数产出；
+    caution 通过 supporting_metrics 的 market_caution / high_vol_caution 透传给前端提示。
     """
     if risk.get("veto"):
         return "NO_PARTICIPATE"
     if risk.get("chase_high"):
         return "NO_CHASE_HIGH"
-    if market_regime in ("WEAK", "BEAR") or risk.get("high_vol"):
-        return "MARKET_RISK_HIGH"
 
     c = composite if composite is not None else 0.0
+    # C23：市场弱 / 高波动 -> 降档修正（不再一票否决 MARKET_RISK_HIGH）
+    if market_regime == "BEAR":
+        c = max(0.0, c - 18)
+    elif market_regime == "WEAK":
+        c = max(0.0, c - 10)
+    if risk.get("high_vol"):
+        c = max(0.0, c - 5)
+
     if risk.get("downgrade"):
         c = max(0.0, c - 15)
 
@@ -266,6 +278,29 @@ class StrategyEngine:
         lookback = self.settings.backfill.lookback_days
         start = as_of - timedelta(days=lookback)
         return start, as_of
+
+    # ---- 内部：盘中切片/进度（C23） ----
+    def _morning_slice(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        """取上午时段（北京 <= 11:30）的 1m BAR，用于午盘意见。"""
+        if df is None or len(df) == 0 or "timestamp" not in df:
+            return df
+        bj = df["timestamp"] + pd.Timedelta(hours=8)
+        mask = (bj.dt.hour < 11) | ((bj.dt.hour == 11) & (bj.dt.minute <= 30))
+        return df[mask].reset_index(drop=True)
+
+    def _session_progress(self, df: "pd.DataFrame") -> float:
+        """当前交易进度 0-1（北京 9:30-11:30 + 13:00-15:00，共 240 分钟），用于量能折算。"""
+        if df is None or len(df) == 0:
+            return 0.5
+        bj = df["timestamp"].iloc[-1] + pd.Timedelta(hours=8)
+        minutes = int(bj.hour) * 60 + int(bj.minute)
+        if minutes <= 11 * 60 + 30:
+            elapsed = max(0, minutes - (9 * 60 + 30))
+        elif minutes >= 13 * 60:
+            elapsed = 120 + (minutes - 13 * 60)
+        else:
+            elapsed = 120  # 午休
+        return max(0.05, min(1.0, elapsed / 240.0))
 
     # ---- 内部：市场环境 ----
     def _evaluate_market(self, session: Session, as_of: date, phase: Optional[str] = None):
@@ -451,6 +486,42 @@ class StrategyEngine:
         if etf_ind.get("rs_20d") is not None:
             etf_rs_score = max(0.0, min(100.0, 50 + (etf_ind["rs_20d"] - 1) * 100))
 
+        # 5.5) C23：盘中实时强度（live/lunch 用当日 1m BAR 算强度 + R1/R2）；收盘后三档价位（post_close）
+        intraday_strength_info = None
+        r1r2 = None
+        trade_plan = None
+        if phase in ("live", "lunch") and len(etf_df) > 0:
+            from app.opinion_engine.intraday_strength import intraday_strength, check_r1_r2
+
+            etf_1m_rows = quote_repo.get_bar_history(
+                session, "ETF", mapping.etf_code, as_of, as_of, timeframe="1m", data_kind="BAR"
+            )
+            etf_1m = _to_df(etf_1m_rows)
+            if len(etf_1m) >= 2:
+                if phase == "lunch":
+                    etf_1m = self._morning_slice(etf_1m)
+                idx_1m = None
+                if self.settings.strategy.broad_index_codes:
+                    idx_rows = quote_repo.get_bar_history(
+                        session, "INDEX", self.settings.strategy.broad_index_codes[0],
+                        as_of, as_of, timeframe="1m", data_kind="BAR",
+                    )
+                    idx_1m = _to_df(idx_rows)
+                daily_avg_vol = float(etf_df["volume"].astype("float64").mean()) if len(etf_df) else None
+                progress = self._session_progress(etf_1m)
+                ff_score = fund_flow["score"] if (fund_flow and fund_flow.get("available")) else None
+                intraday_strength_info = intraday_strength(
+                    etf_1m, idx_1m,
+                    daily_avg_volume=daily_avg_vol,
+                    trading_progress=progress,
+                    sector_flow_score=ff_score,
+                )
+                r1r2 = check_r1_r2(etf_df, etf_ind, fund_flow)
+        if phase == "post_close" and len(etf_df) > 0:
+            from app.opinion_engine.levels import compute_trade_plan
+
+            trade_plan = compute_trade_plan(etf_df, etf_ind)
+
         # 6) 合成（缺失项重归一化，D4）
         # 宽基 ETF 无板块：从权重中移除 sector_trend/fund_flow，使其不被计入「缺失」、不误扣置信度；
         # 有板块的 ETF 仍按完整权重计算，数据真缺失时才降级。
@@ -479,6 +550,12 @@ class StrategyEngine:
         intraday_adj = intraday_momentum_adjustment(intraday_change, daily_vol)
         if composite_final is not None and intraday_adj is not None:
             composite_final = max(0.0, min(100.0, composite_final + intraday_adj))
+
+        # C23：盘中强度融入综合分（live 主导、lunch 较轻；post_close 不混入，保持日线语境）
+        if intraday_strength_info is not None and intraday_strength_info.get("score") is not None:
+            w = 0.35 if phase == "live" else 0.20
+            c_base = composite_final if composite_final is not None else 50.0
+            composite_final = max(0.0, min(100.0, (1 - w) * c_base + w * intraday_strength_info["score"]))
 
         # 7) 风险
         drawdown_pct = None
@@ -537,6 +614,9 @@ class StrategyEngine:
             "fund_flow_score": fund_flow["score"] if fund_flow and fund_flow.get("available") else None,
             "advance_ratio": advance_ratio,
             "market_regime": regime,
+            # C23：市场弱/高波动降档提示（不再一票否决，前端据此显示「控仓」而非 blanket 观望）
+            "market_caution": regime in ("WEAK", "BEAR"),
+            "high_vol_caution": bool(risk.get("high_vol")),
             # P1 盘中动量修正（随实时行情变化）
             "intraday_change_percent": intraday_change,
             "intraday_adjust": intraday_adj,
@@ -549,6 +629,12 @@ class StrategyEngine:
             "vp_patterns": vp.get("vp_patterns"),
             "vp_strength": vp.get("vp_strength"),
             "vp_anomaly": vp.get("vp_anomaly"),
+            # C23：盘中实时强度 / R1/R2 触发（live/lunch 相位）
+            "intraday_strength": intraday_strength_info.get("score") if intraday_strength_info else None,
+            "intraday_lean": intraday_strength_info.get("lean") if intraday_strength_info else None,
+            "intraday_factors": intraday_strength_info.get("factors") if intraday_strength_info else None,
+            "r1_signal": bool(r1r2.get("r1")) if r1r2 else False,
+            "r2_signal": bool(r1r2.get("r2")) if r1r2 else False,
         }
         triggered: List[str] = []
         failed: List[str] = []
@@ -609,6 +695,8 @@ class StrategyEngine:
             "suggested_action": TIER_TEXT.get(tier, tier),
             "suggested_position_range": POSITION_RANGE.get(tier, [0, 0]),
             "review_time": review_time,
+            # C23：收盘后三档价位（突破/加仓/止损 + 明日预期），仅 post_close 有值
+            "trade_plan": trade_plan,
             # 便于前端/排查的附加信息（不入库 Signal，但 opinion 可用）
             "_missing": comp["missing"],
         }

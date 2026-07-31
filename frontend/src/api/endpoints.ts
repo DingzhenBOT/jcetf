@@ -68,6 +68,11 @@ export function getOpinions(etf: string, phase?: string): Promise<OpinionsForEtf
   return apiGet<OpinionsForEtf>(`/opinions/${encodeURIComponent(etf)}${buildQuery({ phase })}`)
 }
 
+// POST /api/signals/{etf}/refresh —— 按需重算盘中实时信号（C23：呼应「想立刻查看意见就能」）
+export function refreshSignal(etf: string): Promise<Signal> {
+  return apiPost<Signal>(`/signals/${encodeURIComponent(etf)}/refresh`)
+}
+
 // POST /api/portfolio/analyze —— 提交持仓即时计算（无状态，不落库）
 export function analyzePortfolio(positions: PortfolioPosition[]): Promise<PortfolioAnalyzeResponse> {
   return apiPost<PortfolioAnalyzeResponse>('/portfolio/analyze', { positions })
