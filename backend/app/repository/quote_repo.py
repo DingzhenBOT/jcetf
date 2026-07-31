@@ -9,11 +9,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 from typing import Dict, List, Optional
 
 from datetime import date
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -63,6 +64,48 @@ _QUOTE_UPDATE_COLS = [
 # C22 起分时主源为 gtimg，若历史残留 sina 1m 脏数据(旧实现错码/陈旧)，须让 gtimg 胜出，
 # 否则 get_bar_history 会优先 sina 而丢弃正确的 gtimg 分时（分时图仍显示错数据）。
 _UNUSABLE_QUALITY = ("ANOMALY", "MISSING")
+
+
+def get_latest_daily_bar_coverage(
+    session: Session,
+    symbol_type: str,
+    symbols: List[str],
+    *,
+    on_or_before: date,
+    min_coverage_ratio: float = 0.8,
+) -> Optional[tuple[date, int, int]]:
+    """返回达到标的覆盖率的最新日线日期及 (实际数, 最低数)。
+
+    以 distinct symbol 计数，避免同一标的多数据源重复行虚增覆盖率。收盘评估用它
+    把信号日期锚定到真实日线，而不是在周末或回填失败时给旧数据盖上新日期。
+    """
+    unique_symbols = sorted(set(symbols))
+    if not unique_symbols:
+        return None
+    ratio = max(0.0, min(1.0, float(min_coverage_ratio)))
+    required = max(1, math.ceil(len(unique_symbols) * ratio))
+    coverage = func.count(func.distinct(MarketQuote.symbol))
+    row = session.execute(
+        select(MarketQuote.trading_date, coverage.label("coverage"))
+        .where(
+            MarketQuote.symbol_type == symbol_type,
+            MarketQuote.symbol.in_(unique_symbols),
+            MarketQuote.data_kind == "BAR",
+            MarketQuote.timeframe == "1d",
+            MarketQuote.trading_date <= on_or_before,
+            or_(
+                MarketQuote.data_quality_status.is_(None),
+                MarketQuote.data_quality_status.notin_(_UNUSABLE_QUALITY),
+            ),
+        )
+        .group_by(MarketQuote.trading_date)
+        .having(coverage >= required)
+        .order_by(MarketQuote.trading_date.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    return row[0], int(row[1]), required
 
 
 def _source_priority_map() -> Dict[str, int]:

@@ -69,6 +69,25 @@ def test_post_collection_evaluate_idempotent(tmp_path):
         assert len(versions) == 2
 
 
+def test_post_close_default_date_uses_latest_covered_daily_bar(monkeypatch, tmp_path):
+    s, eng = _setup(tmp_path)
+    requested = date(2024, 1, 6)  # 周六
+    covered = date(2024, 1, 5)
+    monkeypatch.setattr("app.evaluation.pipeline.trading_date_for", lambda: requested)
+    monkeypatch.setattr(
+        "app.evaluation.pipeline.quote_repo.get_latest_daily_bar_coverage",
+        lambda *args, **kwargs: (covered, 2, 2),
+    )
+    with session_scope(eng) as session:
+        _seed_mappings(session)
+        result = post_collection_evaluate(session, s, phase="post_close")
+        signals = session.execute(select(Signal)).scalars().all()
+    assert result["requested_as_of"] == requested.isoformat()
+    assert result["as_of"] == covered.isoformat()
+    assert result["bar_coverage"] == {"actual": 2, "required": 2}
+    assert signals and all(sig.trading_date == covered for sig in signals)
+
+
 def test_pre_close_and_post_close_distinct_opinions(tmp_path):
     s, eng = _setup(tmp_path)
     as_of = date(2024, 1, 3)

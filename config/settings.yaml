@@ -58,6 +58,7 @@ data_quality:
   max_price_span_ratio: 4.0         # OHLC 内部跨度异常护栏
   etf_amount_price_volume_ratio_min: 0.2  # ETF 成交额/价/成交量，识别“手/份”混用
   etf_amount_price_volume_ratio_max: 5.0
+  post_close_min_bar_coverage_ratio: 0.8
 
 scheduler:
   timezone: "Asia/Shanghai"   # 交易时间按北京时间

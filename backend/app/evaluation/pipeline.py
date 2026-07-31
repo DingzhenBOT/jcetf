@@ -25,7 +25,7 @@ from app.db.base import utcnow
 from app.db.models.signal_opinion import Opinion, Signal
 from app.market_calendar import trading_date_for
 from app.opinion_engine.engine import OpinionEngine
-from app.repository import mapping_repo
+from app.repository import mapping_repo, quote_repo
 from app.strategy_engine.engine import StrategyEngine
 from app.strategy_engine.rules import RULES_V1
 from app.strategy_versioning import mint_strategy_version
@@ -38,8 +38,27 @@ def post_collection_evaluate(
     phase: str = "post_close",
     as_of: Optional[date] = None,
 ) -> Dict[str, Any]:
+    requested_as_of: Optional[date] = as_of
+    bar_coverage: Optional[tuple[date, int, int]] = None
     if as_of is None:
-        as_of = trading_date_for()
+        requested_as_of = trading_date_for()
+        as_of = requested_as_of
+        if phase == "post_close":
+            requested_mappings = mapping_repo.get_active_mappings(session, requested_as_of)
+            exchange_codes = [
+                m.etf_code
+                for m in requested_mappings
+                if (getattr(m, "listing", None) or "场内") != "场外"
+            ]
+            bar_coverage = quote_repo.get_latest_daily_bar_coverage(
+                session,
+                "ETF",
+                exchange_codes,
+                on_or_before=requested_as_of,
+                min_coverage_ratio=settings.data_quality.post_close_min_bar_coverage_ratio,
+            )
+            if bar_coverage is not None:
+                as_of = bar_coverage[0]
 
     version = mint_strategy_version(session, settings, RULES_V1)
     mappings = mapping_repo.get_active_mappings(session, as_of)
@@ -49,6 +68,12 @@ def post_collection_evaluate(
 
     result: Dict[str, Any] = {
         "as_of": as_of.isoformat(),
+        "requested_as_of": requested_as_of.isoformat() if requested_as_of else None,
+        "bar_coverage": (
+            {"actual": bar_coverage[1], "required": bar_coverage[2]}
+            if bar_coverage is not None
+            else None
+        ),
         "phase": phase,
         "strategy_version": version,
         "signals_written": 0,

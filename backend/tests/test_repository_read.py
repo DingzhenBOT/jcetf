@@ -58,6 +58,33 @@ def test_get_bar_history_and_max_timestamp(tmp_path):
         assert latest.close == 4.0
 
 
+def test_latest_daily_bar_coverage_rejects_partial_newer_date(tmp_path):
+    _, eng = _setup(tmp_path)
+    codes = ["510300", "510500", "510050"]
+    complete_day = date(2024, 1, 4)
+    partial_day = date(2024, 1, 5)
+    rows = [_bar_dict("ETF", code, complete_day, 3.0 + i) for i, code in enumerate(codes)]
+    rows.extend([
+        _bar_dict("ETF", "510300", partial_day, 4.0, source="sina"),
+        _bar_dict("ETF", "510300", partial_day, 4.0, source="em"),
+    ])
+    with session_scope(eng) as session:
+        quote_repo.upsert_market_quotes(session, rows)
+        covered = quote_repo.get_latest_daily_bar_coverage(
+            session, "ETF", codes, on_or_before=partial_day, min_coverage_ratio=0.8
+        )
+        assert covered == (complete_day, 3, 3)
+
+        quote_repo.upsert_market_quotes(session, [
+            _bar_dict("ETF", "510500", partial_day, 5.0),
+            _bar_dict("ETF", "510050", partial_day, 6.0),
+        ])
+        covered = quote_repo.get_latest_daily_bar_coverage(
+            session, "ETF", codes, on_or_before=partial_day, min_coverage_ratio=0.8
+        )
+        assert covered == (partial_day, 3, 3)
+
+
 def test_latest_snapshot_readers_skip_unusable_newer_rows(tmp_path):
     _, eng = _setup(tmp_path)
     d = date(2024, 1, 2)

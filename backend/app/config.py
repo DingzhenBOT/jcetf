@@ -99,6 +99,8 @@ class DataQualityConfig(BaseModel):
     # ETF amount / (close * volume_shares) 应接近 1；100 倍偏差通常表示“手/份”混用。
     etf_amount_price_volume_ratio_min: float = 0.2
     etf_amount_price_volume_ratio_max: float = 5.0
+    # 收盘信号只采用覆盖至少该比例场内标的的最新日线日期；防止源晚到/周末把旧数据标成新日。
+    post_close_min_bar_coverage_ratio: float = Field(default=0.8, ge=0.5, le=1.0)
 
 
 class SchedulerConfig(BaseModel):
