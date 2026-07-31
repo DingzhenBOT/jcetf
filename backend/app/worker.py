@@ -207,21 +207,31 @@ def job_pre_market() -> None:
     run_write_job("pre_market_prepare", _collector().collect_market, _engine())
 
 
+def _post_close_pipeline(session, settings, *, collect_snapshot: bool = True):
+    """同一写锁/Session 内顺序执行收盘数据链，再生成意见。"""
+    result = {}
+    if collect_snapshot:
+        result["collect"] = _collector().collect_all(session)
+    result["backfill"] = _collector().backfill_history(session)
+    result["evaluate"] = post_collection_evaluate(session, settings, phase="post_close")
+    return result
+
+
 def job_post_close() -> None:
-    """收盘复盘：完整采集（含宽度最终累计）。非交易日跳过。"""
+    """15:15 收盘主流水线：最终快照 -> 刷新日线 -> 评估；非交易日跳过。"""
     from app.market_calendar import is_trading_day, trading_date_for
 
     if not is_trading_day(trading_date_for()):
         get_logger("etf-worker.job").debug("post_close skipped: not trading day")
         return
-    run_write_job("post_close_review", _collector().collect_all, _engine())
+    run_write_job("post_close_pipeline", _post_close_pipeline, _engine(), get_settings())
 
 
 # --------------------------------------------------------------------------- #
 # P3 评估任务（采集后评估 + 历史回填；均先查交易日历守卫）
 # --------------------------------------------------------------------------- #
 def job_backfill_history() -> None:
-    """盘后回填历史 BAR（指数/ETF/板块）。增量（按 max(timestamp)+1）；非交易时段也可跑（历史不限于盘中）。"""
+    """手动/兼容入口：刷新历史 BAR 的最后一个已存交易日起的数据。"""
     run_write_job("backfill_history", _collector().backfill_history, _engine())
 
 
@@ -234,13 +244,19 @@ def job_pre_close_evaluate() -> None:
     run_write_job("pre_close_evaluate", post_collection_evaluate, _engine(), get_settings(), phase="pre_close")
 
 
-def job_post_close_evaluate() -> None:
-    """收盘后评估（15:10）：生成 post_close 复盘意见。非交易日跳过。"""
+def job_post_close_finalize() -> None:
+    """16:30 二次定稿：刷新数据源晚到/修订的日线，再覆盖同日 post_close 意见。"""
     from app.market_calendar import is_trading_day, trading_date_for
 
     if not is_trading_day(trading_date_for()):
         return
-    run_write_job("post_close_evaluate", post_collection_evaluate, _engine(), get_settings(), phase="post_close")
+    run_write_job(
+        "post_close_finalize",
+        _post_close_pipeline,
+        _engine(),
+        get_settings(),
+        collect_snapshot=False,
+    )
 
 
 def job_intraday_signal() -> None:
@@ -322,10 +338,10 @@ def build_scheduler(settings) -> BlockingScheduler:
         job_collect_breadth, CronTrigger(hour=11, minute=35),
         id="midday_breadth", replace_existing=True, max_instances=1, coalesce=True,
     )
-    # 收盘复盘 15:10（含宽度最终累计）
+    # 收盘主流水线 15:15：同一写锁内严格按 最终快照 -> 日线刷新 -> 评估 顺序执行。
     scheduler.add_job(
-        job_post_close, CronTrigger(hour=15, minute=10),
-        id="post_close_review", replace_existing=True, max_instances=1, coalesce=True,
+        job_post_close, CronTrigger(hour=15, minute=15),
+        id="post_close_pipeline", replace_existing=True, max_instances=1, coalesce=True,
     )
     # ---- P3 评估任务 ----
     # 盘中实时信号（每 5 分钟，is_trading_now 守卫 -> live 阶段 = 「最新信号」盘中即时判断，C23）
@@ -338,20 +354,15 @@ def build_scheduler(settings) -> BlockingScheduler:
         job_lunch_opinion, CronTrigger(hour=11, minute=40),
         id="lunch_opinion", replace_existing=True, max_instances=1, coalesce=True,
     )
-    # 历史 BAR 回填 16:30（增量；em-only 板块历史失败非致命）
+    # 16:30 二次定稿：刷新晚到/修订日线后重新评估。
     scheduler.add_job(
-        job_backfill_history, CronTrigger(hour=16, minute=30),
-        id="backfill_history", replace_existing=True, max_instances=1, coalesce=True,
+        job_post_close_finalize, CronTrigger(hour=16, minute=30),
+        id="post_close_finalize", replace_existing=True, max_instances=1, coalesce=True,
     )
     # 收盘前评估 14:50（pre_close 阶段意见；收盘前 10 分钟，方便客户操作）
     scheduler.add_job(
         job_pre_close_evaluate, CronTrigger(hour=14, minute=50),
         id="pre_close_evaluate", replace_existing=True, max_instances=1, coalesce=True,
-    )
-    # 收盘后评估 15:10（post_close 复盘意见）
-    scheduler.add_job(
-        job_post_close_evaluate, CronTrigger(hour=15, minute=10),
-        id="post_close_evaluate", replace_existing=True, max_instances=1, coalesce=True,
     )
     # ---- P7 回测任务（收盘后 15:40 取 PENDING 执行；盘中由 API 端拒重型回测） ----
     scheduler.add_job(

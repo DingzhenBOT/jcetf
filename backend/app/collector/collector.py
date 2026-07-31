@@ -679,7 +679,12 @@ class Collector:
                         continue  # 该标的未覆盖 -> 走次源
                     r = sub.iloc[0]
                     close = normalize._f(r.get("最新价"))
-                    cur_vol = normalize._f(r.get("成交量"))
+                    raw_vol = normalize._f(r.get("成交量"))
+                    cur_vol = (
+                        normalize.normalize_etf_volume(raw_vol, "gtimg")
+                        if symbol_type == "ETF"
+                        else raw_vol
+                    )
                     if close is None or cur_vol is None:
                         continue
                     prev_bar = prev_bars.get((symbol_type, code))
@@ -694,6 +699,8 @@ class Collector:
                     row["open"] = row["high"] = row["low"] = row["close"] = close
                     row["volume"] = inc_vol
                     row["cum_volume"] = cur_vol
+                    if symbol_type == "ETF":
+                        normalize._mark_etf_volume_unit(row)
                     row["previous_close"] = normalize._f(r.get("昨收"))
                     row["change_percent"] = normalize._f(r.get("涨跌幅"))
                     row["source_timestamp"] = ts_utc
@@ -777,12 +784,16 @@ class Collector:
         session.commit()
         return {"status": "done", **bucket}
 
-    # ---- 增量回填编排（bounded：符号列表 + lookback_days；增量按 max(timestamp)+1） ----
+    # ---- 增量回填编排（bounded：符号列表 + lookback_days；刷新最后一个已存交易日） ----
     def _backfill_start(self, session: Session, symbol_type: str, symbol: str, as_of: date, lookback_days: int) -> Optional[str]:
-        """返回该标的本次应拉取的 start（YYYYMMDD）；已齐或无需拉取返回 None。"""
+        """返回该标的本次应拉取的 start（YYYYMMDD）。
+
+        从最后一个已存日期开始而不是 +1：盘中首次写入的当日 BAR 往往是未收盘值，
+        收盘后必须再次拉取并通过 upsert 覆盖；历史源修订也能被安全刷新。
+        """
         max_ts = quote_repo.get_max_bar_timestamp(session, symbol_type, symbol)
         if max_ts is not None:
-            start = max_ts.date() + timedelta(days=1)
+            start = max_ts.date()
         else:
             start = as_of - timedelta(days=lookback_days)
         if start > as_of:

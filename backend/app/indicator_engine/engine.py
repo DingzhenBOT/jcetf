@@ -2,12 +2,12 @@
 
 IndicatorEngine.compute(bar_df, benchmark_close=None) -> dict
 - bar_df：按 timestamp 升序的 BAR（列 close/high/low/volume/amount/timestamp）。
-- benchmark_close：可选基准收盘价序列（用于滚动相对强弱 rs_20d）。
+- benchmark_close：可选基准 DataFrame（优先，含 trading_date/close）或兼容序列。
 - 只吃 BAR；不开 HTTP、不碰 Session。
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
@@ -16,7 +16,7 @@ from app.indicator_engine import indicators
 
 class IndicatorEngine:
     def compute(
-        self, bar_df: Any, benchmark_close: Optional[List[float]] = None
+        self, bar_df: Any, benchmark_close: Optional[Any] = None
     ) -> Dict[str, Any]:
         if bar_df is None or len(bar_df) == 0:
             return {}
@@ -49,6 +49,25 @@ class IndicatorEngine:
             )
 
         if benchmark_close is not None and len(benchmark_close) > 0:
-            out["rs_20d"] = indicators.rolling_rs(close, benchmark_close, 20)
+            # 策略路径传 DataFrame：按共同交易日 inner join，杜绝停牌/源缺日时按位置错配。
+            if (
+                isinstance(benchmark_close, pd.DataFrame)
+                and "trading_date" in df.columns
+                and "trading_date" in benchmark_close.columns
+                and "close" in benchmark_close.columns
+            ):
+                target = df[["trading_date", "close"]].copy()
+                base = benchmark_close[["trading_date", "close"]].copy()
+                target["trading_date"] = pd.to_datetime(target["trading_date"]).dt.date
+                base["trading_date"] = pd.to_datetime(base["trading_date"]).dt.date
+                target = target.drop_duplicates("trading_date", keep="last")
+                base = base.drop_duplicates("trading_date", keep="last")
+                aligned = target.merge(base, on="trading_date", how="inner", suffixes=("_target", "_base"))
+                out["rs_20d"] = indicators.rolling_rs(
+                    aligned["close_target"], aligned["close_base"], 20
+                )
+            else:
+                # 兼容已有调用方；新策略调用一律走上面的交易日对齐路径。
+                out["rs_20d"] = indicators.rolling_rs(close, benchmark_close, 20)
 
         return out

@@ -38,11 +38,11 @@ class FakeProvider(BaseDataProvider):
     def _etf_df(self):
         df = pd.DataFrame([
             {"日期": "2024-01-02", "开盘": 3.7, "收盘": 3.8, "最高": 3.81, "最低": 3.77,
-             "成交量": 2, "成交额": 1e8, "涨跌幅": 0.5, "换手率": 1.2},
+             "成交量": 250000, "成交额": 9.5e7, "涨跌幅": 0.5, "换手率": 1.2},
             {"日期": "2024-01-03", "开盘": 3.79, "收盘": 3.9, "最高": 3.91, "最低": 3.78,
-             "成交量": 2, "成交额": 1e8, "涨跌幅": 2.6, "换手率": 1.3},
+             "成交量": 250000, "成交额": 9.75e7, "涨跌幅": 2.6, "换手率": 1.3},
             {"日期": "2024-01-04", "开盘": 3.89, "收盘": 4.0, "最高": 4.01, "最低": 3.88,
-             "成交量": 2, "成交额": 1e8, "涨跌幅": 2.5, "换手率": 1.1},
+             "成交量": 250000, "成交额": 1e8, "涨跌幅": 2.5, "换手率": 1.1},
         ])
         df.attrs["__source"] = "em"
         return df
@@ -149,7 +149,8 @@ def test_backfill_history_incremental_and_resilient(tmp_path, monkeypatch):
         assert n_after_first == 3
         assert mx.date() == date(2024, 1, 4)
 
-        # 第二次回填：起点应推进到 max+1；FakeProvider 返回同样 3 行（均 <= max），upsert 幂等
+        # 第二次回填：必须从 max 当天重拉，以覆盖盘中写入的未收盘 BAR；upsert 仍幂等。
+        assert c._backfill_start(session, "ETF", "510300", date(2024, 1, 10), 365) == "20240104"
         r2 = c.backfill_history(session, as_of=date(2024, 1, 10))
         assert r2["etf"]["ok"] == 1
         n_after_second = len(quote_repo.get_bar_history(session, "ETF", "510300",

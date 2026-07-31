@@ -148,16 +148,23 @@ def atr_pct(high: Numeric, low: Numeric, close: Numeric, n: int = 14) -> Optiona
 
 
 def rolling_rs(target_close: Numeric, base_close: Numeric, n: int = 20) -> Optional[float]:
-    """滚动 n 日相对强弱：target 与 base 的累计收益比（prod(1+ret_t)/prod(1+ret_b)）。>1 跑赢。"""
-    t = _as_series(target_close).iloc[-n:]
-    b = _as_series(base_close).iloc[-n:]
-    if len(t) < 2 or len(b) < 2:
+    """滚动 n 日相对强弱：(target 增长倍数)/(base 增长倍数)，>1 跑赢。
+
+    输入必须已经按交易日一一对齐。n 日收益需要 n+1 个共同收盘价；缺失、非正价格
+    会被联合剔除，避免两个序列各自 dropna 后发生位置错配。
+    """
+    paired = pd.DataFrame(
+        {
+            "target": _as_series(target_close).reset_index(drop=True),
+            "base": _as_series(base_close).reset_index(drop=True),
+        }
+    ).dropna()
+    paired = paired[(paired["target"] > 0) & (paired["base"] > 0)]
+    if len(paired) < n + 1:
         return None
-    t_ret = (t / t.shift(1) - 1).dropna()
-    b_ret = (b / b.shift(1) - 1).dropna()
-    if len(t_ret) == 0 or len(b_ret) == 0:
+    window = paired.iloc[-(n + 1):]
+    target_growth = window["target"].iloc[-1] / window["target"].iloc[0]
+    base_growth = window["base"].iloc[-1] / window["base"].iloc[0]
+    if target_growth != target_growth or base_growth != base_growth or base_growth == 0:
         return None
-    pt, pb = t_ret.prod(), b_ret.prod()
-    if pt != pt or pb != pb or pb == 0 or pt == 0:
-        return None
-    return float(pt / pb)
+    return float(target_growth / base_growth)

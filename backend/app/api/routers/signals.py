@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Path, Query
 
-from app.api.deps import get_db
+from app.api.deps import get_db, get_write_db
 from app.api.schemas import SignalHistoryPage, SignalOut
 from app.api.serializers import signal_to_dict
 from app.db.session import Session
@@ -60,7 +60,10 @@ def signals_history(
 
 
 @router.post("/{etf}/refresh", response_model=SignalOut)
-def signal_refresh(etf: str = Path(..., description="ETF 代码，如 510300"), session: Session = Depends(get_db)):
+def signal_refresh(
+    etf: str = Path(..., description="ETF 代码，如 510300"),
+    session: Session = Depends(get_write_db),
+):
     """按需重算该 ETF 的盘中实时信号（phase=live），亚秒级；呼应「想立刻查看意见就能」。
 
     全程在跨进程写锁下执行（非阻塞）：worker 正在写库时返回 409，前端稍后重试。

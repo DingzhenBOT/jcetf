@@ -11,7 +11,7 @@ from datetime import date, datetime, time, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_db
+from app.api.deps import get_db, get_write_db
 from app.config import clear_cache
 from app.db import init_db, make_engine, session_scope
 from app.db.models.market import MarketBreadth, MarketQuote
@@ -153,6 +153,7 @@ def _make_client(eng):
             session.close()
 
     app.dependency_overrides[get_db] = _override
+    app.dependency_overrides[get_write_db] = _override
     client = TestClient(app)
     return client
 

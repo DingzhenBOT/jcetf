@@ -43,14 +43,17 @@ async def lifespan(app: FastAPI):
     read_engine = build_read_engine(settings)
     app.state.read_engine = read_engine
     app.state.db_factory = build_session_factory(read_engine)
-    # P7：回测任务生命周期用独立可写引擎（仅 backtest 路由；默认查询仍只读，DESIGN §0）。
-    backtest_engine = build_write_engine(settings)
-    app.state.backtest_engine = backtest_engine
-    app.state.backtest_db_factory = build_session_factory(backtest_engine)
+    # 显式写路由使用独立可写引擎；默认查询仍只读（DESIGN §0）。
+    write_engine = build_write_engine(settings)
+    app.state.write_engine = write_engine
+    app.state.write_db_factory = build_session_factory(write_engine)
+    # 兼容外部测试/旧代码读取的 state 名称。
+    app.state.backtest_engine = write_engine
+    app.state.backtest_db_factory = app.state.write_db_factory
     # C16.2：API 启动即幂等补列（opinion.basis_text / signal.phase / etf_mapping.listing）。
     # 读引擎挂了 query_only=ON 不可写，故用可写引擎；表缺失则跳过，不依赖 worker 先跑。
     # 根因：历史库上 C16 新增的 basis_text 列未建出，opinion_to_dict 读该列 → no such column → 500。
-    ensure_schema_columns(backtest_engine)
+    ensure_schema_columns(write_engine)
     logger.info(
         "etf-api lifespan start",
         extra={"environment": settings.app.environment, "host": settings.server.host, "port": settings.server.port},
@@ -64,7 +67,7 @@ async def lifespan(app: FastAPI):
         except Exception:  # noqa: BLE001 - 关闭失败不影响退出
             pass
         try:
-            backtest_engine.dispose()
+            write_engine.dispose()
         except Exception:  # noqa: BLE001
             pass
         logger.info("etf-api lifespan shutdown")

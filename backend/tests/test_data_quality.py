@@ -58,6 +58,22 @@ def test_not_stale_when_market_closed():
     assert rows[0]["data_quality_status"] == "OK"
 
 
+def test_etf_amount_volume_unit_guard_detects_lot_share_mixup():
+    now = datetime(2024, 1, 2, 2, 0, 0)
+    good = [{
+        "symbol_type": "ETF", "volume_unit": "shares", "close": 4.0,
+        "volume": 1_000_000.0, "amount": 4_000_000.0, "change_percent": 1.0,
+    }]
+    bad = [{
+        "symbol_type": "ETF", "volume_unit": "shares", "close": 4.0,
+        "volume": 10_000.0, "amount": 4_000_000.0, "change_percent": 1.0,
+    }]
+    assess(good, is_trading_now=False, now=now, cfg=_cfg())
+    assess(bad, is_trading_now=False, now=now, cfg=_cfg())
+    assert good[0]["data_quality_status"] == "OK"
+    assert bad[0]["data_quality_status"] == "ANOMALY"
+
+
 # --------------------------------------------------------------------------- #
 # #67 OHLC 关系/跨度异常校验
 # --------------------------------------------------------------------------- #

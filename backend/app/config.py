@@ -96,6 +96,9 @@ class DataQualityConfig(BaseModel):
     # OHLC 合理性护栏（#67）：单根 BAR/分时内 最高/最低/开/收 的相对跨度上限。
     # A股单日涨跌幅限制 ±10%，正常 K 线 high/low 跨度约 ≤1.1；>4.0 视为脏数据（如 512000 单位错乱 开346/收0.535/高0.525/低0.526）。
     max_price_span_ratio: float = 4.0
+    # ETF amount / (close * volume_shares) 应接近 1；100 倍偏差通常表示“手/份”混用。
+    etf_amount_price_volume_ratio_min: float = 0.2
+    etf_amount_price_volume_ratio_max: float = 5.0
 
 
 class SchedulerConfig(BaseModel):

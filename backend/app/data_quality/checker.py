@@ -70,6 +70,28 @@ def _assess_row(row: Dict[str, Any], *, is_trading_now: bool, now, cfg: DataQual
     if chg is not None and abs(chg) > cfg.max_abs_change_percent:
         return "ANOMALY"
 
+    # ETF 成交量已经声明为 shares 时，可用成交额反向核对量纲。
+    # 只检查三项都为正的行；分钟 BAR 通常没有 amount，会自然跳过。
+    volume = row.get("volume")
+    amount = row.get("amount")
+    if (
+        row.get("symbol_type") == "ETF"
+        and row.get("volume_unit") == "shares"
+        and close is not None
+        and close > 0
+        and volume is not None
+        and volume > 0
+        and amount is not None
+        and amount > 0
+    ):
+        ratio = amount / (close * volume)
+        if not (
+            cfg.etf_amount_price_volume_ratio_min
+            <= ratio
+            <= cfg.etf_amount_price_volume_ratio_max
+        ):
+            return "ANOMALY"
+
     # 时间新鲜度（仅交易时段内严格）
     src_ts = row.get("source_timestamp") or row.get("timestamp")
     if src_ts is not None and is_trading_now:

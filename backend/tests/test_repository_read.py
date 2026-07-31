@@ -57,13 +57,35 @@ def test_get_bar_history_and_max_timestamp(tmp_path):
         assert latest.close == 4.0
 
 
-def test_get_bar_history_dedupes_by_source_priority(tmp_path):
-    """C14 后数据源由 em 切到 sina；DB 中可能同时存在 em/sina 的同交易日 BAR。
+def test_latest_snapshot_readers_skip_unusable_newer_rows(tmp_path):
+    _, eng = _setup(tmp_path)
+    d = date(2024, 1, 2)
+    valid = _bar_dict("ETF", "510300", d, 3.8, source="em")
+    valid.update(data_kind="SNAPSHOT", timeframe="snapshot", change_percent=1.2)
+    bad = dict(valid)
+    bad.update(
+        data_source="sina",
+        timestamp=datetime(2024, 1, 2, 0, 1),
+        change_percent=99.0,
+        data_quality_status="ANOMALY",
+    )
+    with session_scope(eng) as session:
+        quote_repo.upsert_market_quotes(session, [valid, bad])
+        changes = quote_repo.get_latest_snapshot_change_map(session, "ETF", ["510300"])
+        rows = quote_repo.get_latest_snapshots_batch(session, [("ETF", "510300")])
+        assert changes["510300"] == 1.2
+        assert rows[("ETF", "510300")].data_source == "em"
+
+
+def test_get_bar_history_dedupes_by_configured_source_priority(tmp_path):
+    """多源同日 BAR 应服从运行时 preferred 配置，而不是仓储层硬编码。
 
     get_bar_history / get_max_bar_timestamp / get_latest_quote 都应按
-    sina > ths > tx > em 优先级去重，避免 K 线重影 / 最新价跳源。
+    preferred > fallback 优先级去重，避免 K 线重影 / 最新价跳源。
     """
     s, eng = _setup(tmp_path)
+    s.data_source.preferred = "sina"
+    s.data_source.fallback = ["ths", "tx", "em"]
     d = date(2024, 1, 2)
     rows = [
         dict(_bar_dict("ETF", "510300", d, 3.8, source="em"), close=3.8),
@@ -89,6 +111,8 @@ def test_get_bar_history_dedupes_by_source_priority(tmp_path):
 def test_get_bar_history_dedupes_ths_over_em(tmp_path):
     """验证 ths 优先级高于 em（sina 缺失时的 fallback 场景）。"""
     s, eng = _setup(tmp_path)
+    s.data_source.preferred = "sina"
+    s.data_source.fallback = ["ths", "em"]
     d = date(2024, 1, 2)
     rows = [
         dict(_bar_dict("ETF", "510300", d, 3.8, source="em"), close=3.8),

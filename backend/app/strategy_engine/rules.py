@@ -15,8 +15,12 @@ from __future__ import annotations
 from typing import Dict
 
 RULES_V1: Dict = {
-    "version": "2.2",
-    "description": "DESIGN §9 五类评分确定性规则 + 方案B 量价关系技术分析（扩展 v2.0）+ 方案B+ 量价看空降档（v2.1）+ P1 盘中动量修正（intraday_momentum，v2.2）",
+    "version": "2.3",
+    "description": "DESIGN §9 五类评分确定性规则 + 方案B 量价关系技术分析 + 盘中动量修正 + 数据口径修正（RS 与 ETF 成交量，v2.3）",
+    "data_definitions": {
+        "rs_20d": "ETF 与跟踪指数按共同 trading_date 对齐后的 20 日增长倍数之比：(etf_t/etf_t-20)/(index_t/index_t-20)",
+        "etf_volume": "BAR/SNAPSHOT/1m 的 volume 与 cum_volume 统一为 shares；em/gtimg 原始手数乘100，sina原值",
+    },
     "market_score": {
         "index_above_ma20_and_rising": "宽基指数站上 MA20 且上行 -> 加分",
         "advance_ratio": {"add_above": 0.60, "subtract_below": 0.40, "neutral_band": [0.45, 0.55]},

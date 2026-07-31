@@ -32,6 +32,7 @@ class MarketQuote(Base):
     previous_close: Mapped[float | None] = mapped_column(Float)
     volume: Mapped[float | None] = mapped_column(Float)
     cum_volume: Mapped[float | None] = mapped_column(Float)  # 当日累计成交量（1m BAR 用：dt 增量 = 当前cum - 上一根BAR的cum）
+    volume_unit: Mapped[str | None] = mapped_column(String(16))  # ETF 固定为 shares；指数保留源语义并留空
     amount: Mapped[float | None] = mapped_column(Float)
     change_percent: Mapped[float | None] = mapped_column(Float)
     turnover_rate: Mapped[float | None] = mapped_column(Float)

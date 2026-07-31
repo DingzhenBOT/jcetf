@@ -21,6 +21,15 @@ from app.market_calendar import beijing_to_utc, trading_date_for
 # 资金流等指标口径版本；口径变更需升版并在此同步
 METRIC_DEF_VERSION = "v1"
 
+# ETF 成交量统一口径：数据库内一律存「份/股（shares）」。
+# 生产库实测 amount / (close * volume)：
+# - em / gtimg 约为 100，源字段单位是「手」（1 手 = 100 份）；
+# - sina 约为 1，源字段已经是「份」。
+# 指数成交量不具备同样的价量换算语义，因此只归一 ETF，不碰 INDEX/SECTOR。
+ETF_VOLUME_UNIT = "shares"
+ETF_VOLUME_DEF_VERSION = "volume-shares-v1"
+_ETF_LOT_SOURCES = {"em", "gtimg"}
+
 
 # --------------------------------------------------------------------------- #
 # 基础转换
@@ -45,6 +54,25 @@ def _f(v: Any) -> Optional[float]:
     if f != f:  # NaN
         return None
     return f
+
+
+def normalize_etf_volume(v: Any, source: str) -> Optional[float]:
+    """把 ETF 源成交量统一为份/股；空值保持 None。
+
+    source 允许带后缀（如 gtimg_intraday），按根名称判断。该函数只应在
+    symbol_type=ETF 的路径调用，指数/板块成交量不得套用 100 倍换算。
+    """
+    volume = _f(v)
+    if volume is None:
+        return None
+    root_source = (source or "").split("_", 1)[0]
+    return volume * 100.0 if root_source in _ETF_LOT_SOURCES else volume
+
+
+def _mark_etf_volume_unit(row: Dict[str, Any]) -> None:
+    """为 ETF 行写入明确的单位与定义版本，供迁移/审计做幂等判断。"""
+    row["volume_unit"] = ETF_VOLUME_UNIT
+    row["metric_definition_version"] = ETF_VOLUME_DEF_VERSION
 
 
 def _derive_change_percent(
@@ -104,6 +132,8 @@ def _base_row(source: str, symbol_type: str, symbol: str, collected_at: datetime
         "close": None,
         "previous_close": None,
         "volume": None,
+        "cum_volume": None,
+        "volume_unit": None,
         "amount": None,
         "change_percent": None,
         "turnover_rate": None,
@@ -167,7 +197,7 @@ def normalize_us_index_bar(df: pd.DataFrame, source: str, symbol: str, collected
 
 
 def normalize_etf_snapshot(df: pd.DataFrame, source: str, collected_at: datetime) -> List[Dict[str, Any]]:
-    """ETF 快照：fund_etf_spot_em / fund_etf_category_sina（含 换手率 列时取之）。"""
+    """ETF 快照；成交量归一为份/股（em/gtimg 手数×100，sina 原值）。"""
     rows: List[Dict[str, Any]] = []
     for _, r in df.iterrows():
         code = _code(r.get("代码"))
@@ -180,11 +210,12 @@ def normalize_etf_snapshot(df: pd.DataFrame, source: str, collected_at: datetime
             low=_f(r.get("最低")),
             close=_f(r.get("最新价")),
             previous_close=_f(r.get("昨收")),
-            volume=_f(r.get("成交量")),
+            volume=normalize_etf_volume(r.get("成交量"), source),
             amount=_f(r.get("成交额")),
             change_percent=_derive_change_percent(_f(r.get("涨跌幅")), _f(r.get("最新价")), _f(r.get("昨收"))),
             turnover_rate=_f(r.get("换手率")),
         )
+        _mark_etf_volume_unit(row)
         rows.append(row)
     return rows
 
@@ -314,6 +345,8 @@ def _bar_row(
         "close": None,
         "previous_close": None,
         "volume": None,
+        "cum_volume": None,
+        "volume_unit": None,
         "amount": None,
         "change_percent": None,
         "turnover_rate": None,
@@ -344,7 +377,7 @@ def _col(r, *names):
 def normalize_etf_bar(
     df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
 ) -> List[Dict[str, Any]]:
-    """ETF 日线 BAR：兼容 em 中文列（日期/开盘/收盘...）与新浪英文列（date/open/close...）。"""
+    """ETF 日线 BAR；价格列兼容中英文，成交量统一为份/股。"""
     rows: List[Dict[str, Any]] = []
     for _, r in df.iterrows():
         d = _parse_date(_col(r, "日期", "date"))
@@ -356,11 +389,12 @@ def normalize_etf_bar(
             high=_f(_col(r, "最高", "high")),
             low=_f(_col(r, "最低", "low")),
             close=_f(_col(r, "收盘", "close")),
-            volume=_f(_col(r, "成交量", "volume")),
+            volume=normalize_etf_volume(_col(r, "成交量", "volume"), source),
             amount=_f(_col(r, "成交额", "amount")),
             change_percent=_f(_col(r, "涨跌幅", "change_percent", "change")),
             turnover_rate=_f(_col(r, "换手率", "turnover_rate")),
         )
+        _mark_etf_volume_unit(row)
         rows.append(row)
     return rows
 
@@ -456,8 +490,14 @@ def normalize_intraday_minute(
             high=_f(_col(r, "high", "最高")),
             low=_f(_col(r, "low", "最低")),
             close=_f(_col(r, "close", "收盘")),
-            volume=_f(_col(r, "volume", "成交量")),
+            volume=(
+                normalize_etf_volume(_col(r, "volume", "成交量"), source)
+                if symbol_type == "ETF"
+                else _f(_col(r, "volume", "成交量"))
+            ),
         )
+        if symbol_type == "ETF":
+            _mark_etf_volume_unit(row)
         rows.append(row)
     return rows
 

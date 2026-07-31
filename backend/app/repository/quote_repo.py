@@ -38,6 +38,8 @@ _QUOTE_UPDATE_COLS = [
     "close",
     "previous_close",
     "volume",
+    "cum_volume",
+    "volume_unit",
     "amount",
     "change_percent",
     "turnover_rate",
@@ -55,17 +57,36 @@ _QUOTE_UPDATE_COLS = [
     "data_quality_status",
 ]
 
-# 数据源优先级：与 DataSourceConfig 一致（preferred > fallback > dormant）。
+# 数据源优先级：运行时按 DataSourceConfig 的 preferred > fallback 生成。
 # 读路径按此优先级对同一交易日多源数据去重，避免切换主源后 K 线重影。
 # gtimg=0（最高优先级）：gtimg 只写 1m 分时（不写日线），故仅影响分时去重——
 # C22 起分时主源为 gtimg，若历史残留 sina 1m 脏数据(旧实现错码/陈旧)，须让 gtimg 胜出，
 # 否则 get_bar_history 会优先 sina 而丢弃正确的 gtimg 分时（分时图仍显示错数据）。
-_SOURCE_PRIORITY = {"gtimg": 0, "sina": 1, "ths": 2, "tx": 3, "em": 4}
+_UNUSABLE_QUALITY = ("ANOMALY", "MISSING")
+
+
+def _source_priority_map() -> Dict[str, int]:
+    """按当前配置生成优先级；gtimg 分钟主源始终优先。"""
+    from app.config import get_settings
+
+    cfg = get_settings().data_source
+    ordered = ["gtimg", cfg.preferred, *cfg.fallback, "sina", "ths", "tx", "em"]
+    unique = []
+    for source in ordered:
+        if source and source not in unique:
+            unique.append(source)
+    return {source: priority for priority, source in enumerate(unique)}
 
 
 def _source_priority_case():
     """返回 data_source -> priority 的 SQL CASE 表达式。"""
-    return case(_SOURCE_PRIORITY, value=MarketQuote.data_source, else_=5)
+    priorities = _source_priority_map()
+    return case(priorities, value=MarketQuote.data_source, else_=len(priorities))
+
+
+def _source_priority_value(source: str) -> int:
+    priorities = _source_priority_map()
+    return priorities.get(source, len(priorities))
 
 
 def _best_source_per_date_subquery(
@@ -263,6 +284,7 @@ def get_latest_snapshot_change_map(
             MarketQuote.symbol.in_(symbols),
             MarketQuote.data_kind == "SNAPSHOT",
             MarketQuote.timeframe == "snapshot",
+            MarketQuote.data_quality_status.notin_(_UNUSABLE_QUALITY),
         )
         .group_by(MarketQuote.symbol)
     ).all()
@@ -274,7 +296,10 @@ def get_latest_snapshot_change_map(
                 MarketQuote.data_kind == "SNAPSHOT",
                 MarketQuote.timeframe == "snapshot",
                 MarketQuote.timestamp == mx,
+                MarketQuote.data_quality_status.notin_(_UNUSABLE_QUALITY),
             )
+            .order_by(_source_priority_case().asc())
+            .limit(1)
         ).first()
         out[sym] = float(rec[0]) if rec and rec[0] is not None else None
     return out
@@ -306,6 +331,7 @@ def get_latest_snapshots_batch(
                 MarketQuote.symbol.in_(symbols),
                 MarketQuote.data_kind == "SNAPSHOT",
                 MarketQuote.timeframe == "snapshot",
+                MarketQuote.data_quality_status.notin_(_UNUSABLE_QUALITY),
             )
             .group_by(MarketQuote.symbol)
         ).all()
@@ -319,11 +345,20 @@ def get_latest_snapshots_batch(
                 MarketQuote.data_kind == "SNAPSHOT",
                 MarketQuote.timeframe == "snapshot",
                 MarketQuote.timestamp.in_(list(sym_to_ts.values())),
+                MarketQuote.data_quality_status.notin_(_UNUSABLE_QUALITY),
             )
         ).scalars().all()
         for r in rows:
             key = (r.symbol_type, r.symbol)
-            if key not in out or r.timestamp > out[key].timestamp:
+            if (
+                key not in out
+                or r.timestamp > out[key].timestamp
+                or (
+                    r.timestamp == out[key].timestamp
+                    and _source_priority_value(r.data_source)
+                    < _source_priority_value(out[key].data_source)
+                )
+            ):
                 out[key] = r
     return out
 
@@ -356,6 +391,7 @@ def get_latest_1m_bars(
                 MarketQuote.data_kind == "BAR",
                 MarketQuote.timeframe == "1m",
                 MarketQuote.trading_date == trading_date,
+                MarketQuote.data_quality_status.notin_(_UNUSABLE_QUALITY),
             )
             .group_by(MarketQuote.symbol)
         ).all()
@@ -370,11 +406,20 @@ def get_latest_1m_bars(
                 MarketQuote.timeframe == "1m",
                 MarketQuote.trading_date == trading_date,
                 MarketQuote.timestamp.in_(list(sym_to_ts.values())),
+                MarketQuote.data_quality_status.notin_(_UNUSABLE_QUALITY),
             )
         ).scalars().all()
         for r in rows:
             key = (r.symbol_type, r.symbol)
-            if key not in out or r.timestamp > out[key].timestamp:
+            if (
+                key not in out
+                or r.timestamp > out[key].timestamp
+                or (
+                    r.timestamp == out[key].timestamp
+                    and _source_priority_value(r.data_source)
+                    < _source_priority_value(out[key].data_source)
+                )
+            ):
                 out[key] = r
     return out
 

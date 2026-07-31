@@ -117,8 +117,9 @@ def test_primary_snapshot_to_1m_basic(tmp_path, monkeypatch):
         assert len(etf) == 1 and len(idx) == 1
         # 首根：prev 无 -> volume == 当前累计
         assert etf[0].close == 4.657
-        assert etf[0].cum_volume == 15092027.0
-        assert etf[0].volume == 15092027.0
+        assert etf[0].cum_volume == 1509202700.0
+        assert etf[0].volume == 1509202700.0
+        assert etf[0].volume_unit == "shares"
         assert etf[0].previous_close == 4.627
         assert abs(etf[0].change_percent - 0.65) < 1e-9
         # 时间戳 = 北京 14:00 -> UTC 06:00
@@ -182,9 +183,9 @@ def test_primary_incremental_no_leak(tmp_path, monkeypatch):
         vols = [r.volume for r in etf]
         cums = [r.cum_volume for r in etf]
         # 增量之和 == 当前累计（关键：不漏计、不重复）
-        assert abs(sum(vols) - 250.0) < 1e-6
-        # 末根 cum_volume == 250（无漏计）
-        assert cums[-1] == 250.0
+        assert abs(sum(vols) - 25000.0) < 1e-6
+        # 末根 cum_volume == 250手*100（无漏计）
+        assert cums[-1] == 25000.0
         # 快照未更新的那一根 vol=0（被正确处理，不重复计数）
         assert any(v == 0.0 for v in vols[1:]), "快照未更新时应产生 vol=0 根而非重复计数"
 
@@ -221,17 +222,18 @@ def test_primary_covers_etf_secondary_covers_index(tmp_path, monkeypatch):
     with session_scope(eng) as session:
         etf = session.query(MarketQuote).filter_by(symbol_type="ETF", symbol="510300", timeframe="1m").all()
         idx = session.query(MarketQuote).filter_by(symbol_type="INDEX", symbol="000300", timeframe="1m").all()
-        assert len(etf) == 1 and etf[0].cum_volume == 15092027.0  # 主源
+        assert len(etf) == 1 and etf[0].cum_volume == 1509202700.0  # 主源手数×100
         assert len(idx) == 1 and idx[0].cum_volume == 1234.0      # 次源续算累计量
 
 
-def test_cum_volume_column_migrated(tmp_path):
-    """ensure_schema_columns 幂等补列：market_quote 含 cum_volume。"""
+def test_volume_columns_migrated(tmp_path):
+    """ensure_schema_columns 幂等补列：market_quote 含累计量和明确单位。"""
     from sqlalchemy import inspect
 
     s, eng = _setup(tmp_path)
     cols = {c["name"] for c in inspect(eng).get_columns("market_quote")}
     assert "cum_volume" in cols
+    assert "volume_unit" in cols
 
 
 def test_get_latest_1m_bars(tmp_path):

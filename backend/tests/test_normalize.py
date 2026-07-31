@@ -97,6 +97,7 @@ def test_normalize_etf_bar_accepts_sina_english_columns():
     assert len(rows) == 2
     assert rows[0]["close"] == 3.8 and rows[0]["open"] == 3.7 and rows[0]["high"] == 3.81
     assert rows[0]["volume"] == 2 and rows[0]["amount"] == 1e8
+    assert rows[0]["volume_unit"] == "shares"
     assert rows[0]["symbol_type"] == "ETF" and rows[0]["data_kind"] == "BAR"
 
 
@@ -111,6 +112,8 @@ def test_normalize_etf_bar_accepts_em_chinese_columns():
     assert len(rows) == 1
     assert rows[0]["close"] == 3.8 and rows[0]["change_percent"] == 0.5
     assert rows[0]["turnover_rate"] == 1.2
+    assert rows[0]["volume"] == 200  # em ETF 原始单位为手
+    assert rows[0]["volume_unit"] == "shares"
 
 
 def test_normalize_index_bar_accepts_sina_english_columns():
@@ -208,8 +211,20 @@ def test_normalize_intraday_minute_maps_and_tags_1m():
     assert r0["trading_date"] == td
     assert r0["close"] == 4.005 and r0["open"] == 4.000 and r0["high"] == 4.010
     assert r0["volume"] == 120000
+    assert r0["volume_unit"] == "shares"
     # 时间：北京 09:30 -> 存储 UTC 01:30
     assert r0["timestamp"].hour == 1 and r0["timestamp"].minute == 30
     # 幂等键字段齐全
     assert r0["data_source"] == "sina"
+
+
+def test_normalize_gtimg_etf_intraday_lots_but_not_index():
+    df = pd.DataFrame([{
+        "day": "2024-01-02 09:30:00", "open": 4.0, "high": 4.0,
+        "low": 4.0, "close": 4.0, "volume": 123,
+    }])
+    etf = normalize.normalize_intraday_minute(df, "gtimg", "ETF", "510300", date(2024, 1, 2), _now())[0]
+    index = normalize.normalize_intraday_minute(df, "gtimg", "INDEX", "000300", date(2024, 1, 2), _now())[0]
+    assert etf["volume"] == 12300 and etf["volume_unit"] == "shares"
+    assert index["volume"] == 123 and index["volume_unit"] is None
 

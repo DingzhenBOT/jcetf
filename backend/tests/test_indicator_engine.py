@@ -78,6 +78,13 @@ def test_rolling_rs_equal_series_is_one():
     assert abs(I.rolling_rs(s, list(range(1, 30)), 20) - 1.0) < 1e-9
 
 
+def test_rolling_rs_uses_growth_factors_not_product_of_returns():
+    target = [100.0 * (2.0 ** (i / 20)) for i in range(21)]
+    base = [100.0 * (1.1 ** (i / 20)) for i in range(21)]
+    assert abs(I.rolling_rs(target, base, 20) - (2.0 / 1.1)) < 1e-12
+    assert I.rolling_rs(target[:-1], base[:-1], 20) is None
+
+
 def test_indicator_engine_compute_empty():
     assert I is not None
     from app.indicator_engine.engine import IndicatorEngine
@@ -104,3 +111,20 @@ def test_indicator_engine_compute_with_benchmark_sets_rs():
     out = eng.compute(df, benchmark_close=list(range(2, 26)))
     assert "rs_20d" in out
     assert out["rs_20d"] is not None
+
+
+def test_indicator_engine_aligns_rs_on_common_trading_dates():
+    from app.indicator_engine.engine import IndicatorEngine
+
+    dates = pd.date_range("2024-01-01", periods=22, freq="D")
+    target = pd.DataFrame({
+        "timestamp": dates,
+        "trading_date": dates.date,
+        "close": [100.0 + i for i in range(22)],
+    })
+    benchmark = pd.DataFrame({
+        "trading_date": [d.date() for i, d in enumerate(dates) if i != 10],
+        "close": [2.0 * (100.0 + i) for i in range(22) if i != 10],
+    })
+    out = IndicatorEngine().compute(target, benchmark)
+    assert abs(out["rs_20d"] - 1.0) < 1e-12
