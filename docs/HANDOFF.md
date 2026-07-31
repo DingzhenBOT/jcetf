@@ -294,7 +294,8 @@
 **测试**：backend **304 passed**（C22 为 279，C23 **+25**）：`test_decide_tier_market_downgrade`（降档非否决/遍历 regime×high_vol 永不 blanket/veto 优先）、`test_intraday_strength`（上涨看多/下跌看空/缺指数跳过相对因子/R1/R2 触发）、`test_levels`（三档单调+正/数据不足返回 None/下行 regime）、`test_pipeline_live_lunch_postclose`（三相位产出+幂等）、`test_api_opinions_phase`（live/lunch 200、非法 422、未知 ETF 404、trade_plan 透出、refresh 200/409）、`test_worker`（C23 调度作业对齐）、`test_strategy_engine` + `test_collector_intraday_gtimg` 适配修正。前端 `pnpm build` 于 **C23-H1 hotfix** 才真正跑通（`refreshSignal` 漏传 `apiPost` payload 导致 TS2554，已补 `{}`）。
 
 **⚠ CVM 部署待办（用户侧）**：
-1. `cd /workspace && git pull` → `cd frontend && pnpm build`（前端改动需重建覆盖 Nginx dist）→ `sudo systemctl restart etf-worker`（后端调度/评估改动需重启 worker 生效）。
+1. `cd /workspace && git pull` → `cd frontend && pnpm build`（前端改动需重建覆盖 Nginx dist）→ **必须同时重启 `etf-api` 与 `etf-worker`**：`sudo systemctl restart etf-api etf-worker`。
+   ⚠ **历史踩坑（C23 首轮部署）**：`refresh` 端点 / `lunch`·`post_close` 相位 / C22 盘中分时修复都在 **etf-api**（HTTP 服务）里；只 restart `etf-worker` 会导致 etf-api 仍是旧代码 → 点击「重新评估」报 **HTTP 404（路由不存在）**、午盘意见永远空、盘中分时图空白。两个服务都要重启。
 2. 验证盘中（每 5min）：ETF 详情页「最新信号」应随盘中强度分化（看多/看空/中性各不相同），**不再全场统一"先观望"**；强度徽标 + R1/R2 标识按实时行情变化。
 3. 验证午盘：11:40 后详情页出现「午盘意见」Card（可留历史，非覆盖）。
 4. 验证收盘后（15:10）：复盘意见含**确定性三档价位**（突破X上车 / 跌X加仓 / 跌破Y止损，价位单调 止损<加仓<突破 且 >0）+ 明日预期。
