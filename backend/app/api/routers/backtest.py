@@ -88,15 +88,29 @@ def create_backtest(req: BacktestRunRequest, session: Session = Depends(get_back
     # 策略版本白名单：缺省用当前冻结版本；指定则必须已注册
     version = req.strategy_version
     if version is None:
-        from app.strategy_versioning import current_strategy_version
+        from app.strategy_engine.rules import RULES_V1
+        from app.strategy_versioning import mint_strategy_version
 
-        version, _ = current_strategy_version(settings)
+        version = mint_strategy_version(session, settings, RULES_V1)
+        session.flush()
     from app.db.models.mapping import StrategyVersion
+    from app.strategy_engine.rules import RULES_V1
+    from app.strategy_versioning import strategy_version_for_rules
 
-    if session.get(StrategyVersion, version) is None:
+    version_row = session.get(StrategyVersion, version)
+    if version_row is None:
         raise ValidationError(
             f"strategy_version not registered: {version!r} (白名单约束，不可现场编造)",
             details={"strategy_version": version},
+        )
+    executable_version, executable_hash = strategy_version_for_rules(settings, RULES_V1)
+    if version != executable_version or version_row.strategy_hash != executable_hash:
+        raise ValidationError(
+            f"strategy_version is registered but not executable by this build: {version!r}",
+            details={
+                "strategy_version": version,
+                "executable_strategy_version": executable_version,
+            },
         )
 
     benchmark = req.benchmark or settings.backtest.baseline_etf

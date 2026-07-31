@@ -13,16 +13,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.config import PortfolioConfig, get_settings
 from app.db.models.signal_opinion import Signal
 from app.opinion_engine.templates import TIER_TEXT, position_text_of
 from app.repository import quote_repo, signal_repo
 
 # 服务端硬上限（DESIGN § 输入校验）
 MAX_POSITIONS = 20
-# 信号超过该天数视为 STALE -> 倾向于 RECONFIRM（仅数据新鲜度提示，非否决）
-STALE_THRESHOLD_DAYS = 5
-
-
 def _days_since(dt: Optional[datetime]) -> Optional[float]:
     """距现在的天数（naive UTC 对 naive UTC，匹配存储语义）。None 安全。"""
     if dt is None:
@@ -43,18 +40,20 @@ def _invalidation_texts(inv: Optional[Dict[str, Any]]) -> List[str]:
     return [labels[k] for k, v in inv.items() if v]
 
 
-def _rs_negative(signal: Optional[Signal]) -> bool:
-    """ETF 相对强弱是否为负：supporting_metrics.etf_rs_20d < 1.0（跑输基准）。"""
+def _rs_negative(signal: Optional[Signal], threshold: float) -> bool:
+    """ETF 是否显著跑输基准；阈值可配，避免 1.0 附近数值噪声触发清仓。"""
     if signal is None or not signal.supporting_metrics:
         return False
     rs = signal.supporting_metrics.get("etf_rs_20d")
-    return isinstance(rs, (int, float)) and rs < 1.0
+    return isinstance(rs, (int, float)) and rs < threshold
 
 
 def _decide_action(
     signal: Optional[Signal],
     prev_signal: Optional[Signal],
     rs_negative: bool,
+    current_position_percent: float,
+    cfg: PortfolioConfig,
 ) -> str:
     """§9.5 动作推导（确定性）。优先级 EXIT > REDUCE > RECONFIRM > HOLD。"""
     if signal is None:
@@ -69,14 +68,25 @@ def _decide_action(
     if rf.get("veto") or regime == "BEAR" or rs_negative or inv.get("close_below_ma20"):
         return "EXIT"
 
-    # REDUCE（降低仓位）：降级但未否决 / 综合分下降 / 禁止追高档位
+    suggested = signal.suggested_position_range or [0, 0]
+    suggested_high = float(suggested[1]) if len(suggested) >= 2 else 0.0
+    # 明确的零仓位档位对已有持仓必须给退出，而不是含糊地“重新确认”。
+    if signal.signal_type in ("NO_PARTICIPATE", "MARKET_RISK_HIGH"):
+        return "EXIT"
+
+    # REDUCE（降低仓位）：实际仓位超出建议上限 / 降级 / 可比分数下降 / 禁止追高。
     score_drop = (
         prev_signal is not None
         and signal.score is not None
         and prev_signal.score is not None
-        and (prev_signal.score - signal.score) >= 5
+        and (prev_signal.score - signal.score) >= cfg.score_drop_reduce_points
     )
-    if rf.get("downgrade") or score_drop or signal.signal_type == "NO_CHASE_HIGH":
+    if (
+        current_position_percent > suggested_high
+        or rf.get("downgrade")
+        or score_drop
+        or signal.signal_type == "NO_CHASE_HIGH"
+    ):
         return "REDUCE"
 
     # RECONFIRM（等待重新确认）：信号模糊 / 数据不完整 / 弱势市场 / 信号过期
@@ -84,7 +94,7 @@ def _decide_action(
         signal.signal_type in ("NO_PARTICIPATE", "OBSERVE")
         or (signal.failed_rules and len(signal.failed_rules) > 0)
         or regime == "WEAK"
-        or (_days_since(signal.generated_at) or 0.0) > STALE_THRESHOLD_DAYS
+        or (_days_since(signal.generated_at) or 0.0) > cfg.stale_threshold_days
     ):
         return "RECONFIRM"
 
@@ -118,13 +128,16 @@ def analyze_position(pos: Dict[str, Any], session: Session) -> Dict[str, Any]:
     etf_code: str = pos["etf_code"]
     cost_price: float = float(pos["cost_price"])
     quantity = pos.get("quantity")
+    current_position_percent = float(pos.get("position_percent") or 0.0)
+    cfg = get_settings().portfolio
 
     signal = signal_repo.get_latest_signal_for_etf(session, etf_code)
-    prev_list, _ = signal_repo.get_signal_history(session, etf_code=etf_code, limit=2)
-    prev_signal = prev_list[1] if len(prev_list) > 1 else None
+    prev_signal = signal_repo.get_previous_comparable_signal(session, signal) if signal else None
 
-    rs_negative = _rs_negative(signal)
-    action = _decide_action(signal, prev_signal, rs_negative)
+    rs_negative = _rs_negative(signal, cfg.rs_exit_threshold)
+    action = _decide_action(
+        signal, prev_signal, rs_negative, current_position_percent, cfg
+    )
     reason, risk = _reason_risk(action, signal, rs_negative)
 
     # 盈亏：需要当前价（ETF 最新 SNAPSHOT 的 close）。缺失则降级为 None。

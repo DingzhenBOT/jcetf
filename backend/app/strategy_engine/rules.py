@@ -15,11 +15,15 @@ from __future__ import annotations
 from typing import Dict
 
 RULES_V1: Dict = {
-    "version": "2.3",
-    "description": "DESIGN §9 五类评分确定性规则 + 方案B 量价关系技术分析 + 盘中动量修正 + 数据口径修正（RS 与 ETF 成交量，v2.3）",
+    "version": "2.4",
+    "description": "DESIGN §9 五类评分确定性规则 + 量价/盘中动量 + 数据口径修正 + 布林三档价位与交易执行口径修正（v2.4）",
     "data_definitions": {
         "rs_20d": "ETF 与跟踪指数按共同 trading_date 对齐后的 20 日增长倍数之比：(etf_t/etf_t-20)/(index_t/index_t-20)",
         "etf_volume": "BAR/SNAPSHOT/1m 的 volume 与 cum_volume 统一为 shares；em/gtimg 原始手数乘100，sina原值",
+        "bollinger": "20 日总体标准差布林带：mid=MA20，upper/lower=mid±2σ；用于盘后三档价位",
+        "backtest_execution": "信号日后次根开盘成交；开盘涨停不买/跌停不卖；双边佣金与滑点同时计入净值和交易盈亏",
+        "trade_plan_levels": "突破价取前高/布林上轨，加仓价取当前价下方最近支撑，止损价取加仓价下方最近保护位，强制 stop<add<breakout",
+        "portfolio_exit": "零仓位档位、BEAR/veto、跌破MA20或RS20<0.95触发退出；实际仓位高于建议上限触发减仓",
     },
     "market_score": {
         "index_above_ma20_and_rising": "宽基指数站上 MA20 且上行 -> 加分",

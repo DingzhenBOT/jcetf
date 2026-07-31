@@ -22,6 +22,8 @@ from app.db.base import utcnow
 from app.db.models.backtest import BacktestRun
 from app.db.models.mapping import StrategyVersion
 from app.repository import backtest_repo
+from app.strategy_engine.rules import RULES_V1
+from app.strategy_versioning import strategy_version_for_rules
 
 
 def _parse_params(run: BacktestRun) -> Dict[str, Any]:
@@ -48,6 +50,20 @@ def run_backtest(session: Session, run: BacktestRun, settings: Settings) -> None
     if version_row is None:
         run.status = "FAILED"
         run.error_message = f"strategy_version not found: {run.strategy_version} (白名单约束，不可现场编造)"
+        run.finished_at = utcnow()
+        session.commit()
+        return
+
+    executable_version, executable_hash = strategy_version_for_rules(settings, RULES_V1)
+    if (
+        run.strategy_version != executable_version
+        or version_row.strategy_hash != executable_hash
+    ):
+        run.status = "FAILED"
+        run.error_message = (
+            f"strategy_version {run.strategy_version} is registered but cannot be "
+            f"reproduced by this build; executable version is {executable_version}"
+        )
         run.finished_at = utcnow()
         session.commit()
         return

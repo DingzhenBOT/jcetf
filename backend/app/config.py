@@ -188,6 +188,9 @@ class BacktestConfig(BaseModel):
 class PortfolioConfig(BaseModel):
     max_positions: int = 20
     max_total_percent: int = 100
+    stale_threshold_days: int = 5
+    rs_exit_threshold: float = 0.95
+    score_drop_reduce_points: float = 5.0
 
 
 class HousekeepingConfig(BaseModel):

@@ -57,6 +57,12 @@ def test_vol_ratio_known():
     assert I.vol_ratio(s, 5) == 2.0
 
 
+def test_bollinger_flat_series_collapses_to_same_price():
+    b = I.bollinger([10.0] * 20, 20, 2.0)
+    assert b == {"upper": 10.0, "mid": 10.0, "lower": 10.0}
+    assert I.bollinger([10.0] * 19, 20) == {"upper": None, "mid": None, "lower": None}
+
+
 def test_atr_known_constant_range():
     # 每日 high-low=2 且 prev_close 在 [low,high] 内 -> TR 恒为 2 -> ATR=2
     high = [3, 3, 3, 3]

@@ -106,6 +106,9 @@ backtest:
 portfolio:
   max_positions: 20
   max_total_percent: 100
+  stale_threshold_days: 5
+  rs_exit_threshold: 0.95          # 20日相对强弱低于0.95才视为显著跑输，避免1.000附近噪声触发清仓
+  score_drop_reduce_points: 5.0
 
 # 数据保留 / 清理 / 备份（防磁盘撑爆；详见 docs/devlog.md）
 # 原则：盘中快照(SNAPSHOT)最占空间 -> 热保留窗口短；日线(BAR)/意见/信号保留更长；

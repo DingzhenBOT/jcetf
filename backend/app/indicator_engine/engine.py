@@ -40,6 +40,10 @@ class IndicatorEngine:
             "atr_pct": None,
             "rs_20d": None,
         }
+        boll = indicators.bollinger(close, 20, 2.0)
+        out["boll_upper"] = boll["upper"]
+        out["boll_mid"] = boll["mid"]
+        out["boll_lower"] = boll["lower"]
 
         if "volume" in df.columns:
             out["vol_ratio"] = indicators.vol_ratio(df["volume"].astype("float64"))

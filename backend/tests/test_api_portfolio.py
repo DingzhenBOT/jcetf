@@ -19,21 +19,21 @@ def _find(items: List[Dict[str, Any]], code: str) -> Dict[str, Any]:
     raise AssertionError(f"{code} not in {items}")
 
 
-def test_analyze_score_drop_returns_reduce(api_client):
+def test_analyze_zero_target_market_risk_returns_exit(api_client):
     r = _post(api_client, [{"etf_code": "510300", "cost_price": 3.82, "position_percent": 30, "quantity": 10000}])
     assert r.status_code == 200, r.text
     item = _find(r.json()["items"], "510300")
-    # 510300 综合分较前一日下降（70->35）-> REDUCE（§9.5）
-    assert item["action"] == "REDUCE"
+    # MARKET_RISK_HIGH 的建议仓位为 0，已有持仓应明确退出。
+    assert item["action"] == "EXIT"
     assert item["suggested_position_text"] is not None
     assert item["review_time"] is not None
 
 
-def test_analyze_no_participate_returns_reconfirm(api_client):
+def test_analyze_no_participate_returns_exit(api_client):
     r = _post(api_client, [{"etf_code": "510500", "cost_price": 1.0, "position_percent": 10}])
     assert r.status_code == 200, r.text
     item = _find(r.json()["items"], "510500")
-    assert item["action"] == "RECONFIRM"
+    assert item["action"] == "EXIT"
 
 
 def test_analyze_no_signal_returns_reconfirm(api_client):

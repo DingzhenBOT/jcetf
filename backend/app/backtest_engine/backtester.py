@@ -58,16 +58,57 @@ def _bars_to_dict(rows: List[MarketQuote]) -> Dict[date, MarketQuote]:
     return {r.trading_date: r for r in rows}
 
 
+def _execution_reference_price(row: MarketQuote) -> Optional[float]:
+    """回测在次根开盘成交；仅开盘缺失时才退化到收盘。"""
+    value = row.open if row.open is not None else row.close
+    return float(value) if value is not None else None
+
+
 def _limit_up(row: MarketQuote) -> bool:
-    if row.previous_close and row.previous_close > 0 and row.close is not None:
-        return float(row.close) >= float(row.previous_close) * LIMIT_UP_FACTOR
+    price = _execution_reference_price(row)
+    if row.previous_close and row.previous_close > 0 and price is not None:
+        return price >= float(row.previous_close) * LIMIT_UP_FACTOR
     return False
 
 
 def _limit_down(row: MarketQuote) -> bool:
-    if row.previous_close and row.previous_close > 0 and row.close is not None:
-        return float(row.close) <= float(row.previous_close) * LIMIT_DOWN_FACTOR
+    price = _execution_reference_price(row)
+    if row.previous_close and row.previous_close > 0 and price is not None:
+        return price <= float(row.previous_close) * LIMIT_DOWN_FACTOR
     return False
+
+
+def _buy_all(
+    cash: float, raw_price: float, commission_rate: float, slippage_rate: float
+) -> Tuple[float, float, float, float]:
+    """用全部可用现金买入，返回 (剩余现金, 数量, 佣金, 成交价)。"""
+    execution_price = raw_price * (1.0 + slippage_rate)
+    if cash <= 0 or execution_price <= 0:
+        return cash, 0.0, 0.0, execution_price
+    gross = cash / (1.0 + commission_rate)
+    commission = gross * commission_rate
+    qty = gross / execution_price
+    remaining = cash - gross - commission
+    return remaining, qty, commission, execution_price
+
+
+def _sell_all(
+    qty: float, raw_price: float, commission_rate: float, slippage_rate: float
+) -> Tuple[float, float, float]:
+    """卖出全部持仓，返回 (净回款, 佣金, 成交价)。"""
+    execution_price = raw_price * (1.0 - slippage_rate)
+    gross = max(0.0, qty) * execution_price
+    commission = gross * commission_rate
+    return gross - commission, commission, execution_price
+
+
+def _next_pending_action(target_weight: float, current_weight: float) -> Optional[str]:
+    """当前信号完全覆盖旧挂单；信号撤销后不得遗留 BUY/SELL 到下一交易日。"""
+    if target_weight > current_weight:
+        return "BUY"
+    if target_weight < current_weight:
+        return "SELL"
+    return None
 
 
 def _compute_metrics(equity: List[Tuple[str, float]]) -> Dict[str, Any]:
@@ -154,12 +195,11 @@ def _benchmark_buy_hold(
     if first.open is None or last.close is None:
         return {"return_pct": None, "equity_curve": [], "available": False}
 
-    buy_net = float(first.open) * (1 + slippage_rate)
-    qty = initial_capital / buy_net
-    commission_buy = initial_capital * commission_rate
-    proceeds = qty * float(last.close)
-    commission_sell = proceeds * commission_rate
-    end_cash = initial_capital - commission_buy + proceeds - commission_sell
+    cash_after_buy, qty, _, _ = _buy_all(
+        initial_capital, float(first.open), commission_rate, slippage_rate
+    )
+    sell_net, _, _ = _sell_all(qty, float(last.close), commission_rate, slippage_rate)
+    end_cash = cash_after_buy + sell_net
     ret = end_cash / initial_capital - 1.0
 
     # 基准净值曲线（每日按 close 标记）
@@ -169,7 +209,10 @@ def _benchmark_buy_hold(
         row = bars_by_date.get(d)
         if row is None or row.close is None:
             continue
-        eq.append((d.isoformat(), initial_capital - commission_buy + qty * float(row.close)))
+        eq.append((d.isoformat(), cash_after_buy + qty * float(row.close)))
+    # 收益率按末日平仓口径计算，曲线末点也必须计入卖出滑点和佣金。
+    if eq:
+        eq[-1] = (eq[-1][0], end_cash)
     return {
         "return_pct": round(ret * 100.0, 4),
         "equity_curve": [{"date": d, "value": round(v, 2)} for d, v in eq],
@@ -230,6 +273,7 @@ def _compute_backtest(
     shares = 0.0
     current_weight = 0.0
     entry_net = 0.0
+    entry_commission = 0.0
     current_qty = 0.0
     pending_action: Optional[str] = None  # BUY / SELL（来自前一日信号）
     pending_reason: Optional[str] = None
@@ -248,46 +292,50 @@ def _compute_backtest(
 
         # 2a) 执行前一日挂起的动作（次根开盘，R4）
         if pending_action == "BUY" and not _limit_up(bar):
-            open_px = float(bar.open) if bar.open is not None else float(bar.close)
-            net = open_px * (1 + slippage_rate)
-            qty = cash / net
-            commission = cash * commission_rate
-            cash = cash - cash - commission  # 全部投入
-            shares += qty
-            current_weight = 1.0
-            entry_net = net
-            current_qty = qty
-            trades.append({
-                "etf_code": etf_code,
-                "sample": "IN" if as_of < in_sample_end else "OUT",
-                "entry_time": bar.timestamp.isoformat() if isinstance(bar.timestamp, datetime) else str(bar.timestamp),
-                "exit_time": None,
-                "entry_price": round(net, 4),
-                "exit_price": None,
-                "qty": round(qty, 4),
-                "pnl": None,
-                "pnl_percent": None,
-                "reason": pending_reason,
-            })
-            pending_action = None
+            open_px = _execution_reference_price(bar)
+            # 无可用成交价等同停牌/坏 BAR：不制造 0 元成交，等待下一根可用 BAR。
+            if open_px is not None:
+                cash, qty, commission, net = _buy_all(
+                    cash, open_px, commission_rate, slippage_rate
+                )
+                if qty > 0:
+                    shares += qty
+                    current_weight = 1.0
+                    entry_net = net
+                    entry_commission = commission
+                    current_qty = qty
+                    trades.append({
+                        "etf_code": etf_code,
+                        "sample": "IN" if as_of < in_sample_end else "OUT",
+                        "entry_time": bar.timestamp.isoformat() if isinstance(bar.timestamp, datetime) else str(bar.timestamp),
+                        "exit_time": None,
+                        "entry_price": round(net, 4),
+                        "exit_price": None,
+                        "qty": round(qty, 4),
+                        "pnl": None,
+                        "pnl_percent": None,
+                        "reason": pending_reason,
+                    })
+                pending_action = None
         elif pending_action == "SELL" and not _limit_down(bar):
-            open_px = float(bar.open) if bar.open is not None else float(bar.close)
-            proceeds = shares * open_px
-            commission = proceeds * commission_rate
-            cash += proceeds - commission
-            # 本笔交易盈亏（扣双边佣金）
-            pnl = (open_px * (1 - slippage_rate) - entry_net) * current_qty - commission - (
-                entry_net * current_qty * commission_rate
-            )
-            pnl_pct = (pnl / (entry_net * current_qty)) * 100.0 if entry_net * current_qty > 0 else 0.0
-            if trades:
-                trades[-1]["exit_time"] = bar.timestamp.isoformat() if isinstance(bar.timestamp, datetime) else str(bar.timestamp)
-                trades[-1]["exit_price"] = round(open_px * (1 - slippage_rate), 4)
-                trades[-1]["pnl"] = round(pnl, 4)
-                trades[-1]["pnl_percent"] = round(pnl_pct, 4)
-            shares = 0.0
-            current_weight = 0.0
-            pending_action = None
+            open_px = _execution_reference_price(bar)
+            if open_px is not None:
+                sell_net, _, exit_net = _sell_all(
+                    shares, open_px, commission_rate, slippage_rate
+                )
+                cash += sell_net
+                # 本笔交易盈亏（扣双边佣金）
+                pnl = sell_net - entry_net * current_qty - entry_commission
+                pnl_pct = (pnl / (entry_net * current_qty)) * 100.0 if entry_net * current_qty > 0 else 0.0
+                if trades:
+                    trades[-1]["exit_time"] = bar.timestamp.isoformat() if isinstance(bar.timestamp, datetime) else str(bar.timestamp)
+                    trades[-1]["exit_price"] = round(exit_net, 4)
+                    trades[-1]["pnl"] = round(pnl, 4)
+                    trades[-1]["pnl_percent"] = round(pnl_pct, 4)
+                shares = 0.0
+                current_weight = 0.0
+                entry_commission = 0.0
+                pending_action = None
 
         # 2b) 当日信号 -> 目标立场
         mapping = mapping_repo.get_active_mappings(session, as_of=as_of)
@@ -301,11 +349,9 @@ def _compute_backtest(
             sig_type = sig.get("signal_type", "")
             target = SIGNAL_TARGET_WEIGHT.get(sig_type, 0.0)
 
-        if target > current_weight:
-            pending_action = "BUY"
-            pending_reason = sig_type
-        elif target < current_weight:
-            pending_action = "SELL"
+        # 当前信号覆盖任何因涨跌停未成交的旧挂单；信号撤销时必须取消旧单。
+        pending_action = _next_pending_action(target, current_weight)
+        pending_reason = sig_type if pending_action == "BUY" else None
 
         # 2c) 当日收盘标记净值
         close_px = float(bar.close) if bar.close is not None else 0.0
@@ -322,11 +368,11 @@ def _compute_backtest(
         last_date = trading_dates[-1]
         last_bar = bars_by_date[last_date]
         close_px = float(last_bar.close) if last_bar.close is not None else 0.0
-        net = close_px * (1 - slippage_rate)
-        proceeds = shares * close_px
-        commission = proceeds * commission_rate
-        cash += proceeds - commission
-        pnl = (net - entry_net) * current_qty - commission - (entry_net * current_qty * commission_rate)
+        sell_net, _, net = _sell_all(
+            shares, close_px, commission_rate, slippage_rate
+        )
+        cash += sell_net
+        pnl = sell_net - entry_net * current_qty - entry_commission
         pnl_pct = (pnl / (entry_net * current_qty)) * 100.0 if entry_net * current_qty > 0 else 0.0
         if trades:
             trades[-1]["exit_time"] = last_bar.timestamp.isoformat() if isinstance(last_bar.timestamp, datetime) else str(last_bar.timestamp)

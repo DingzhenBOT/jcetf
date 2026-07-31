@@ -60,3 +60,14 @@ def test_trade_plan_downTrend_regime_weak():
     plan = compute_trade_plan(df, ind)
     assert plan["regime_tomorrow"] == "偏弱"
     assert plan["stop_price"] < plan["add_price"] < plan["breakout_price"]
+
+
+def test_trade_plan_uses_nearest_support_and_protective_stop():
+    df = _daily_uptrend(n=25, start=3.0, end=4.0)
+    plan = compute_trade_plan(df, {
+        "ma20": 3.92, "boll_mid": 3.88, "boll_lower": 3.80,
+        "boll_upper": 4.10, "atr_pct": 2.0,
+    })
+    # 加仓优先当前价下方最近支撑（MA20），止损优先其下方最近保护位。
+    assert plan["add_price"] == 3.92
+    assert plan["stop_price"] == 3.88

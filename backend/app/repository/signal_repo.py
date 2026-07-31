@@ -67,6 +67,24 @@ def get_latest_signal_for_etf(
     return rows[0] if rows else None
 
 
+def get_previous_comparable_signal(session: Session, current: Signal) -> Optional[Signal]:
+    """取同策略版本、严格早于当前交易日的最近信号。
+
+    同日不同策略版本/阶段不可用于“分数下降”比较，否则策略升版当天会把规则差异
+    误判成市场恶化。
+    """
+    return session.execute(
+        select(Signal)
+        .where(
+            Signal.target_etf == current.target_etf,
+            Signal.strategy_version == current.strategy_version,
+            Signal.trading_date < current.trading_date,
+        )
+        .order_by(Signal.trading_date.desc(), Signal.generated_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 def get_signal_history(
     session: Session,
     *,

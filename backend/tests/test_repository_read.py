@@ -8,7 +8,8 @@ from datetime import date, datetime
 from app.config import get_settings
 from app.db import init_db, make_engine, session_scope
 from app.db.models.market import MarketBreadth, MarketQuote
-from app.repository import mapping_repo, quote_repo
+from app.db.models.signal_opinion import Signal
+from app.repository import mapping_repo, quote_repo, signal_repo
 
 
 def _setup(tmp_path):
@@ -75,6 +76,31 @@ def test_latest_snapshot_readers_skip_unusable_newer_rows(tmp_path):
         rows = quote_repo.get_latest_snapshots_batch(session, [("ETF", "510300")])
         assert changes["510300"] == 1.2
         assert rows[("ETF", "510300")].data_source == "em"
+
+
+def test_previous_comparable_signal_excludes_same_day_other_version(tmp_path):
+    _, eng = _setup(tmp_path)
+    common = {
+        "target_etf": "510300", "signal_type": "OBSERVE", "score": 70.0,
+        "confidence": 80.0, "market_regime": "VOLATILE",
+    }
+    previous = Signal(
+        signal_id="prev", strategy_version="v2", generated_at=datetime(2024, 1, 2, 15),
+        trading_date=date(2024, 1, 2), **common,
+    )
+    same_day_old_version = Signal(
+        signal_id="same-day-old", strategy_version="v1", generated_at=datetime(2024, 1, 3, 16),
+        trading_date=date(2024, 1, 3), **common,
+    )
+    current = Signal(
+        signal_id="current", strategy_version="v2", generated_at=datetime(2024, 1, 3, 15),
+        trading_date=date(2024, 1, 3), **common,
+    )
+    with session_scope(eng) as session:
+        session.add_all([previous, same_day_old_version, current])
+        session.flush()
+        found = signal_repo.get_previous_comparable_signal(session, current)
+        assert found is not None and found.signal_id == "prev"
 
 
 def test_get_bar_history_dedupes_by_configured_source_priority(tmp_path):

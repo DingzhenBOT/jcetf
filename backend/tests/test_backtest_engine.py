@@ -9,8 +9,15 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from app.backtest_engine.backtester import _compute_backtest
+from app.backtest_engine.backtester import (
+    _benchmark_buy_hold,
+    _buy_all,
+    _compute_backtest,
+    _next_pending_action,
+    _sell_all,
+)
 from app.config import get_settings
+from app.db.models.market import MarketQuote
 from app.db.session import session_scope
 from app.repository import mapping_repo, quote_repo
 from app.strategy_versioning import current_strategy_version
@@ -135,7 +142,7 @@ def test_r9_limit_up_skips_buy(backtest_db):
     prev_close = etf_rows[10]["previous_close"]
     etf_rows[10]["close"] = round(prev_close * 1.10, 4)
     etf_rows[10]["high"] = etf_rows[10]["close"]
-    etf_rows[10]["open"] = etf_rows[10]["previous_close"]
+    etf_rows[10]["open"] = etf_rows[10]["close"]  # 次根开盘即封涨停，无法成交
     etf_rows[10]["change_percent"] = 10.0
 
     with session_scope(eng) as s:
@@ -165,7 +172,7 @@ def test_r9_limit_up_skips_buy(backtest_db):
     from app.backtest_engine.backtester import _limit_up
     from app.db.models.market import MarketQuote
     lim_bar = MarketQuote(
-        trading_date=limit_day, open=prev_close, high=etf_rows[10]["close"],
+        trading_date=limit_day, open=etf_rows[10]["close"], high=etf_rows[10]["close"],
         low=prev_close * 0.99, close=etf_rows[10]["close"], previous_close=prev_close,
     )
     assert _limit_up(lim_bar) is True
@@ -184,3 +191,42 @@ def test_benchmark_buy_hold_compared(backtest_db):
     assert bench["available"] is True
     assert bench["return_pct"] is not None
     assert len(bench["equity_curve"]) > 0
+
+
+def test_flat_benchmark_loses_only_round_trip_costs():
+    """横盘基准不能凭空接近 +100%；只应损失双边佣金和滑点。"""
+    rows = [
+        MarketQuote(
+            trading_date=date(2024, 1, 2), timestamp=datetime(2024, 1, 2, 15),
+            open=10.0, close=10.0, collected_at=datetime(2024, 1, 2, 15),
+        ),
+        MarketQuote(
+            trading_date=date(2024, 1, 3), timestamp=datetime(2024, 1, 3, 15),
+            open=10.0, close=10.0, collected_at=datetime(2024, 1, 3, 15),
+        ),
+    ]
+    result = _benchmark_buy_hold(
+        rows, [date(2024, 1, 2), date(2024, 1, 3)], 100000.0,
+        commission_rate=0.00015, slippage_rate=0.0002,
+    )
+    assert -0.2 < result["return_pct"] < 0
+    expected_end = 100000.0 * (1 + result["return_pct"] / 100.0)
+    assert abs(result["equity_curve"][-1]["value"] - expected_end) < 0.1
+
+
+def test_strategy_round_trip_cash_matches_trade_cost_model():
+    cash, qty, buy_commission, buy_price = _buy_all(100000.0, 10.0, 0.00015, 0.0002)
+    sell_net, sell_commission, sell_price = _sell_all(qty, 10.0, 0.00015, 0.0002)
+    final_cash = cash + sell_net
+    pnl = sell_net - buy_price * qty - buy_commission
+    assert cash >= -1e-8
+    assert final_cash < 100000.0
+    assert abs((final_cash - 100000.0) - pnl) < 1e-8
+    assert buy_commission > 0 and sell_commission > 0 and sell_price < 10.0
+
+
+def test_current_signal_cancels_blocked_stale_order():
+    assert _next_pending_action(1.0, 0.0) == "BUY"
+    assert _next_pending_action(0.0, 0.0) is None  # 次日信号撤销，不得遗留 BUY
+    assert _next_pending_action(0.0, 1.0) == "SELL"
+    assert _next_pending_action(1.0, 1.0) is None  # 次日信号恢复，不得遗留 SELL

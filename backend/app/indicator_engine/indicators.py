@@ -119,6 +119,24 @@ def vol_ratio(vol_series: Numeric, n: int = 5) -> Optional[float]:
     return float(cur / mean)
 
 
+def bollinger(series: Numeric, n: int = 20, stddev: float = 2.0) -> dict:
+    """布林带最新值（总体标准差 ddof=0）；样本不足返回全 None。"""
+    s = _as_series(series)
+    empty = {"upper": None, "mid": None, "lower": None}
+    if len(s) < n:
+        return empty
+    window = s.iloc[-n:].dropna()
+    if len(window) < n:
+        return empty
+    mid = float(window.mean())
+    sigma = float(window.std(ddof=0))
+    return {
+        "upper": mid + stddev * sigma,
+        "mid": mid,
+        "lower": mid - stddev * sigma,
+    }
+
+
 def atr(high: Numeric, low: Numeric, close: Numeric, n: int = 14) -> Optional[float]:
     """Wilder ATR(n)。"""
     h = _as_series(high)

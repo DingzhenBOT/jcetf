@@ -12,6 +12,7 @@ import pytest
 from app.config import get_settings
 from app.db.session import session_scope
 from app.market_calendar import is_trading_now
+from app.strategy_versioning import current_strategy_version
 
 
 @pytest.fixture()
@@ -72,6 +73,18 @@ def test_post_validation_errors(backtest_client, _disable_intraday_block):
         "strategy_version": "v9.9.9-not-real",
     })
     assert r.status_code == 422, r.text
+
+
+def test_registered_placeholder_version_is_not_executable(backtest_client, _disable_intraday_block):
+    """已登记不代表可复现；旧占位版本不能冒充当前规则执行。"""
+    client, _ = backtest_client
+    placeholder, _ = current_strategy_version(get_settings())
+    r = client.post("/api/backtest/run", json={
+        "etf_code": "510300", "start_date": "2024-01-01", "end_date": "2024-12-27",
+        "strategy_version": placeholder,
+    })
+    assert r.status_code == 422, r.text
+    assert "not executable" in r.json()["error"]["message"]
 
 
 def test_full_loop_pending_to_done(backtest_client, _disable_intraday_block):

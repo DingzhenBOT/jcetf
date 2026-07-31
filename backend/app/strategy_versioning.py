@@ -29,19 +29,26 @@ def build_version_string(base: str, strategy_hash: str) -> str:
     return f"{base}-{strategy_hash[:6]}"
 
 
+def _strategy_params(settings: Settings) -> dict:
+    return {
+        "composite_weights": settings.strategy.composite_weights,
+        "thresholds": settings.strategy.thresholds,
+        "risk_filter": settings.strategy.risk_filter,
+    }
+
+
+def strategy_version_for_rules(settings: Settings, rules: dict) -> Tuple[str, str]:
+    """按指定冻结规则计算可执行版本，不写数据库。"""
+    strategy_hash = compute_strategy_hash(_strategy_params(settings), rules)
+    return build_version_string(settings.strategy.version, strategy_hash), strategy_hash
+
+
 def current_strategy_version(settings: Settings) -> Tuple[str, str]:
     """基于当前配置计算 (version, strategy_hash)。
 
     P1 仅含 params（权重/阈值/风险过滤），rules 留空 {}；P3 填充实际规则后 hash 变化 -> 新版本。
     """
-    params = {
-        "composite_weights": settings.strategy.composite_weights,
-        "thresholds": settings.strategy.thresholds,
-        "risk_filter": settings.strategy.risk_filter,
-    }
-    strategy_hash = compute_strategy_hash(params, {})
-    version = build_version_string(settings.strategy.version, strategy_hash)
-    return version, strategy_hash
+    return strategy_version_for_rules(settings, {})
 
 
 def mint_strategy_version(session, settings: Settings, rules: dict) -> str:
@@ -54,13 +61,8 @@ def mint_strategy_version(session, settings: Settings, rules: dict) -> str:
     """
     from sqlalchemy.orm import Session
 
-    params = {
-        "composite_weights": settings.strategy.composite_weights,
-        "thresholds": settings.strategy.thresholds,
-        "risk_filter": settings.strategy.risk_filter,
-    }
-    strategy_hash = compute_strategy_hash(params, rules)
-    version = build_version_string(settings.strategy.version, strategy_hash)
+    params = _strategy_params(settings)
+    version, strategy_hash = strategy_version_for_rules(settings, rules)
 
     if not isinstance(session, Session):
         raise TypeError("mint_strategy_version requires an active SQLAlchemy Session")

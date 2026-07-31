@@ -82,25 +82,22 @@ def compute_trade_plan(
     plan["breakout_price"] = _num(breakout)
     plan["breakout_cond"] = "放量站上前高/布林上轨即可上车；无量假突破需警惕回落"
 
-    # ---- 加仓价：回踩 MA20（或布林中轨/近期支撑），须低于当前价 ----
+    # ---- 加仓价：回踩 MA20（或布林中轨/近期支撑），取当前价下方最近的有效支撑 ----
     add_candidates = [c for c in [ma20, boll_mid, recent_low] if c is not None and c < last_close]
-    add = min(add_candidates) if add_candidates else recent_low
+    add = max(add_candidates) if add_candidates else recent_low
+    if add is None or add >= breakout:
+        add = min(last_close * 0.985, (last_close + breakout) / 2)
     plan["add_price"] = _num(add)
     plan["add_cond"] = "缩量回踩上述支撑企稳可加仓；跌破则放弃加仓"
 
-    # ---- 止损价：关键前低 / 布林下轨 / 收盘-1.5ATR，取最能保护的最低位，且须低于加仓价 ----
+    # ---- 止损价：只采用加仓价下方的有效保护位，并取最近一档以限制损失 ----
     stop_candidates = [recent_low]
     if boll_lower is not None:
         stop_candidates.append(float(boll_lower))
     if atr and atr > 0:
         stop_candidates.append(last_close * (1 - 1.5 * atr / 100.0))
-    stop = min(stop_candidates)
-    # 保证 止损 < 加仓 < 突破 的单调关系
-    if add is not None and stop >= add:
-        stop = add * 0.97
-    if plan["breakout_price"] is not None and (add is None or add >= plan["breakout_price"]):
-        # 加仓价异常（>=突破），回退为 (last_close+breakout)/2 的下方
-        plan["add_price"] = _num(min(last_close * 0.985, (last_close + breakout) / 2))
+    valid_stops = [c for c in stop_candidates if add is not None and 0 < c < add]
+    stop = max(valid_stops) if valid_stops else add * 0.97
     plan["stop_price"] = _num(stop)
     plan["stop_cond"] = "跌破关键前低/布林下轨即止损，不抱幻想"
 
