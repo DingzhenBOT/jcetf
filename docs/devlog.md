@@ -2045,3 +2045,19 @@ curl -sS -u admin:密码 "http://127.0.0.1:8000/api/market/etf/510300/history?da
 4. 若某支场外 FAILED：多半 akshare 该支净值接口偶发，重跑 `--backfill` 增量补齐即可。
 
 **环境备注（沙箱）**：venv `pluggy` 读锁问题同 C23；用系统 `python3`（pyenv 3.11.1，pytest 9.0.2）实跑 `pytest` 即可。CVM 正常 venv 不受影响。
+
+## 轮次 C25（方法论审计文档）
+- 背景：用户要求把所有写死（hard-coded）的交易方法论/逻辑按「模块 + 方法论」列成文档并上传，供审核。
+- 动作：逐文件复核后端 9 个引擎模块 + 调度/持仓/文案，产出 `docs/trading_methodology.md`（M1–M11 + 审计发现 A1–A10）。所有 `file:line` 直接对源码核对，非依赖缓存。
+- 关键核对结论（均对源码确认）：
+  - **A1 已确认**：`indicator_engine/engine.py:31-42` 的 `IndicatorEngine.compute` 不产出 `boll_upper/mid/lower` → `opinion_engine/levels.py` 与 `check_r1_r2` 恒读 None → R2 永不触发、三档价布林分支失效。
+  - **A2 已确认**：`rolling_rs`（indicators.py:150-163）算 `Π r_t / Π r_b`（日收益连乘≈0），docstring 意图 `Π(1+r_t)`；修复=去掉 `-1`（用 `t/t.shift(1)` 再 `.prod()`）。
+  - **A3 已确认**：`thresholds.rsi_overheat=80`（config.py:149）未被读取，`rsi>80` 硬编码于 engine.py:683、risk_engine:43。
+  - **A4 已确认**：`rules.py` tiers 仍列 `MARKET_RISK_HIGH` 产出档位，C23 起引擎已改为降档不再产出。
+  - **A5 已确认**：`basis_text`（templates.py:256）对已是百分比的 `slope` 再 ×100，显示放大 100 倍（2%→"200.0%"）。
+  - **A6 已确认**：`macd`/`mom_10` 计算但从未被读取（死计算）。
+  - **A7 已确认**：`pre_close_evaluate` docstring 14:59 vs Cron 14:50（worker.py:229 vs 348）。
+  - **A8 已确认**：回撤 < -15% 仅记 reason，不影响档位（risk_engine:65-66）。
+  - **A9 已确认（治理）**：`compute_strategy_hash` 仅含 composite_weights/thresholds/risk_filter，引擎硬编码常量改动不 bump 版本。
+  - **A10 已确认**：`levels.py` 加仓价回退分支改 `add_price` 后未重算 `stop`。
+- 提交：`docs/trading_methodology.md` + HANDOFF/devlog 指针（同 round）。**未改动任何业务代码**（仅文档）。
