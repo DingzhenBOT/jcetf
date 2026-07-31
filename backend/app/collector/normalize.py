@@ -365,6 +365,41 @@ def normalize_etf_bar(
     return rows
 
 
+def normalize_off_fund_nav(
+    df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
+) -> List[Dict[str, Any]]:
+    """场外开放式基金单位净值 BAR（akshare fund_open_fund_info_em，东财源，symbol_type="OFF_FUND"）。
+
+    净值序列的 close 承载 NAV；open/high/low 同取 NAV（无 OHLC）；previous_close 取前一日 NAV，
+    change_percent 取源「日增长率」，缺失时由前后 NAV 反算。与场内 ETF BAR 物理隔离。
+    """
+    rows: List[Dict[str, Any]] = []
+    prev_nav: Optional[float] = None
+    for _, r in df.iterrows():
+        d = _parse_date(_col(r, "date", "净值日期"))
+        if d is None:
+            continue
+        nav = _f(_col(r, "nav", "单位净值"))
+        if nav is None:
+            prev_nav = nav
+            continue
+        cp = _f(_col(r, "change_percent", "日增长率"))
+        if cp is None and prev_nav is not None and prev_nav != 0:
+            cp = (nav / prev_nav - 1) * 100
+        row = _bar_row(source, "OFF_FUND", symbol, d, collected_at)
+        row.update(
+            open=nav,
+            high=nav,
+            low=nav,
+            close=nav,
+            previous_close=prev_nav,
+            change_percent=cp,
+        )
+        rows.append(row)
+        prev_nav = nav
+    return rows
+
+
 def normalize_index_bar(
     df: pd.DataFrame, source: str, symbol: str, collected_at: datetime, symbol_type: str = "INDEX"
 ) -> List[Dict[str, Any]]:

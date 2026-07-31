@@ -159,7 +159,10 @@ def test_backfill_history_incremental_and_resilient(tmp_path, monkeypatch):
 
 
 def test_backfill_excludes_otc_funds(tmp_path):
-    """场外联接基金（listing='场外'）不走场内 ETF 历史管道，应被跳过（其行情走盈米/开放式基金源）。"""
+    """方案B：场外联接基金（listing='场外'）不再被「排除」，而是路由到 OFF_FUND 净值管道
+    （见 test_off_fund.py 的 test_backfill_routes_off_fund_and_tallies）。本测试仅验证其
+    【不】产生 ETF 类型 BAR（净值序列隔离存为 OFF_FUND）。FakeProvider 未实现
+    get_open_fund_nav_history，真实补数在集成/部署环境进行；此处断言类型隔离。"""
     s, eng = _setup(tmp_path)
     with session_scope(eng) as session:
         mapping_repo.upsert_mapping(

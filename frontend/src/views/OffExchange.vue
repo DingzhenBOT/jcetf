@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import Card from '@/components/ui/Card.vue'
 import StatePanel from '@/components/ui/StatePanel.vue'
 import { getOffExchange } from '@/api/endpoints'
@@ -9,6 +10,7 @@ const data = ref<OffExchangeResult | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const keyword = ref('ETF')
+const router = useRouter()
 
 async function load(): Promise<void> {
   loading.value = true
@@ -81,7 +83,7 @@ function cls(v: number | null | undefined): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(f, i) in data.items" :key="f.code || i" class="border-b border-slate-50 hover:bg-slate-50/60">
+          <tr v-for="(f, i) in data.items" :key="f.code || i" class="border-b border-slate-50 hover:bg-slate-50/60 cursor-pointer" @click="router.push('/etfs/' + f.code)">
             <td class="px-4 py-2 tnum text-slate-600">{{ f.code ?? '--' }}</td>
             <td class="px-4 py-2 text-slate-700">{{ f.name ?? '--' }}</td>
             <td class="px-4 py-2 text-slate-500">{{ f.type ?? '--' }}</td>

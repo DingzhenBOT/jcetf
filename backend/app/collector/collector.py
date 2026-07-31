@@ -445,6 +445,19 @@ class Collector:
             source_hint=self.settings.data_source.preferred,
         )
 
+    def collect_offexchange_nav_history(self, session: Session, symbol: str, start: str, end: str) -> Dict[str, Any]:
+        """场外开放式基金单位净值历史（akshare 东财源），存为 symbol_type=OFF_FUND 的 BAR。
+
+        akshare fund_open_fund_info_em 不接受起止区间，一次返回「成立来」全量；upsert 幂等，
+        增量由 _backfill_start 按 max(timestamp) 控制（首跑后仅补新交易日）。end 参数保留以对齐签名。
+        """
+        return self._collect_bar(
+            session, "OFF_FUND", symbol,
+            lambda: self.provider.get_open_fund_nav_history(symbol),
+            normalize.normalize_off_fund_nav,
+            source_hint="em",
+        )
+
     def collect_us_index_history(self, session: Session, symbol: str, start: str, end: str) -> Dict[str, Any]:
         """美股指数日线 BAR（akshare index_us_stock_sina，sina 源，CVM 可达）。
 
@@ -820,22 +833,28 @@ class Collector:
         result: Dict[str, Any] = {
             "as_of": as_of.isoformat(),
             "etf": {"ok": 0, "failed": 0},
+            "off_fund": {"ok": 0, "failed": 0},
             "index": {"ok": 0, "failed": 0},
             "us_index": {"ok": 0, "failed": 0},
             "sector": {"ok": 0, "failed": 0},
             "sector_flow": {"ok": 0, "failed": 0},
         }
 
-        # ETF（来自生效映射；场外联接基金走盈米/开放式基金源，不采场内历史）
+        # ETF（来自生效映射）；场外联接基金走净值历史（symbol_type=OFF_FUND），不采场内日K/分时
         mappings = mapping_repo.get_active_mappings(session, as_of)
         for m in mappings:
-            if not self._is_on_exchange(m):
-                continue
-            start = self._backfill_start(session, "ETF", m.etf_code, as_of, lookback_days)
-            if start is None:
-                continue
-            r = self.collect_etf_history(session, m.etf_code, start, end)
-            self._tally(result["etf"], r)
+            if self._is_on_exchange(m):
+                start = self._backfill_start(session, "ETF", m.etf_code, as_of, lookback_days)
+                if start is None:
+                    continue
+                r = self.collect_etf_history(session, m.etf_code, start, end)
+                self._tally(result["etf"], r)
+            else:
+                start = self._backfill_start(session, "OFF_FUND", m.etf_code, as_of, lookback_days)
+                if start is None:
+                    continue
+                r = self.collect_offexchange_nav_history(session, m.etf_code, start, end)
+                self._tally(result["off_fund"], r)
 
         # 宽基指数（market_regime 基准）+ 每个 ETF 的跟踪指数（related_index_code，作为 etf_rs 的 RS 基准）。
         # 合并去重后回填，保证 etf_rs 能取到基准日线，避免 etf_rs_missing 误判。

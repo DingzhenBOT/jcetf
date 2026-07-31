@@ -236,17 +236,20 @@ def index_history(code: str, days: int = 60, session: Session = Depends(get_db))
 
 @router.get("/etf/{code}/history", response_model=IndexHistoryOut)
 def etf_history(code: str, days: int = 60, session: Session = Depends(get_db)):
-    """ETF 日线历史 + 人话自解读（与指数端点对称，复用 humanize_index_read）。
+    """ETF / 场外基金 日线历史 + 人话自解读（与指数端点对称，复用 humanize_index_read）。
 
     days：回溯交易日数（默认 60）。无数据返回空 points + 观察期提示（不 404）。
+    场外基金（listing='场外'）读 symbol_type=OFF_FUND 的净值 BAR。
     """
     end = date.today()
     start = end - timedelta(days=int(days) * 2 + 30)  # 自然日窗口，容忍非交易日
+    m_map = {m.etf_code: m for m in mapping_repo.get_active_mappings(session)}
+    m = m_map.get(code)
+    symbol_type = "OFF_FUND" if (m is not None and (m.listing or "场内") == "场外") else "ETF"
     rows = quote_repo.get_bar_history(
-        session, "ETF", code, start, end, timeframe="1d", data_kind="BAR"
+        session, symbol_type, code, start, end, timeframe="1d", data_kind="BAR"
     )
-    name_map = {m.etf_code: m.etf_name for m in mapping_repo.get_active_mappings(session)}
-    name = name_map.get(code, code)
+    name = m.etf_name if m is not None else code
     rows = [r for r in rows if r.close is not None]
     points = [
         IndexHistoryPoint(

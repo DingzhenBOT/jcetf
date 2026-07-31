@@ -50,6 +50,7 @@
 - C22（2026-07-30，用户日志实锤，纠正 C21「视觉误导」误判）：CVM 上 `web.ifzq.gtimg.cn` 分时接口**超时失败**、回退 sina 又对指数用错代码 `sz000300` 返回空 → 分时**真实错误**（归零/断层/不连续），非视觉。主源从「web.ifzq + sina」改为 **qt.gtimg.cn 实时快照(`fetch_realtime`，CVM 稳定)批量转 1m BAR**：最新价作 close，增量=`当日累计成交量 − 上一根1m BAR的cum_volume`（新增 `market_quote.cum_volume` 列；以 BAR 累计为基准规避快照180s/1m采样60s 频率错配的漏计）；未覆盖标的才回退 web.ifzq→sina。`get_bar_history` 源优先级 `gtimg` 提最高(0)，残留 sina 脏数据须让 gtimg 胜出。新增 `quote_repo.get_latest_1m_bars`。前端连续轴沿用 C21 无需改。
 - 测试：backend 279 passed（C21 +1、C22 +6，共 +7）；前端 pnpm build 通过（C21 已 build）。
 - C23（2026-07-30，用户三大意见板块重做 + 修复"最新信号千篇一律先观望"）：`decide_tier` 移除硬闸门（市场弱降档而非一票否决，仅 `BEAR+缺失` veto 仍 `NO_PARTICIPATE`）；盘中意见并入「最新信号」（每 5min，`live` 相位，五因子盘中强度 + R1/R2）；新增午盘意见（`lunch`，11:40）；收盘后复盘（`post_close`，确定性三档价位 突破/加仓/止损 + 明日预期）。算法确定性编码三套 skill 方法论（持仓监控告警 / A股每日复盘 / A股短线交易），无 LLM。新增 `intraday_strength.py`/`levels.py`；`Opinion.trade_plan` 列；`POST /api/signals/{etf}/refresh` 按需重算。详见 devlog C23。**backend 304 passed（C23 +25）**。
+- C24（2026-07-31，用户续作：场外基金纳入正规引擎，**方案B**）：场外开放式基金（110020 沪深300ETF联接A / 000008 沪深300ETF联接 / 110003 易方达沪深300联接 等）注册进 `etf_mapping`（`listing='场外'`），用 akshare 东财 `fund_open_fund_info_em` 净值历史当「日K」存为 `market_quote` 的 `symbol_type=OFF_FUND` BAR（open=high=low=close=NAV，previous_close=前一日NAV），与场内 ETF BAR **物理隔离**；`engine.evaluate_etf` 按 `listing` 选 `bar_type=OFF_FUND` **复用** ETF 技术面/RS/三档价位；`pipeline` 对 `listing='场外'` 仅 `post_close` 评估（T+1 无盘中，live/lunch 跳过并计 `skipped_offexchange`），场外意见**复用场内引擎三档价位作参考**（不写专属模板）。新增 `akshare_adapter.get_open_fund_nav_history` / `normalize.normalize_off_fund_nav` / `collector.collect_offexchange_nav_history`；`backfill_history` 路由 场外→OFF_FUND 管道（增量桶 `off_fund`）；`market.py etf_history` 按 `listing` 读 OFF_FUND。前端 `OffExchange.vue` 行可点进 `/etfs/{code}`、`EtfDetail.vue` 对 `listing='场外'` 隐藏盘中分时/盘中意见/午盘意见、走势卡改「净值走势」、空态提示净值回填后显示。决策：方案B（纳入正规引擎）优于方案A（独立页/独立算法）/方案C（等盈米 CLI）。详见 devlog C24 + 计划书 `toasty-pulse-curie-I1e1lApd.md`。**backend 314 passed（C23 304 → C24 314，+10）**；前端 `pnpm build` 通过（C24-H1 走查）。
 
 【待办 / 续作（按优先级）】
 1. ~~P1 算法重写（核心痛点，已落地 2026-07-25）~~：已把 ETF 实时 SNAPSHOT.change_percent 作为「盘中动量加性修正」纳入综合分（engine.py `intraday_momentum_adjustment`），仅当日实时路径生效，铸造新 strategy_version(v2.2)；全量 211 passed。~~**Task A（SNAPSHOT 切腾讯财经 qt.gtimg.cn，已落地 2026-07-25）**~~：gtimg 已注入 `collect_market` 作盘中实时快照附加源，`get_latest_snapshot_change_map` 跨源取 max(timestamp) 命中 gtimg → P1 现在 CVM 真正随实时行情更新。可选增强：参考 ashare-short-term-trading 把盘中评估重排到 09:45/10:30/13:30/14:30/14:55。
@@ -69,11 +70,11 @@
 
 ---
 
-## 二、当前状态速览（截至 2026-07-30，C23 已落地）
+## 二、当前状态速览（截至 2026-07-31，C23 + C24 已落地）
 
 | 项 | 状态 |
 |---|---|
-| 后端 | FastAPI + SQLite(WAL)，304 测试通过（C23 后） |
+| 后端 | FastAPI + SQLite(WAL)，314 测试通过（C24 后） |
 | 前端 | Vue3 + ECharts，pnpm build 通过（连续轴 C21 已 build） |
 | 数据源 | 平安已弃用；**东财 em 已于 C14 弃用（preferred=sina）**；腾讯自选股 + 盈米 + 东财新闻 + gtimg(A股+美股，盘中分时主源 C22 起为 qt.gtimg.cn 实时快照转 1m) + NeoData(agent侧) |
 | 远程仓库 | github.com/DingzhenBOT/jcetf.git，main（最新提交 **`e0c95b6`**（C23-H1 hotfix）；本仓库 main 即远程最新） |
@@ -301,3 +302,53 @@
 4. 验证收盘后（15:10）：复盘意见含**确定性三档价位**（突破X上车 / 跌X加仓 / 跌破Y止损，价位单调 止损<加仓<突破 且 >0）+ 明日预期。
 5. 沙箱 venv 读锁备注：本沙箱 `pluggy`/`httpx` 包文件被完整性策略读锁，跑测试需 `PYTHONPATH=/tmp/pyfix`（见 devlog C23）；**CVM 不受影响**，正常 `./venv/bin/python -m pytest -q` 即可。
 6. **C23-H1 前端 build hotfix（已修，含在本批推送）**：`endpoints.ts::refreshSignal` 漏传 `apiPost` 第二参 `payload` 致 `vue-tsc` TS2554。已补 `{}`（`endpoints.ts:73`）；沙箱 `node v22.13.1 / pnpm 10.28.2` 实测 `pnpm build` 通过。用户侧 `git pull` 后重 build 即可消除该报错。
+
+---
+
+## VI. C24 · 场外基金（listing='场外'）方案B：净值序列复用 ETF 引擎（2026-07-31）
+
+> 用户原始痛点（`/#/etfs/...` 与 `/#/offexchange`）：查到场外基金「只有名字，其他不可操作——点不开、看不见走势、拿不到建议」。另 515220 类 `etf_rs_missing`（基准指数缺失）也需借回填修复。
+
+### 决策：方案B（纳入正规引擎，复用场内算法）
+
+| 方案 | 思路 | 取舍 |
+|---|---|---|
+| A | 场外基金独立页 + 独立算法 | 重复造轮子，与场内引擎割裂、维护双倍 |
+| **B（选定）** | 注册进 `etf_mapping`（`listing='场外'`），净值历史当「日K」存 `OFF_FUND` BAR，**复用** ETF 技术面/RS/三档价位引擎 | 零新算法、同构意见、维护单一；用户二期确认「复用场内引擎，三档价位作参考」 |
+| C | 等盈米 CLI 装好再接真实场外数据 | P2 盈米 CLI 需用户本人在 CVM 短信验证，agent 无法代填，不可阻塞 |
+
+**关键设计约束**：场外 T+1、无盘中分时 → 仅 `post_close` 相位评估（`live`/`lunch` 跳过，计 `skipped_offexchange`，不算 errors）；净值序列与场内 ETF BAR **物理隔离**（`symbol_type=OFF_FUND` 而非 `ETF`，无 CHECK 约束、无需迁移）。
+
+### 改动落点（6 后端文件 + 2 前端文件）
+
+| 文件 | 职责 |
+|---|---|
+| `data_provider/akshare_adapter.py` | 新增 `get_open_fund_nav_history`（akshare 东财 `fund_open_fund_info_em`，走 `fund.eastmoney.com/pingzhongdata/{code}.js`，**非被 RST 的 push2 主机**，CVM 一般可达）→ 中文列（净值日期/单位净值/日增长率）转英文列（date/nav/change_percent） |
+| `collector/normalize.py` | 新增 `normalize_off_fund_nav`：基于 `_bar_row("OFF_FUND", ...)`，`close=nav`、`open=high=low=nav`、`previous_close=前一日nav`、`change_percent` 取源值或前后 NAV 反算 |
+| `collector/collector.py` | 新增 `collect_offexchange_nav_history`（复用 `_collect_bar`→OFF_FUND 管道，异常记 FAILED 不抛）；`backfill_history` 按 `listing` 分支：场内→`collect_etf_history`（tally `etf`），场外→`_backfill_start("OFF_FUND",...)`→`collect_offexchange_nav_history`（tally `off_fund` 新桶）；`_is_on_exchange` 不变 |
+| `strategy_engine/engine.py` | `bar_type = "OFF_FUND" if (getattr(mapping,'listing',None) or '场内')=='场外' else 'ETF'`，`get_bar_history(bar_type, ...)` 读净值序列；`len(etf_df)>0` 守卫使盘中/三档对场外自然跳过（pipeline 已不跑 live/lunch） |
+| `evaluation/pipeline.py` | `live`/`lunch` 相位遇 `listing='场外'` → `skipped_offexchange += 1` 并 `continue`；`post_close` 正常评估（worker `job_post_close_evaluate` 已带 `phase="post_close"`） |
+| `api/routers/market.py` | `etf_history` 按 `listing` 取 `symbol_type=OFF_FUND`，复用 Points/humanize；`name` 取映射名 |
+| `frontend/src/views/OffExchange.vue` | 行 `<tr>` 加 `cursor-pointer` + `router.push('/etfs/'+code)`，从「只显名字」变为可点进详情 |
+| `frontend/src/views/EtfDetail.vue` | `loadCharts` 对场外跳过分时拉取；走势卡标题 `listing=='场外' ? '净值走势' : '日 K 线'`，空态提示「净值走势将在数据回填后显示」；「盘中分时 / 盘中意见 / 午盘意见」三 Card 加 `v-if="etf.listing !== '场外'"`，「收盘后复盘」保留 |
+
+### 测试（backend **314 passed**，C23 304 → C24 **+10**）
+
+- 新增 `tests/test_off_fund.py`（10 项，端到端覆盖）：归一化（中文列→OFF_FUND 行、`open=high=low=close=NAV`、previous_close=前一日NAV、change_percent 源值/反算）；适配器（东财中文列→英文列）；采集（`collect_offexchange_nav_history` 落 OFF_FUND BAR 且与 ETF BAR 隔离、`backfill_history` 路由场外→OFF_FUND 并 tally）；引擎（`evaluate_etf` 对 `listing='场外'` 读 OFF_FUND、收后产三档 `trade_plan`、且 `etf_rs_missing` 不在 `failed_rules`——即读净值成功；`live` 相位不产三档、不崩）；流水线（`live` 相位 `skipped_offexchange>=1` 且无场外 Opinion、`post_close` 产出含三档的场外 Opinion）；API（`/api/market/etf/110020/history` 返回 `open==close` 的净值序列）。
+- 全量回归：`./venv/bin/python -m pytest` 314 passed（**注意：本沙箱 venv 的 `pluggy` 被破坏，需用系统 `python3` 或 `PYTHONPATH=/tmp/pyfix` 旁路**，详见 devlog C23；**CVM 正常 venv 不受影响**）。
+- 前端：`pnpm build` 通过（vue-tsc 类型检查 + vite build，660 模块；仅 echarts chunk 体积警告，非错误）。
+
+### ⚠ CVM 部署步骤（用户侧）
+
+1. `cd /workspace && git pull`（拉取 C24 后端 + 前端 + 种子）。
+2. `cd backend && python3 -m scripts.seed_mapping`（幂等 upsert；本次 SEED 已含 110020/000008/110003 等 `listing='场外'` 场外示例 + 确保 515220 等场内映射完整）。
+3. `python3 -m scripts.collect_once --backfill`（回填 ETF/指数/板块 **+ 场外净值（OFF_FUND）**；顺带补 515220 的跟踪指数 → 消除其 `etf_rs_missing`）。akshare 东财 pingzhongdata 走独立主机，CVM 一般可达；失败仅该支场外 FAILED，不影响其余。
+4. `cd frontend && pnpm build`，然后 **必须同时重启双服务**：`sudo systemctl restart etf-api etf-worker`（仅 restart worker 会让 etf-api 仍是旧代码 → 场外详情/净值走势读不到新类型）。
+5. 验证（等 15:10 后看最稳妥）：
+   - `#/offexchange` 列表项可**点进**详情；
+   - `#/etfs/110020` 显示「净值走势」折线（回填后），收盘后复盘含三档价位 + 明日预期；
+   - 515220 详情 `etf_rs_missing` 消失（指数已补）；
+   - 盘中/午盘详情页对场外 ETF **不显示**盘中分时/盘中意见/午盘意见（设计内 T+1）。
+6. 异常排查：`journalctl -u etf-worker --since today | grep -i off_fund`；若某支场外 FAILED，多半是 akshare 该支净值接口偶发，重跑 `--backfill` 即可增量补齐。
+
+

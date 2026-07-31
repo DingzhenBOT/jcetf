@@ -440,8 +440,10 @@ class StrategyEngine:
         # 1) 市场环境（盘中阶段透传 phase，用实时指数修正 regime）
         market_score, regime, advance_ratio, idx_avail, breadth_avail = self._evaluate_market(session, as_of, phase=phase)
 
-        # 2) ETF 技术
-        etf_rows = quote_repo.get_bar_history(session, "ETF", mapping.etf_code, start, end)
+        # 2) ETF 技术（场外基金 listing='场外' 读 OFF_FUND 净值序列，与场内 ETF BAR 隔离）
+        # 用 getattr 兜底：mapping 可能是缺 listing 属性的测试替身；真实 ORM 行有该列（None 默认"场内"）。
+        bar_type = "OFF_FUND" if (getattr(mapping, "listing", None) or "场内") == "场外" else "ETF"
+        etf_rows = quote_repo.get_bar_history(session, bar_type, mapping.etf_code, start, end)
         etf_df = _to_df(etf_rows)
         benchmark_close = None
         if mapping.related_index_code:

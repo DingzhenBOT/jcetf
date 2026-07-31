@@ -308,6 +308,33 @@ class AkShareAdapter(BaseDataProvider):
         df.attrs["__source"] = src
         return df
 
+    def get_open_fund_nav_history(
+        self, symbol: str, start: Optional[str] = None, end: Optional[str] = None
+    ) -> pd.DataFrame:
+        """场外开放式基金单位净值历史（东财天天基金 pingzhongdata JS，CVM 可达）。
+
+        与 RST 拦截的 push2 不同主机（fund.eastmoney.com），腾讯云/生产网一般可达。
+        返回 DataFrame[date(python date), nav(float), change_percent(float|None)]（英文列，便于归一化）。
+        空/异常直接抛 DataSourceError（由 Collector._collect_bar 捕获记 FAILED 降级，不向上抛）。
+        """
+        try:
+            df = ak.fund_open_fund_info_em(symbol=symbol, indicator="单位净值走势", period="成立来")
+        except Exception as e:  # noqa: BLE001
+            raise DataSourceError(f"open_fund_nav em {symbol}: {type(e).__name__}: {e}")
+        if df is None or getattr(df, "empty", True):
+            raise DataSourceError(f"open_fund_nav em {symbol} returned empty")
+        df = df.copy()
+        # akshare 返回中文列：净值日期 / 单位净值 / 日增长率
+        df["date"] = pd.to_datetime(df["净值日期"], errors="coerce").dt.date
+        df["nav"] = pd.to_numeric(df["单位净值"], errors="coerce")
+        df["change_percent"] = pd.to_numeric(df.get("日增长率"), errors="coerce")
+        df = df[["date", "nav", "change_percent"]].dropna(subset=["date", "nav"])
+        if df.empty:
+            raise DataSourceError(f"open_fund_nav em {symbol}: no parseable NAV rows")
+        out = df[["date", "nav", "change_percent"]].copy()
+        out.attrs["__source"] = "em"
+        return out
+
     def get_intraday_minute(self, symbol_type: str, code: str) -> pd.DataFrame:
         """盘中 1 分钟分时（sina stock_zh_a_minute）。
 

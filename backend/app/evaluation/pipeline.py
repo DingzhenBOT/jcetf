@@ -60,6 +60,11 @@ def post_collection_evaluate(
     }
 
     for m in mappings:
+        # 场外基金 T+1、无盘中分时 -> 仅收盘后评估；live/lunch 相位跳过（不计入 errors）
+        # getattr 兜底：m 来自 get_active_mappings（真实 ORM 行，listing 存在；None 默认"场内"）。
+        if (getattr(m, "listing", None) or "场内") == "场外" and phase != "post_close":
+            result["skipped_offexchange"] = result.get("skipped_offexchange", 0) + 1
+            continue
         try:
             sig = strategy_engine.evaluate_etf(session, m, version, as_of, phase=phase)
 

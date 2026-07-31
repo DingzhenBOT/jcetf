@@ -76,12 +76,14 @@ async function loadCharts(): Promise<void> {
   chartLoading.value = true
   chartError.value = null
   try {
-    const [hist, intra] = await Promise.all([
-      getEtfHistory(code.value, 120),
-      getIntraday('etf', code.value, today.value),
-    ])
+    const hist = await getEtfHistory(code.value, 120)
     etfHistory.value = hist
-    intraday.value = intra
+    // 场外基金 T+1、无盘中分时，跳过分时拉取（避免无谓 404/空查询）
+    if (etf.value?.listing !== '场外') {
+      intraday.value = await getIntraday('etf', code.value, today.value)
+    } else {
+      intraday.value = null
+    }
   } catch (e) {
     chartError.value = e instanceof Error ? e.message : '图表加载失败'
     etfHistory.value = null
@@ -252,7 +254,7 @@ const signalStaleText = computed(() => {
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
           <!-- 日 K 线（开/高/低/收，可横向缩放，红涨绿跌） -->
           <Card
-            :title="`日 K 线`"
+            :title="etf && etf.listing === '场外' ? '净值走势' : '日 K 线'"
             :subtitle="etfHistory ? `近 ${etfHistory.points.length} 个交易日 · 可拖动下方滑块缩放` : ''"
           >
             <div v-if="chartLoading" class="py-10 flex flex-col items-center gap-2 text-slate-400">
@@ -276,7 +278,7 @@ const signalStaleText = computed(() => {
             </template>
             <div v-else class="py-10 text-center text-sm text-slate-400">
               <template v-if="etf && etf.listing === '场外'">
-                场外联接基金无场内日 K 线行情。其净值与涨跌请见「场外基金」模块（盈米数据源）。
+                场外基金净值走势将在数据回填（backfill）后显示；当前暂无净值数据。
               </template>
               <template v-else>
                 该 ETF 暂无历史行情，暂时无法形成判断。
@@ -284,8 +286,9 @@ const signalStaleText = computed(() => {
             </div>
           </Card>
 
-          <!-- 盘中分时 -->
+          <!-- 盘中分时（仅场内 ETF；场外基金 T+1 无盘中） -->
           <Card
+            v-if="etf.listing !== '场外'"
             :title="`盘中分时`"
             :subtitle="intraday ? `${intraday.date} · 昨收 ${intraday.prev_close != null ? intraday.prev_close.toFixed(3) : '—'}` : ''"
           >
@@ -369,8 +372,8 @@ const signalStaleText = computed(() => {
         </Card>
         <div v-else class="text-sm text-slate-400 py-4">该 ETF 暂无信号。</div>
 
-        <!-- 盘中意见（主） -->
-        <Card class="mt-4" :title="`盘中意见（${intradayOpinions.length}）`">
+        <!-- 盘中意见（主，仅场内 ETF） -->
+        <Card v-if="etf.listing !== '场外'" class="mt-4" :title="`盘中意见（${intradayOpinions.length}）`">
           <StatePanel
             :loading="false"
             :error="null"
@@ -381,8 +384,8 @@ const signalStaleText = computed(() => {
           </StatePanel>
         </Card>
 
-        <!-- 午盘意见（lunch 阶段，C23：午休后生成，可留历史） -->
-        <Card class="mt-4" :title="`午盘意见（${lunchOpinions.length}）`">
+        <!-- 午盘意见（lunch 阶段，C23：午休后生成，可留历史；仅场内 ETF） -->
+        <Card v-if="etf.listing !== '场外'" class="mt-4" :title="`午盘意见（${lunchOpinions.length}）`">
           <StatePanel
             :loading="false"
             :error="null"
