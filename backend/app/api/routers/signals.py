@@ -15,6 +15,7 @@ from app.api.schemas import SignalHistoryPage, SignalOut
 from app.api.serializers import signal_to_dict
 from app.db.session import Session
 from app.errors import AppError, ConflictError, NotFoundError
+from app.market_calendar import is_trading_now
 from app.repository import mapping_repo, signal_repo
 
 router = APIRouter(prefix="/api/signals", tags=["signals"])
@@ -64,7 +65,7 @@ def signal_refresh(
     etf: str = Path(..., description="ETF 代码，如 510300"),
     session: Session = Depends(get_write_db),
 ):
-    """按需重算该 ETF 的盘中实时信号（phase=live），亚秒级；呼应「想立刻查看意见就能」。
+    """按需重算该 ETF 信号；盘中用 live，非交易时段使用最近完整日线。
 
     全程在跨进程写锁下执行（非阻塞）：worker 正在写库时返回 409，前端稍后重试。
     为简化，重算作用于全部生效映射（数量少、耗时低），随后返回本 ETF 最新信号。
@@ -82,7 +83,8 @@ def signal_refresh(
         if not acquired:
             raise ConflictError("worker 正在写库，请稍后重试刷新")
         try:
-            post_collection_evaluate(session, settings, phase="live")
+            phase = "live" if is_trading_now() else "post_close"
+            post_collection_evaluate(session, settings, phase=phase)
             session.commit()
         except Exception as e:  # 顶层异常（版本铸造/映射/引擎构造/某支 ETF 未捕获的 DB 错误）
             # 回滚，避免坏事务污染后续查询；抛出带真实错误信息的 500 便于定位

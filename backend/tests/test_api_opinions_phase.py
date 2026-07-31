@@ -65,12 +65,27 @@ def test_opinions_trade_plan_serialized(api_client):
     assert tp["breakout_price"] > tp["add_price"] > tp["stop_price"]
 
 
-def test_signal_refresh_endpoint_returns_live_signal(api_client):
+def test_signal_refresh_endpoint_returns_live_signal(api_client, monkeypatch):
     # 想立刻查看意见：按需重算该 ETF 盘中实时信号（worker 未持锁时 200）。
     # 若 worker 正写库返回 409，均属正常。
+    monkeypatch.setattr("app.api.routers.signals.is_trading_now", lambda: True)
     r = api_client.post("/api/signals/510300/refresh")
     assert r.status_code in (200, 409)
     if r.status_code == 200:
         body = r.json()
         assert body["target_etf"] == "510300"
         assert "signal_id" in body
+
+
+def test_signal_refresh_uses_post_close_outside_trading_hours(api_client, monkeypatch):
+    phases = []
+    monkeypatch.setattr("app.api.routers.signals.is_trading_now", lambda: False)
+
+    def _capture(*args, **kwargs):
+        phases.append(kwargs["phase"])
+        return {}
+
+    monkeypatch.setattr("app.evaluation.pipeline.post_collection_evaluate", _capture)
+    r = api_client.post("/api/signals/510300/refresh")
+    assert r.status_code == 200, r.text
+    assert phases == ["post_close"]

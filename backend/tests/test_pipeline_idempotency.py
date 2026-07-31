@@ -88,6 +88,21 @@ def test_post_close_default_date_uses_latest_covered_daily_bar(monkeypatch, tmp_
     assert signals and all(sig.trading_date == covered for sig in signals)
 
 
+def test_post_close_refuses_to_stamp_date_without_covered_bars(monkeypatch, tmp_path):
+    import pytest
+
+    s, eng = _setup(tmp_path)
+    monkeypatch.setattr("app.evaluation.pipeline.trading_date_for", lambda: date(2024, 1, 6))
+    monkeypatch.setattr(
+        "app.evaluation.pipeline.quote_repo.get_latest_daily_bar_coverage",
+        lambda *args, **kwargs: None,
+    )
+    with session_scope(eng) as session:
+        _seed_mappings(session)
+        with pytest.raises(ValueError, match="no ETF daily BAR date"):
+            post_collection_evaluate(session, s, phase="post_close")
+
+
 def test_pre_close_and_post_close_distinct_opinions(tmp_path):
     s, eng = _setup(tmp_path)
     as_of = date(2024, 1, 3)

@@ -57,6 +57,11 @@ def post_collection_evaluate(
                 on_or_before=requested_as_of,
                 min_coverage_ratio=settings.data_quality.post_close_min_bar_coverage_ratio,
             )
+            if exchange_codes and bar_coverage is None:
+                raise ValueError(
+                    "post-close evaluation refused: no ETF daily BAR date reaches "
+                    f"coverage ratio {settings.data_quality.post_close_min_bar_coverage_ratio:.0%}"
+                )
             if bar_coverage is not None:
                 as_of = bar_coverage[0]
 
