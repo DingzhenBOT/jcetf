@@ -6,7 +6,7 @@ Collector 把「provider 取数 -> normalize 映射 -> 质量评估 -> 切源标
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -189,10 +189,14 @@ class Collector:
             source_hint=self.settings.data_source.preferred,
         )
         covered = set(primary.get("codes") or [])
-        self._fill_index_snapshot_gaps(session, exclude_codes=covered)
+        self._fill_index_snapshot_gaps(
+            session, exclude_codes=covered, primary_source=primary.get("source")
+        )
         return primary
 
-    def _fill_index_snapshot_gaps(self, session: Session, exclude_codes: set) -> None:
+    def _fill_index_snapshot_gaps(
+        self, session: Session, exclude_codes: set, primary_source: Optional[str] = None
+    ) -> None:
         """补齐 broad_index_codes 中主批次未覆盖的指数（em 不含深市指数时触发）。
 
         每兜底源只拉一次整批，按归一副代码查表填充所有缺失代码，避免重复网络调用。
@@ -202,13 +206,12 @@ class Collector:
         if filler is None:
             return
         sources = getattr(self.provider, "index_spot_sources", lambda: [])()
-        preferred = self.settings.data_source.preferred
         missing = [code for code in self.settings.strategy.broad_index_codes if code not in exclude_codes]
         if not missing:
             return
         now = self._now()
         for src in sources:
-            if src == preferred or not missing:
+            if src == primary_source or not missing:
                 continue  # 主批次已采，或已补齐完毕
             try:
                 df = filler(src)
@@ -637,6 +640,101 @@ class Collector:
         session.commit()
         return {"status": "done", **bucket}
 
+    def collect_sector_flow_from_ths(self, session: Session, sector_codes: set, as_of: date) -> Dict[str, Any]:
+        """采集同花顺全行业即时资金流，并按跟踪 BK 的别名集合形成每日代理值。
+
+        同花顺接口覆盖全部行业，弥补 westock 只有 TOP 榜的问题。消费/医药没有单一
+        同花顺上位行业时，按已声明的子行业集合汇总净额；来源固定为 ths_flow_agg，
+        只允许跨日同口径比较，不用 3/5 日累计排行冒充逐日历史。
+        """
+        now = self._now()
+        bucket: Dict[str, int] = {"ok": 0, "failed": 0}
+        try:
+            df = self.provider.get_sector_ranking("INDUSTRY")
+            if df is None or getattr(df, "empty", True):
+                raise ValueError("ths industry fund flow returned empty")
+        except Exception as e:  # noqa: BLE001
+            self.log.error("sector ths flow failed", extra={"err": str(e)})
+            self._record_failure(session, source="ths_flow_agg", symbol_type="SECTOR", now=now, err=str(e))
+            session.commit()
+            return {"status": "FAILED", "error": str(e)}
+
+        for bk in sorted(sector_codes):
+            matched = []
+            for _, raw in df.iterrows():
+                name = raw.get("行业") or raw.get("概念") or raw.get("名称")
+                if sector_map.matches_sector_bk(str(name or ""), bk):
+                    matched.append(raw)
+            if not matched:
+                continue
+            net_values = [pd.to_numeric(r.get("净额"), errors="coerce") for r in matched]
+            net_values = [float(v) for v in net_values if pd.notna(v)]
+            change_values = [pd.to_numeric(r.get("行业-涨跌幅"), errors="coerce") for r in matched]
+            change_values = [float(v) for v in change_values if pd.notna(v)]
+            if not net_values:
+                continue
+            try:
+                frame = pd.DataFrame([{
+                    "日期": as_of.isoformat(),
+                    "主力净流入-净额": sum(net_values),
+                    "涨跌幅": (sum(change_values) / len(change_values)) if change_values else None,
+                    "收盘": None,
+                    "成交额": None,
+                    "超大单净流入-净额": None,
+                }])
+                rows = normalize.normalize_sector_fund_flow_bar(frame, "ths_flow_agg", bk, now)
+                quote_repo.upsert_market_quotes(session, rows)
+                bucket["ok"] += 1
+            except Exception as e:  # noqa: BLE001
+                self.log.error("sector ths flow normalize failed", extra={"symbol": bk, "err": str(e)})
+                bucket["failed"] += 1
+        if bucket["ok"]:
+            self._record_success(
+                session, source="ths_flow_agg", symbol_type="SECTOR", now=now,
+                note=f"rows={bucket['ok']};date={as_of.isoformat()}",
+            )
+        session.commit()
+        return {"status": "done", **bucket}
+
+    def materialize_intraday_daily(self, session: Session, as_of: date) -> Dict[str, Any]:
+        """盘后把完整度足够的当日分钟线落成日线，避免历史源晚到导致信号日期落后。"""
+        now = self._now()
+        targets: set[tuple[str, str]] = set()
+        mappings = mapping_repo.get_active_mappings(session, as_of)
+        for m in mappings:
+            if self._is_on_exchange(m):
+                targets.add(("ETF", str(m.etf_code)))
+            if m.related_index_code:
+                targets.add(("INDEX", str(m.related_index_code)))
+        targets.update(("INDEX", str(code)) for code in self.settings.strategy.broad_index_codes)
+
+        daily_rows: List[Dict[str, Any]] = []
+        skipped_incomplete = 0
+        for symbol_type, symbol in sorted(targets):
+            bars = quote_repo.get_bar_history(
+                session, symbol_type, symbol, as_of, as_of, timeframe="1m"
+            )
+            if not bars:
+                continue
+            # 只有接近收盘的数据才能代表全天；盘中手工触发不得提前生成“日线”。
+            if beijing_now(bars[-1].timestamp).time() < time(14, 50):
+                skipped_incomplete += 1
+                continue
+            row = normalize.aggregate_intraday_daily_bar(
+                bars, "intraday_agg", symbol_type, symbol, as_of, now
+            )
+            if row is not None:
+                daily_rows.append(row)
+        if daily_rows:
+            quote_repo.upsert_market_quotes(session, daily_rows)
+            session.commit()
+        return {
+            "status": "done",
+            "count": len(daily_rows),
+            "skipped_incomplete": skipped_incomplete,
+            "as_of": as_of.isoformat(),
+        }
+
     def collect_intraday_minute(self, session: Session) -> Dict[str, Any]:
         """盘中 1 分钟分时采集（C22 重写主源）。
 
@@ -895,6 +993,10 @@ class Collector:
         sector_codes = self._sector_codes(session, as_of)
         r = self.collect_sector_from_westock(session, sector_codes, as_of)
         self._tally(result["sector"], r)
+
+        # 全行业当日资金流：可达且全量，用真实逐日值逐步建立同口径连续样本。
+        r = self.collect_sector_flow_from_ths(session, sector_codes, as_of)
+        self._tally(result["sector_flow"], r)
 
         # 备选：东方财富 push2 直连（eastmoney_web）。CVM 上 push2 被 RST 拦截，默认关闭，
         # 避免回填中 10 个板块 kline 超时拖慢；仅在与东财直连可达的部署开 settings.backfill.use_em_web。

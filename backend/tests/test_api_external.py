@@ -137,6 +137,24 @@ def test_offexchange_unavailable(client, monkeypatch):
     assert d["reason"] == "盈米 CLI 未安装或未授权"
 
 
+def test_offexchange_detail_is_independent_from_active_etf_mapping(client, monkeypatch):
+    monkeypatch.setattr(
+        ext,
+        "collect_offexchange_fund_detail",
+        lambda code, history_limit=180: {
+            "available": True,
+            "source": "盈米 + 天天基金净值",
+            "fund": {"code": code, "name": "国泰中证新能源汽车ETF联接C", "type": "指数型", "nav": 1.2345},
+            "nav_history": [{"date": "2026-07-31", "nav": 1.2345, "change_percent": 0.8}],
+        },
+    )
+    r = client.get("/api/external/offexchange/007839")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["fund"]["code"] == "007839"
+    assert d["nav_history"][0]["nav"] == 1.2345
+
+
 def test_yingmi_env_overrides_home(monkeypatch):
     """YINGMI_HOME 设入进程环境时，盈米子进程应以该 HOME 运行（root 服务读取 ubuntu 授权）。"""
     monkeypatch.setenv("YINGMI_HOME", "/home/ubuntu")

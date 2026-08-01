@@ -11,7 +11,7 @@ import IntradayChart from '@/components/charts/IntradayChart.vue'
 import GaugeChart from '@/components/charts/GaugeChart.vue'
 import { getEtfs, getOpinions, getSignalsHistory, getEtfHistory, getIntraday, refreshSignal } from '@/api/endpoints'
 import type { EtfHistory, EtfListItem, Intraday, Opinion, Signal } from '@/api/types'
-import { TIER_BADGE, TIER_BORDER, regimeText, phaseText, isIntradayPhase } from '@/lib/tier'
+import { TIER_BADGE, TIER_BORDER, phaseText, isIntradayPhase } from '@/lib/tier'
 import { fmtConfidence, confidenceLevel } from '@/lib/format'
 import { toBeijing, daysSinceBeijingDate } from '@/lib/time'
 
@@ -103,6 +103,12 @@ onBeforeUnmount(() => window.clearInterval(timer))
 const missingRules = computed(() =>
   etf.value?.latest_signal?.failed_rules?.filter((r) => r.includes('missing')) ?? [],
 )
+const genericMissingRules = computed(() => missingRules.value.filter((r) => r !== 'fund_flow_missing'))
+const fundFlowProgress = computed(() => {
+  if (!missingRules.value.includes('fund_flow_missing')) return null
+  const sm = etf.value?.latest_signal?.supporting_metrics as Record<string, any> | undefined
+  return Math.max(0, Math.min(3, Number(sm?.fund_flow_observations ?? 0)))
+})
 
 // 人话结论（置顶 Hero 用）：盘中建议为主（盘前/午间/收盘前优先），收盘后复盘单独成区。
 const intradayOpinions = computed<Opinion[]>(() =>
@@ -246,7 +252,7 @@ const signalStaleText = computed(() => {
             v-if="primaryOpinion && primaryOpinion.phase === 'post_close'"
             class="mt-2 text-xs text-slate-400 bg-slate-50 border border-slate-100 rounded-md px-2.5 py-1.5"
           >
-            当前主建议为收盘后复盘（针对次日），盘中实时建议见下方「盘中意见」或当日更早记录。
+            当前主建议为收盘后复盘（针对次日）；交易时段生成后，盘中意见会直接显示在「最新信号」内。
           </p>
         </Card>
 
@@ -324,14 +330,10 @@ const signalStaleText = computed(() => {
               height="150px"
               class="shrink-0 w-[180px]"
             />
-            <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm flex-1 w-full">
+            <div class="grid grid-cols-2 gap-3 text-sm flex-1 w-full">
               <div>
                 <div class="text-slate-400 text-xs">置信度</div>
                 <div class="tnum font-semibold">{{ fmtConfidence(etf.latest_signal.confidence) }}</div>
-              </div>
-              <div>
-                <div class="text-slate-400 text-xs">市场环境</div>
-                <div class="font-semibold">{{ regimeText(etf.latest_signal.market_regime) }}</div>
               </div>
               <div>
                 <div class="text-slate-400 text-xs">建议仓位</div>
@@ -342,6 +344,17 @@ const signalStaleText = computed(() => {
           <div v-if="etf.latest_signal.suggested_action" class="mt-3 text-sm text-slate-600">
             {{ etf.latest_signal.suggested_action }}
           </div>
+          <div v-if="intradayOpinions[0]" class="mt-3 rounded-lg border border-sky-100 bg-sky-50/50 p-3">
+            <div class="flex items-center justify-between gap-3">
+              <span class="text-xs font-medium text-sky-700">当前盘中意见</span>
+              <span class="tnum text-xs text-slate-400">{{ toBeijing(intradayOpinions[0].generated_at) }}</span>
+            </div>
+            <p class="mt-1 whitespace-pre-line text-sm leading-relaxed text-slate-700">{{ intradayOpinions[0].content }}</p>
+            <details v-if="intradayOpinions[0].basis_text" class="mt-2">
+              <summary class="cursor-pointer text-xs text-slate-400 hover:text-slate-600">查看依据</summary>
+              <p class="mt-1.5 whitespace-pre-line border-l border-sky-100 pl-3 text-xs leading-relaxed text-slate-600">{{ intradayOpinions[0].basis_text }}</p>
+            </details>
+          </div>
           <!-- 盘中强度/倾向（C23：live 相位信号带出） -->
           <div v-if="liveStrength" class="mt-3 flex flex-wrap items-center gap-2 text-xs">
             <span class="rounded-full bg-indigo-50 px-2 py-0.5 text-indigo-600">盘中强度 {{ liveStrength.score ?? '—' }}/100</span>
@@ -351,10 +364,16 @@ const signalStaleText = computed(() => {
           </div>
           <!-- 数据不足提示 -->
           <div
-            v-if="missingRules.length"
+            v-if="fundFlowProgress !== null"
             class="mt-3 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2"
           >
-            部分数据缺失（{{ missingRules.join('、') }}），当前为观察期数据，信号置信度已降级。
+            行业资金流真实样本积累中（{{ fundFlowProgress }}/3）；达到 3 个同口径交易日之前不参与机会档位判断，置信度会相应降低。
+          </div>
+          <div
+            v-if="genericMissingRules.length"
+            class="mt-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2"
+          >
+            其他数据缺失（{{ genericMissingRules.join('、') }}），信号置信度已降级。
           </div>
           <!-- 重新评估（C23：盘中即时按需重算） -->
           <div class="mt-3 flex items-center gap-2">
@@ -371,18 +390,6 @@ const signalStaleText = computed(() => {
           </div>
         </Card>
         <div v-else class="text-sm text-slate-400 py-4">该 ETF 暂无信号。</div>
-
-        <!-- 盘中意见（主，仅场内 ETF） -->
-        <Card v-if="etf.listing !== '场外'" class="mt-4" :title="`盘中意见（${intradayOpinions.length}）`">
-          <StatePanel
-            :loading="false"
-            :error="null"
-            :empty="intradayOpinions.length === 0"
-            empty-text="暂无盘中意见"
-          >
-            <OpinionList :opinions="intradayOpinions" />
-          </StatePanel>
-        </Card>
 
         <!-- 午盘意见（lunch 阶段，C23：午休后生成，可留历史；仅场内 ETF） -->
         <Card v-if="etf.listing !== '场外'" class="mt-4" :title="`午盘意见（${lunchOpinions.length}）`">

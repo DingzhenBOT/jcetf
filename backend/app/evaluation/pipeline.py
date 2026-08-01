@@ -18,7 +18,7 @@ import uuid
 from datetime import date
 from typing import Any, Dict, Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.base import utcnow
@@ -29,6 +29,8 @@ from app.repository import mapping_repo, quote_repo
 from app.strategy_engine.engine import StrategyEngine
 from app.strategy_engine.rules import RULES_V1
 from app.strategy_versioning import mint_strategy_version
+
+_EPHEMERAL_INTRADAY_PHASES = ("live", "pre_market", "midday", "pre_close")
 
 
 def post_collection_evaluate(
@@ -85,6 +87,7 @@ def post_collection_evaluate(
         "signals_updated": 0,
         "opinions_written": 0,
         "opinions_updated": 0,
+        "live_opinions_pruned": 0,
         "skipped": 0,
         "errors": [],
     }
@@ -176,6 +179,22 @@ def post_collection_evaluate(
                 )
                 session.add(o)
                 result["opinions_written"] += 1
+
+            # 盘中意见是“当前状态”而非历史事件：每支 ETF 只保留最新一条 live。
+            # 午盘和收盘后意见仍按交易日完整保留，供用户查看历史。
+            if phase in _EPHEMERAL_INTRADAY_PHASES:
+                session.flush()
+                target_signal_ids = select(Signal.signal_id).where(
+                    Signal.target_etf == m.etf_code
+                )
+                deleted = session.execute(
+                    delete(Opinion).where(
+                        Opinion.phase.in_(_EPHEMERAL_INTRADAY_PHASES),
+                        Opinion.opinion_id != o.opinion_id,
+                        Opinion.signal_id.in_(target_signal_ids),
+                    )
+                )
+                result["live_opinions_pruned"] += int(deleted.rowcount or 0)
 
         except Exception as e:  # noqa: BLE001 - 单支映射异常不中断其余
             # 回滚，复位事务状态：避免单支 ETF 的 DB 级异常（如缺列/坏查询）污染 session，

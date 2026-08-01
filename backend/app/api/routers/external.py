@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Path, Query
 
 from app.api.schemas import BaseModel
 from app.services import external_data
@@ -70,6 +70,20 @@ class OffExchangeOut(BaseModel):
     items: List[OffExchangeFund] = []
 
 
+class OffExchangeNavPoint(BaseModel):
+    date: str
+    nav: float
+    change_percent: Optional[float] = None
+
+
+class OffExchangeDetailOut(BaseModel):
+    available: bool = True
+    source: Optional[str] = None
+    reason: Optional[str] = None
+    fund: Optional[OffExchangeFund] = None
+    nav_history: List[OffExchangeNavPoint] = []
+
+
 @router.get("/sectors/movement", response_model=SectorMovementOut)
 def sectors_movement() -> SectorMovementOut:
     try:
@@ -107,4 +121,20 @@ def offexchange(
         source=data.get("source"),
         reason=data.get("reason"),
         items=[OffExchangeFund(**it) for it in data.get("items", [])],
+    )
+
+
+@router.get("/offexchange/{code}", response_model=OffExchangeDetailOut)
+def offexchange_detail(
+    code: str = Path(..., pattern=r"^\d{6}$", description="六位场外基金代码"),
+    history_limit: int = Query(180, ge=20, le=1000),
+) -> OffExchangeDetailOut:
+    data = external_data.collect_offexchange_fund_detail(code, history_limit=history_limit)
+    fund = data.get("fund")
+    return OffExchangeDetailOut(
+        available=data.get("available", False),
+        source=data.get("source"),
+        reason=data.get("reason"),
+        fund=OffExchangeFund(**fund) if fund else None,
+        nav_history=[OffExchangeNavPoint(**it) for it in data.get("nav_history", [])],
     )

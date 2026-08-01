@@ -139,8 +139,8 @@ def test_backfill_history_incremental_and_resilient(tmp_path, monkeypatch):
         # ETF 成功；板块主源 westock 落库 BK0465（mock 含医药），回填未因板块源失败而崩溃
         assert r1["etf"]["ok"] == 1
         assert r1["sector"]["ok"] >= 1
-        # em_web 默认关闭（CVM 上 push2 被 RST），sector_flow 不被触发
-        assert r1["sector_flow"] == {"ok": 0, "failed": 0}
+        # 新增 THS 全行业资金流；FakeProvider 返回空，必须优雅记失败而不打断回填。
+        assert r1["sector_flow"] == {"ok": 0, "failed": 1}
 
     with session_scope(eng) as session:
         n_after_first = len(quote_repo.get_bar_history(session, "ETF", "510300",

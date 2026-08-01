@@ -42,8 +42,8 @@ database:
 data_source:
   # 多源可插拔（DESIGN §3.1）。生产优先 em；沙箱/降级用 sina/ths/tx
   mode: "real"                # real / mock（mock 仅 dev/test，禁止生产）
-  preferred: "em"
-  fallback: ["sina", "ths", "tx"]
+  preferred: "sina"
+  fallback: ["ths", "tx"]
   switch_reset_window: true   # 切源后重积累窗口并降置信度
   request_timeout_seconds: 20
   retry_attempts: 2

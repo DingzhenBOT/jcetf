@@ -21,7 +21,8 @@ def test_default_load():
     assert s.paths.sqlite_path_abs.name == "etf_monitor.db"
     # 时区与数据源默认值
     assert s.scheduler.timezone == "Asia/Shanghai"
-    assert s.data_source.preferred == "em"
+    assert s.data_source.preferred == "sina"
+    assert "em" not in s.data_source.fallback
     assert s.data_source.fallback  # 非空列表
 
 

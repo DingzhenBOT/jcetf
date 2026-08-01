@@ -145,6 +145,18 @@ def test_pipeline_live_produces_intraday_opinion(tmp_path):
         assert sm.get("intraday_lean") in ("看多", "看空", "中性")
 
 
+def test_pipeline_live_keeps_only_current_opinion_per_etf(tmp_path):
+    s, eng, T = _seed(tmp_path)
+    with session_scope(eng) as session:
+        post_collection_evaluate(session, s, phase="live", as_of=T - timedelta(days=1))
+    with session_scope(eng) as session:
+        result = post_collection_evaluate(session, s, phase="live", as_of=T)
+        live = session.execute(select(Opinion).where(Opinion.phase == "live")).scalars().all()
+        assert len(live) == 1
+        assert live[0].trading_date == T
+        assert result["live_opinions_pruned"] == 1
+
+
 def test_pipeline_lunch_produces_opinion(tmp_path):
     s, eng, T = _seed(tmp_path)
     with session_scope(eng) as session:

@@ -2,8 +2,32 @@
 from datetime import date, datetime, timezone
 
 import pandas as pd
+from types import SimpleNamespace
 
 from app.collector import normalize
+
+
+def test_aggregate_intraday_daily_bar_uses_ohlc_and_cumulative_volume():
+    d = date(2026, 7, 31)
+    bars = [
+        SimpleNamespace(
+            timestamp=datetime(2026, 7, 31, 1, 30), open=1.0, high=1.02, low=0.99,
+            close=1.01, previous_close=0.98, volume=100.0, cum_volume=100.0,
+            amount=None, change_percent=None,
+        ),
+        SimpleNamespace(
+            timestamp=datetime(2026, 7, 31, 7, 0), open=1.01, high=1.05, low=1.00,
+            close=1.04, previous_close=0.98, volume=200.0, cum_volume=300.0,
+            amount=None, change_percent=None,
+        ),
+    ]
+    row = normalize.aggregate_intraday_daily_bar(
+        bars, "intraday_agg", "ETF", "159928", d, datetime(2026, 7, 31, 7, 5)
+    )
+    assert row is not None
+    assert (row["open"], row["high"], row["low"], row["close"]) == (1.0, 1.05, 0.99, 1.04)
+    assert row["volume"] == 300.0
+    assert row["trading_date"] == d
 
 
 def _now() -> datetime:

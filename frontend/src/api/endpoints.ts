@@ -9,6 +9,7 @@ import type {
   MarketOverview,
   NewsItem,
   OffExchangeResult,
+  OffExchangeDetailResult,
   Opinion,
   OpinionsForEtf,
   PortfolioAnalyzeResponse,
@@ -92,4 +93,10 @@ export function getNews(limit = 30): Promise<{ available: boolean; source?: stri
 // GET /api/external/offexchange —— 场外基金（盈米；未配置时 available=false）
 export function getOffExchange(keyword = 'ETF', limit = 10): Promise<OffExchangeResult> {
   return apiGet<OffExchangeResult>(`/external/offexchange${buildQuery({ keyword, limit })}`)
+}
+
+export function getOffExchangeDetail(code: string, historyLimit = 180): Promise<OffExchangeDetailResult> {
+  return apiGet<OffExchangeDetailResult>(
+    `/external/offexchange/${encodeURIComponent(code)}${buildQuery({ history_limit: historyLimit })}`,
+  )
 }

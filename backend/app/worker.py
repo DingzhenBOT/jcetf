@@ -213,6 +213,9 @@ def _post_close_pipeline(session, settings, *, collect_snapshot: bool = True):
     if collect_snapshot:
         result["collect"] = _collector().collect_all(session)
     result["backfill"] = _collector().backfill_history(session)
+    result["intraday_daily"] = _collector().materialize_intraday_daily(
+        session, market_calendar.trading_date_for()
+    )
     result["evaluate"] = post_collection_evaluate(session, settings, phase="post_close")
     return result
 

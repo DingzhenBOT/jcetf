@@ -41,6 +41,24 @@ function fmtPrice(x: number | null | undefined): string {
 
 <template>
   <div>
+    <div v-if="rest.length" class="mb-2 flex justify-end">
+      <button
+        v-if="!expanded"
+        type="button"
+        class="text-xs text-sky-600 hover:underline"
+        @click="expanded = true"
+      >
+        查看历史（{{ rest.length }}）
+      </button>
+      <button
+        v-else
+        type="button"
+        class="text-xs text-slate-400 hover:underline"
+        @click="expanded = false"
+      >
+        收起历史
+      </button>
+    </div>
     <ul class="space-y-3">
       <li
         v-for="o in displayList"
@@ -105,23 +123,6 @@ function fmtPrice(x: number | null | undefined): string {
         </details>
       </li>
     </ul>
-
-    <button
-      v-if="rest.length && !expanded"
-      type="button"
-      class="mt-2 text-xs text-sky-600 hover:underline"
-      @click="expanded = true"
-    >
-      查看历史（{{ rest.length }}）
-    </button>
-    <button
-      v-if="rest.length && expanded"
-      type="button"
-      class="mt-2 text-xs text-slate-400 hover:underline"
-      @click="expanded = false"
-    >
-      收起历史
-    </button>
 
     <div v-if="!latest" class="text-sm text-slate-400 py-4">暂无意见</div>
   </div>

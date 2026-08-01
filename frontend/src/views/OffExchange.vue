@@ -83,7 +83,7 @@ function cls(v: number | null | undefined): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(f, i) in data.items" :key="f.code || i" class="border-b border-slate-50 hover:bg-slate-50/60 cursor-pointer" @click="router.push('/etfs/' + f.code)">
+          <tr v-for="(f, i) in data.items" :key="f.code || i" class="border-b border-slate-50 hover:bg-slate-50/60 cursor-pointer" @click="router.push('/offexchange/' + f.code)">
             <td class="px-4 py-2 tnum text-slate-600">{{ f.code ?? '--' }}</td>
             <td class="px-4 py-2 text-slate-700">{{ f.name ?? '--' }}</td>
             <td class="px-4 py-2 text-slate-500">{{ f.type ?? '--' }}</td>

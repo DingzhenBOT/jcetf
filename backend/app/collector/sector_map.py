@@ -57,3 +57,18 @@ def resolve_sector_bk(name: str, sector_codes: set[str]) -> str | None:
             if na and (na in n or n in na):
                 return bk
     return None
+
+
+def matches_sector_bk(name: str, bk: str) -> bool:
+    """判断一个来源板块名是否属于指定 BK 的代理成分。
+
+    与 ``resolve_sector_bk`` 不同，本函数不抢占式返回单个 BK；聚合消费、医药等
+    多子行业资金流时，同一个名称可以参与其上位板块代理，同时保留自身细分板块。
+    """
+    n = _norm(name)
+    if not n:
+        return False
+    return any(
+        (alias := _norm(candidate)) and (alias == n or alias in n or n in alias)
+        for candidate in SECTOR_NAME_ALIASES.get(bk, [])
+    )

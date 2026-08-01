@@ -502,6 +502,57 @@ def normalize_intraday_minute(
     return rows
 
 
+def aggregate_intraday_daily_bar(
+    bars: List[Any], source: str, symbol_type: str, symbol: str,
+    trading_date: date, collected_at: datetime,
+) -> Optional[Dict[str, Any]]:
+    """把同一交易日的分钟 BAR 合成为一根日线，作为盘后历史源晚到时的兜底。
+
+    聚合源使用独立标签（当前为 ``intraday_agg``），因此一旦新浪完整日线到达，
+    读路径仍会按数据源优先级选新浪；本行只负责让最新交易日不因外部日线晚到而缺席。
+    """
+    usable = [b for b in bars if getattr(b, "close", None) is not None]
+    if not usable:
+        return None
+    usable.sort(key=lambda b: b.timestamp)
+
+    def first_value(name: str) -> Optional[float]:
+        for b in usable:
+            value = getattr(b, name, None)
+            if value is not None:
+                return float(value)
+        return None
+
+    def values(name: str) -> List[float]:
+        return [float(v) for b in usable if (v := getattr(b, name, None)) is not None]
+
+    opens = values("open")
+    highs = values("high")
+    lows = values("low")
+    volumes = values("volume")
+    amounts = values("amount")
+    cumulative = values("cum_volume")
+    previous_close = first_value("previous_close")
+    close = float(usable[-1].close)
+    change_percent = getattr(usable[-1], "change_percent", None)
+    if change_percent is None and previous_close not in (None, 0):
+        change_percent = (close / previous_close - 1.0) * 100.0
+
+    row = _bar_row(source, symbol_type, symbol, trading_date, collected_at)
+    row.update(
+        open=opens[0] if opens else close,
+        high=max(highs) if highs else close,
+        low=min(lows) if lows else close,
+        close=close,
+        previous_close=previous_close,
+        volume=max(cumulative) if cumulative else (sum(volumes) if volumes else None),
+        amount=sum(amounts) if amounts else None,
+        change_percent=change_percent,
+        volume_unit="shares" if symbol_type == "ETF" else None,
+    )
+    return row
+
+
 def normalize_sector_bar(
     df: pd.DataFrame, source: str, symbol: str, collected_at: datetime
 ) -> List[Dict[str, Any]]:

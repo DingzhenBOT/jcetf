@@ -7,6 +7,7 @@ import SystemStatus from '@/views/SystemStatus.vue'
 import PortfolioView from '@/views/PortfolioView.vue'
 import SectorMovement from '@/views/SectorMovement.vue'
 import OffExchange from '@/views/OffExchange.vue'
+import OffExchangeDetail from '@/views/OffExchangeDetail.vue'
 
 // 使用 hash 历史：静态文件托管（Nginx）无需 try_files 回退配置，部署更稳健。
 // API 调用走相对路径 /api，与路由模式无关。
@@ -20,6 +21,7 @@ export const router = createRouter({
     { path: '/portfolio', name: 'portfolio', component: PortfolioView, meta: { title: '持仓分析' } },
     { path: '/sectors-movement', name: 'sectors-movement', component: SectorMovement, meta: { title: '题材轮动榜' } },
     { path: '/offexchange', name: 'offexchange', component: OffExchange, meta: { title: '场外基金' } },
+    { path: '/offexchange/:code', name: 'offexchange-detail', component: OffExchangeDetail, meta: { title: '场外基金详情' } },
     { path: '/system', name: 'system', component: SystemStatus, meta: { title: '系统状态' } },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

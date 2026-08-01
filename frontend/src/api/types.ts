@@ -250,6 +250,18 @@ export interface OffExchangeResult {
   reason?: string | null
   items: OffExchangeFund[]
 }
+export interface OffExchangeNavPoint {
+  date: string
+  nav: number
+  change_percent?: number | null
+}
+export interface OffExchangeDetailResult {
+  available: boolean
+  source?: string | null
+  reason?: string | null
+  fund?: OffExchangeFund | null
+  nav_history: OffExchangeNavPoint[]
+}
 
 // ---- #109 美股对A股影响 ----
 export interface UsImpactTransmissionPoint {

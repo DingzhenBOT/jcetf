@@ -205,6 +205,61 @@ def collect_offexchange_funds(keyword: str = "ETF", limit: int = 10) -> Dict[str
         return {"available": False, "reason": f"盈米调用失败：{e}", "items": []}
 
 
+def collect_offexchange_fund_detail(code: str, history_limit: int = 180) -> Dict[str, Any]:
+    """场外基金详情：盈米提供基金身份，天天基金净值接口提供可核验的历史净值。
+
+    搜索结果不自动写入策略白名单；详情是独立只读数据流，因此任意盈米可检索基金都能
+    打开，同时不会意外加入定时交易信号计算。
+    """
+    search = collect_offexchange_funds(keyword=code, limit=20)
+    if not search.get("available"):
+        return search | {"fund": None, "nav_history": []}
+    exact = next(
+        (item for item in search.get("items", []) if str(item.get("code") or "") == code),
+        None,
+    )
+    if exact is None:
+        return {
+            "available": False,
+            "source": search.get("source"),
+            "reason": f"盈米未找到基金 {code}",
+            "fund": None,
+            "nav_history": [],
+        }
+
+    history: List[dict] = []
+    nav_reason: Optional[str] = None
+    try:
+        from app.config import get_settings
+        from app.data_provider import build_provider
+
+        df = build_provider(get_settings()).get_open_fund_nav_history(code)
+        for _, row in df.tail(max(1, history_limit)).iterrows():
+            change = row.get("change_percent")
+            history.append({
+                "date": row["date"].isoformat(),
+                "nav": float(row["nav"]),
+                "change_percent": None if change is None or change != change else float(change),
+            })
+        if history:
+            exact = dict(exact)
+            exact["nav"] = history[-1]["nav"]
+            exact["change_percent"] = history[-1]["change_percent"]
+    except Exception as e:  # noqa: BLE001 - 身份信息仍可展示，净值单独降级
+        nav_reason = f"净值历史暂不可用：{e}"
+
+    sources = search.get("source") or "盈米"
+    if history:
+        sources = f"{sources} + 天天基金净值"
+    return {
+        "available": True,
+        "source": sources,
+        "reason": nav_reason,
+        "fund": exact,
+        "nav_history": history,
+    }
+
+
 def _extract_yingmi_funds(data: Any) -> List[dict]:
     """从盈米 SearchFunds 返回中抽取基金列表（兼容常见嵌套结构）。"""
     if isinstance(data, dict):
@@ -230,8 +285,12 @@ def _normalize_fund(f: Any) -> dict:
             return {"raw": f}
     if not isinstance(f, dict):
         return {"raw": str(f)}
+    raw_code = f.get("code") or f.get("fundCode") or f.get("fdCode")
+    code = str(raw_code).strip() if raw_code is not None else None
+    if code and code.isdigit():
+        code = code.zfill(6)
     return {
-        "code": f.get("code") or f.get("fundCode") or f.get("fdCode"),
+        "code": code,
         "name": f.get("name") or f.get("fundName") or f.get("fdName"),
         "type": f.get("type") or f.get("fundType"),
         "change_percent": f.get("changePercent") or f.get("dayGrowth") or f.get("navChange"),
