@@ -3,7 +3,7 @@ get_max_bar_timestamp / get_breadth_on_date / get_active_mappings。
 
 用临时 SQLite + 手工注入测试数据（复用已有唯一索引），验证读路径。
 """
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from app.config import get_settings
 from app.db import init_db, make_engine, session_scope
@@ -56,6 +56,22 @@ def test_get_bar_history_and_max_timestamp(tmp_path):
         assert mx.date() == date(2024, 1, 4)
         latest = quote_repo.get_latest_quote(session, "ETF", "510300", data_kind="BAR", timeframe="1d")
         assert latest.close == 4.0
+
+
+def test_upsert_market_quotes_chunks_large_history(tmp_path):
+    _, eng = _setup(tmp_path)
+    start = date(2020, 1, 1)
+    rows = [
+        _bar_dict("INDEX", "000001", start + timedelta(days=i), 3000.0 + i, source="sina")
+        for i in range(120)
+    ]
+    with session_scope(eng) as session:
+        assert quote_repo.upsert_market_quotes(session, rows) == 120
+    with session_scope(eng) as session:
+        stored = quote_repo.get_bar_history(
+            session, "INDEX", "000001", start, start + timedelta(days=119)
+        )
+        assert len(stored) == 120
 
 
 def test_latest_daily_bar_coverage_rejects_partial_newer_date(tmp_path):

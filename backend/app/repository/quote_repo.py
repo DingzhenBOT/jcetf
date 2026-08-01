@@ -171,10 +171,16 @@ def upsert_market_quotes(session: Session, rows: List[Dict]) -> int:
     """批量幂等写入 market_quote。返回处理行数。"""
     if not rows:
         return 0
-    stmt = sqlite_insert(MarketQuote).values(rows)
-    update_cols = {c: getattr(stmt.excluded, c) for c in _QUOTE_UPDATE_COLS}
-    stmt = stmt.on_conflict_do_update(index_elements=_QUOTE_UNIQUE, set_=update_cols)
-    session.execute(stmt)
+    # 新浪日线接口会返回成立以来全量历史，单支指数可达近万行。SQLAlchemy 的多值
+    # INSERT 会为每个字段生成绑定变量，一次写入会超过 SQLite 的变量上限。
+    # 25 行 × 30 列 < SQLite 最保守的 999 变量限制，兼容各发行版编译参数。
+    chunk_size = 25
+    for offset in range(0, len(rows), chunk_size):
+        chunk = rows[offset:offset + chunk_size]
+        stmt = sqlite_insert(MarketQuote).values(chunk)
+        update_cols = {c: getattr(stmt.excluded, c) for c in _QUOTE_UPDATE_COLS}
+        stmt = stmt.on_conflict_do_update(index_elements=_QUOTE_UNIQUE, set_=update_cols)
+        session.execute(stmt)
     return len(rows)
 
 
