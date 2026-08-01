@@ -300,11 +300,15 @@ class AkShareAdapter(BaseDataProvider):
 
     def get_etf_history(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         df, src = self._call("etf_history", self._history_source_map(self._ETF_HIST, "etf", symbol, start, end))
+        # sina/tx 历史函数不接受起止参数并返回全量，统一在适配层裁剪，避免每次增量
+        # 回填都把成立以来数千行重新送入 SQLite。
+        df = _filter_df_by_date_range(df, start, end)
         df.attrs["__source"] = src
         return df
 
     def get_index_history(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         df, src = self._call("index_history", self._history_source_map(self._INDEX_HIST, "index", symbol, start, end))
+        df = _filter_df_by_date_range(df, start, end)
         df.attrs["__source"] = src
         return df
 

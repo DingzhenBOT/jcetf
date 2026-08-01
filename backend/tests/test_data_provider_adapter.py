@@ -88,6 +88,24 @@ def test_history_symbol_format_per_source():
     assert a._history_symbol("etf", "tx", "510300") == "sh510300"
 
 
+def test_history_methods_filter_full_range_sources(monkeypatch):
+    a = _adapter()
+
+    def _fake_call(capability, source_map):
+        column = "日期" if capability == "etf_history" else "date"
+        return pd.DataFrame([
+            {column: "2023-12-29", "close": 1.0},
+            {column: "2024-01-02", "close": 2.0},
+            {column: "2024-02-01", "close": 3.0},
+        ]), "sina"
+
+    monkeypatch.setattr(a, "_call", _fake_call)
+    etf = a.get_etf_history("510300", "20240101", "20240131")
+    index = a.get_index_history("000300", "20240101", "20240131")
+    assert list(etf["日期"].astype(str)) == ["2024-01-02"]
+    assert list(index["date"].astype(str)) == ["2024-01-02"]
+
+
 def test_bk_to_ths_mapping_resolves_industry_and_concept():
     a = _adapter()
     # 行业板：半导体 / 证券(券商) / 银行 / 白酒 / 光伏设备
