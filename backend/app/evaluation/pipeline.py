@@ -182,18 +182,19 @@ def post_collection_evaluate(
 
             # 盘中意见是“当前状态”而非历史事件：每支 ETF 只保留最新一条 live。
             # 午盘和收盘后意见仍按交易日完整保留，供用户查看历史。
-            if phase in _EPHEMERAL_INTRADAY_PHASES:
+            if phase in _EPHEMERAL_INTRADAY_PHASES or phase == "post_close":
                 session.flush()
                 target_signal_ids = select(Signal.signal_id).where(
                     Signal.target_etf == m.etf_code
                 )
-                deleted = session.execute(
-                    delete(Opinion).where(
-                        Opinion.phase.in_(_EPHEMERAL_INTRADAY_PHASES),
-                        Opinion.opinion_id != o.opinion_id,
-                        Opinion.signal_id.in_(target_signal_ids),
-                    )
+                prune = delete(Opinion).where(
+                    Opinion.phase.in_(_EPHEMERAL_INTRADAY_PHASES),
+                    Opinion.signal_id.in_(target_signal_ids),
                 )
+                # 盘中阶段保留刚生成的当前意见；盘后阶段则全部移除，避免隔夜展示旧盘中判断。
+                if phase in _EPHEMERAL_INTRADAY_PHASES:
+                    prune = prune.where(Opinion.opinion_id != o.opinion_id)
+                deleted = session.execute(prune)
                 result["live_opinions_pruned"] += int(deleted.rowcount or 0)
 
         except Exception as e:  # noqa: BLE001 - 单支映射异常不中断其余

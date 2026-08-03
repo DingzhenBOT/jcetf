@@ -184,6 +184,19 @@ def test_pipeline_post_close_has_trade_plan(tmp_path):
         assert tp["expectation_low"] < tp["expectation_high"]
 
 
+def test_post_close_removes_ephemeral_intraday_opinions(tmp_path):
+    s, eng, T = _seed(tmp_path)
+    with session_scope(eng) as session:
+        post_collection_evaluate(session, s, phase="live", as_of=T)
+    with session_scope(eng) as session:
+        result = post_collection_evaluate(session, s, phase="post_close", as_of=T)
+        ephemeral = session.execute(
+            select(Opinion).where(Opinion.phase.in_(("live", "pre_market", "midday", "pre_close")))
+        ).scalars().all()
+        assert ephemeral == []
+        assert result["live_opinions_pruned"] == 1
+
+
 def test_pipeline_post_close_idempotent(tmp_path):
     s, eng, T = _seed(tmp_path)
     with session_scope(eng) as session:

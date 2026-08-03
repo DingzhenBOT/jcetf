@@ -103,7 +103,7 @@ def test_post_close_refuses_to_stamp_date_without_covered_bars(monkeypatch, tmp_
             post_collection_evaluate(session, s, phase="post_close")
 
 
-def test_pre_close_and_post_close_distinct_opinions(tmp_path):
+def test_post_close_replaces_pre_close_opinions(tmp_path):
     s, eng = _setup(tmp_path)
     as_of = date(2024, 1, 3)
     with session_scope(eng) as session:
@@ -112,9 +112,9 @@ def test_pre_close_and_post_close_distinct_opinions(tmp_path):
         post_collection_evaluate(session, s, phase="post_close", as_of=as_of)
         opin = session.execute(select(Opinion)).scalars().all()
         phases = {o.phase for o in opin}
-        # 每个 ETF 各有 pre_close + post_close 两条意见（按 signal_id+phase 区分）
-        assert phases == {"pre_close", "post_close"}
-        assert len(opin) == 4
+        # 盘中意见不留历史；收盘后每个 ETF 只保留 post_close 意见。
+        assert phases == {"post_close"}
+        assert len(opin) == 2
 
 
 def test_signal_phase_persisted_and_serialized(tmp_path):
