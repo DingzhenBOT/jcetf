@@ -55,6 +55,15 @@ def test_is_trading_day_heuristic_weekend():
     assert cal.is_trading_day(date(2024, 1, 5)) is True  # 周五
 
 
+def test_empty_loaded_calendar_uses_heuristic_fallback():
+    saved = _set_cal(set())
+    try:
+        assert cal.is_trading_day(date(2026, 8, 3)) is True  # 周一
+        assert cal.is_trading_day(date(2026, 8, 2)) is False  # 周日
+    finally:
+        cal._CALENDAR = saved
+
+
 def test_next_trading_day_skips_weekend():
     cal._CALENDAR = None
     # 从周六 2024-01-06 起，下一个交易日是周一 2024-01-08

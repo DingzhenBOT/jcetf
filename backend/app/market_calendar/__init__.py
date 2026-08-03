@@ -89,7 +89,9 @@ def calendar_last_day() -> Optional[str]:
 
 def is_trading_day(d: date) -> bool:
     ds = d.strftime("%Y%m%d")
-    if _CALENDAR is not None:
+    # 空集合代表数据源加载失败/返回空，必须与 None 一样走工作日启发式兜底。
+    # 否则日志虽提示 fallback，实际却会把所有日期都判为休市，整条采集链静默停摆。
+    if _CALENDAR:
         if ds in _CALENDAR:
             return True
         # 日历加载成功但不含该日期：akshare(sina) 历史交易日历不含未来交易日，
