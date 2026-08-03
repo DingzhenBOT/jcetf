@@ -16,6 +16,8 @@ const props = withDefaults(
 
 const UP = '#dc2626' // 涨：红
 const DOWN = '#16a34a' // 跌：绿
+const MA17 = '#f59e0b'
+const MA17_PERIOD = 17
 
 // ECharts 蜡烛数据：[open, close, low, high]
 const candleData = computed(() =>
@@ -27,6 +29,17 @@ const candleData = computed(() =>
   ]),
 )
 const dates = computed(() => props.points.map((x) => x.date.slice(5))) // MM-DD
+
+// 17 日线按最近 17 个交易日的收盘价计算（SMA17），不足 17 个交易日时不绘制。
+const ma17Data = computed<(number | null)[]>(() => {
+  let rollingSum = 0
+  return props.points.map((point, index) => {
+    rollingSum += point.close
+    if (index >= MA17_PERIOD) rollingSum -= props.points[index - MA17_PERIOD].close
+    if (index < MA17_PERIOD - 1) return null
+    return Number((rollingSum / MA17_PERIOD).toFixed(4))
+  })
+})
 
 // 单根涨跌判定：优先用「收 >= 开」（与蜡烛实体颜色一致）；缺失时回退 change_percent。
 // 原实现用 change_percent ?? 0，导致该字段为 null 的日K量柱一律染红。
@@ -54,17 +67,25 @@ const option = computed<EChartsOption>(() => ({
       if (!k) return ''
       const [o, c, l, h] = k.data
       const chg = props.points[k.dataIndex]?.change_percent
+      const ma17 = ma17Data.value[k.dataIndex]
       const sign = (chg ?? 0) >= 0 ? '+' : ''
       return (
         `${k.axisValue}<br/>` +
         `开：<b>${Number(o).toFixed(3)}</b>　收：<b>${Number(c).toFixed(3)}</b><br/>` +
         `高：<b>${Number(h).toFixed(3)}</b>　低：<b>${Number(l).toFixed(3)}</b>` +
-        (chg != null ? `<br/>涨跌幅：<b>${sign}${chg.toFixed(2)}%</b>` : '')
+        (chg != null ? `<br/>涨跌幅：<b>${sign}${chg.toFixed(2)}%</b>` : '') +
+        (ma17 != null ? `<br/><span style="color:${MA17}">MA17：<b>${ma17.toFixed(3)}</b></span>` : '')
       )
     },
   },
+  legend: {
+    data: ['MA17'],
+    top: 0,
+    right: 16,
+    textStyle: { color: '#64748b', fontSize: 11 },
+  },
   grid: [
-    { left: 8, right: 16, top: 12, height: '62%', containLabel: true },
+    { left: 8, right: 16, top: 24, height: '58%', containLabel: true },
     { left: 8, right: 16, top: '74%', height: '18%', containLabel: true },
   ],
   xAxis: [
@@ -118,6 +139,7 @@ const option = computed<EChartsOption>(() => ({
   ],
   series: [
     {
+      name: '日K',
       type: 'candlestick',
       data: candleData.value,
       itemStyle: {
@@ -128,6 +150,19 @@ const option = computed<EChartsOption>(() => ({
       },
     },
     {
+      name: 'MA17',
+      type: 'line',
+      data: ma17Data.value,
+      showSymbol: false,
+      connectNulls: false,
+      smooth: false,
+      lineStyle: { color: MA17, width: 1.6 },
+      itemStyle: { color: MA17 },
+      emphasis: { disabled: true },
+      z: 4,
+    },
+    {
+      name: '成交量',
       type: 'bar',
       xAxisIndex: 1,
       yAxisIndex: 1,

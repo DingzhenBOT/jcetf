@@ -261,7 +261,7 @@ const signalStaleText = computed(() => {
           <!-- 日 K 线（开/高/低/收，可横向缩放，红涨绿跌） -->
           <Card
             :title="etf && etf.listing === '场外' ? '净值走势' : '日 K 线'"
-            :subtitle="etfHistory ? `近 ${etfHistory.points.length} 个交易日 · 可拖动下方滑块缩放` : ''"
+            :subtitle="etfHistory ? `近 ${etfHistory.points.length} 个交易日 · MA17 为 17 个交易日收盘均线 · 可拖动缩放` : ''"
           >
             <div v-if="chartLoading" class="py-10 flex flex-col items-center gap-2 text-slate-400">
               <span class="w-5 h-5 border-2 border-slate-300 border-t-slate-500 rounded-full animate-spin" />
